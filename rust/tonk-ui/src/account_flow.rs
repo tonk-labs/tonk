@@ -1538,14 +1538,14 @@ pub(crate) mod tests {
                 .await?
                 .text()
                 .await?,
-            "account verified"
+            "account activated"
         );
         assert!(
             element(&driver, "#activate-done")
                 .await?
                 .text()
                 .await?
-                .contains("You may close this tab")
+                .contains("Your spaces now open on your other devices. You can close this page.")
         );
         assert!(
             driver
@@ -2316,7 +2316,7 @@ pub(crate) mod tests {
                 Vec::new(),
             )
             .await?;
-        assert_eq!(done.json()["heading"], "account verified");
+        assert_eq!(done.json()["heading"], "account activated");
         assert_eq!(done.json()["message"], "success");
         assert_eq!(done.json()["actions"], 0);
 

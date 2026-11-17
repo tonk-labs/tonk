@@ -17,7 +17,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlElement, window};
 
-use crate::user_error::{self, AccountAction};
+use crate::user_error::AccountAction;
 
 /// The top-document activation element.
 #[derive(Default)]
@@ -84,6 +84,13 @@ fn link_invocation() -> Result<Vec<u8>, String> {
         "This activation link is damaged. Open the exact link from your email.".to_string()
     })
 }
+
+/// What a failed activation says (gooey task-page.html #activate-failed):
+/// what stayed, and what to do. The link carries no address, so it names
+/// "your email" where the mock names it; the service's own words go to the
+/// console.
+const NOT_CONFIRMED: &str =
+    "Tonk couldn’t confirm your email, so nothing changed. Check your connection and try again.";
 
 /// A failure is the same step again, the reason last in the form, just
 /// above the button; focus goes to it, so it is what gets read out.
@@ -337,7 +344,7 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                     );
                     pending.set(false);
                     set_busy(&host, false, false);
-                    return show_error(&host, "The service could not be reached. Try again.");
+                    return show_error(&host, NOT_CONFIRMED);
                 }
             };
             let status = response.status();
@@ -403,15 +410,12 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 set_busy(&host, false, false);
                 let message = body["error"]["message"]
                     .as_str()
-                    .unwrap_or("Activation failed. Try again.")
+                    .unwrap_or("no message")
                     .to_string();
                 web_sys::console::error_1(
                     &format!("account activation service refused the link: {message}").into(),
                 );
-                show_error(
-                    &host,
-                    &user_error::diagnostic(AccountAction::ActivateAccount, &message),
-                );
+                show_error(&host, NOT_CONFIRMED);
             }
         });
     });
