@@ -1703,6 +1703,30 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `intent/suggest` — what a line typed in the command palette
+        /// could mean. The fields every ask carries; the optional ones
+        /// (`subject`, `site`, `expression`, `memory`) are read from the
+        /// command's rows by the provider.
+        pub mod intent_suggest {
+            use dialog_query::Attribute;
+
+            /// What was typed; empty asks what can be done without saying
+            /// more.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Input(pub String);
+
+            /// The caller's clock in milliseconds.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Now(pub f64);
+
+            /// How many readings at most.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Max(pub u64);
+        }
+
         /// `site/select` — what the page in a tab has selected.
         pub mod site_select {
             use dialog_corpus::Entity;

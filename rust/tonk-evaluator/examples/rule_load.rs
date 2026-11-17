@@ -19,6 +19,10 @@
 //! ACCOUNTS=2000 SPACES=500 BLOCKS=500 cargo run -p tonk-evaluator --example rule_load
 //! ```
 
+// The harness commits with the one-step publish, which fails on a lost
+// race: the branch it loads is its own, with no other writer.
+#![allow(deprecated)]
+
 /// The harness needs tokio and the native test peer, so it is native
 /// only; the wasm build of the crate's examples sees an empty program.
 #[cfg(not(target_arch = "wasm32"))]

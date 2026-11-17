@@ -29,8 +29,32 @@ pub trait LoadProvider: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv
 impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 
 /// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+pub trait BranchOpenProvider:
+    Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
+impl<T> BranchOpenProvider for T where
+    T: Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
+
+/// What settling a branch's stack needs ([`Stack::settle`]): the reads
+/// a subscription's poll makes, through a handle the stack clones once
+/// and shares among every subscription it polls.
+///
+/// [`Stack::settle`]: dialog_repository::Stack::settle
+pub trait SettleProvider:
+    dialog_repository::OpenStackEnv + Clone + dialog_common::ConditionalSend + ConditionalSync + 'static
+{
+}
+impl<T> SettleProvider for T where
+    T: dialog_repository::OpenStackEnv
+        + Clone
+        + dialog_common::ConditionalSend
+        + ConditionalSync
+        + 'static
+{
+}
 
 /// Bound needed for raw content-addressed block access to the branch
 /// archive, reading tree nodes by hash. `Put` is part of the
