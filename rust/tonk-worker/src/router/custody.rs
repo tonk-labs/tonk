@@ -470,10 +470,35 @@ async fn perform(
             login(&state, source, &custodian, link).await
         }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
-            let holder = custodian_named(data, "holder")
-                .await?
-                .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
-            add_passkey(&state, &custodian, &holder, addition).await
+            // The account sheet follows the ceremony row, so the outcome is
+            // reported there, done or failed, as every other ceremony is.
+            let outcome = match custodian_named(data, "holder").await {
+                Ok(Some(holder)) => add_passkey(&state, &custodian, &holder, addition).await,
+                Ok(None) => Err("the handoff carried no holder passkey".to_string()),
+                Err(error) => Err(error),
+            };
+            let tonk = state.read().await;
+            match &outcome {
+                Ok(_) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::DONE,
+                        "",
+                    )
+                    .await
+                }
+                Err(error) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::FAILED,
+                        split_refusal(error).1,
+                    )
+                    .await
+                }
+            }
+            outcome
         }
         // Both answer with where the page goes next: the guest that
         // asked is on a page the outcome retires (a purged profile, or
@@ -587,7 +612,12 @@ async fn add_passkey(
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
     let tonk = state.read().await;
-    enroll(&tonk, added, &sealed, None, None).await
+    // Labelled, so the account's passkey list names it.
+    let created_on = addition
+        .created_on
+        .filter(|label| !label.trim().is_empty())
+        .or_else(|| Some("a passkey".to_string()));
+    enroll(&tonk, added, &sealed, None, created_on).await
 }
 
 /// Open the account this passkey holds and link this browser to it.

@@ -31,7 +31,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution};
+use tonk_schema::{Invitation, InvitationExecution, InvitationMinted};
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -269,12 +269,19 @@ pub(super) async fn mint_invite(
         InviteAudience::Scoped => "scoped",
     };
     let execution = InvitationExecution::new(&invitation, kind);
+    // When it was minted, so a list can keep the oldest open link first.
+    let minted_at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    let minted = InvitationMinted::new(&invitation, minted_at);
     tonk.reactor
         .repository(&repo_name)
         .branch(CONTENT_BRANCH)
         .transaction()
         .assert(invitation)
         .assert(execution)
+        .assert(minted)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -1009,6 +1016,10 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap();
         assert_eq!(listed.len(), 1, "the minted invitation is listed");
         assert_eq!(listed[0].invitation, expected.this.to_string());
+        assert!(
+            listed[0].minted_at.is_some(),
+            "a fresh invitation lists when it was minted"
+        );
     }
 
     /// A space created without a remote refuses, and says which case it was.

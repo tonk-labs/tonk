@@ -741,7 +741,9 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     for contract in [
         "look: !include/text ./gooey/tonk-look.css",
         "hub: !include/text ./gooey/in-browser/hub.css",
-        "<div class=\"hub-page tonk-hub\">",
+        // Hidden until its stylesheets load, so it never flashes unstyled.
+        "<div class=\"hub-page tonk-hub\" style=\"visibility:hidden\" data-styling>",
+        ".hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }",
         "<link rel=\"stylesheet\" with:src=\"look@space\">",
         "<link rel=\"stylesheet\" with:src=\"hub@space\">",
     ] {
@@ -802,7 +804,9 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
         "<hub-bar class=\"hub-top\">",
         "<svg class=\"hub-logo\"",
-        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger>",
+        // Your name is a toggle: a chevron, and aria-expanded on the sheet.
+        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger role=\"button\"",
+        "aria-expanded=\"false\" aria-controls=\"account-sheet\">",
         "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
         "<div class=\"hub-line\">",
         "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-spaces-line>spaces <span class=\"hub-count\" data-space-count></span></h2>",
@@ -1104,7 +1108,11 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // each with its action on the heading line. What can't be undone asks
     // first, in place.
     for contract in [
-        "<section class=\"hub-sheet\" data-account-sheet aria-label=\"account settings\">",
+        "<section class=\"hub-sheet\" id=\"account-sheet\" data-account-sheet aria-label=\"account settings\">",
+        // The sheet's sections sit in the hub's 16px gutter.
+        "<div class=\"hub-account\">",
+        // A change that didn't land says so in the line, with try again.
+        "<button class=\"hub-btn\" type=\"button\" data-account-retry hidden>try again</button>",
         "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-account-line>account settings</h2>",
         "<a class=\"hub-btn\" href=\"/\" data-return-spaces data-account-close>close</a>",
         "<h3 id=\"sec-conn\">connections</h3>",
@@ -1112,7 +1120,9 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         "<p>Sign out on this device? Your spaces stay in your account.</p>",
         "<button class=\"hub-btn\" type=\"button\" data-ask-keep>stay signed in</button><button class=\"hub-btn hub-btn--ring\" type=\"button\" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>",
         "data-agent-connections hidden",
-        "data-connections-refresh",
+        // Connections load on opening; there is no refresh button, and
+        // with none the note says how one connects.
+        "data-connections-note",
         r#"<tonk-display model="tonk:account/registered" view="deletion">"#,
     ] {
         assert!(
@@ -1121,6 +1131,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         );
     }
     assert!(!panel.contains("data-sign-out-dialog"));
+    assert!(!panel.contains("data-connections-refresh"));
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
@@ -2198,7 +2209,7 @@ fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
         "<div class=\"hub-sr\" role=\"status\" aria-live=\"polite\" data-hub-live></div>",
         "document.createTextNode(' · by you')",
         "sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');",
-        "slot.textContent = 'Couldn’t undo that, so the change stays.';",
+        "self.fail('Couldn’t undo that, so the change stays.', pending.run, 'undoing');",
         "self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',",
         "self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',",
         "[action === 'leave' ? 'left' : 'deleted', name]",
@@ -2222,7 +2233,8 @@ fn it_lists_a_spaces_links_in_its_open_hub_row() {
         "self.api(`${base}/invites`)",
         "member: field('xyz.tonk.membership/member', 'Entity'),",
         "self.api('/api/account/connections')",
-        "const first = open.find((row) => made.has(row.target)) ?? open[0];",
+        // The default is the oldest open link, whatever this tab made.
+        "const first = rows.find((row) => row.kind === 'open');",
         "/invites/${encodeURIComponent(target)}/revoke",
         "/api/account/connections/${encodeURIComponent(target)}/revoke",
         "'keep the link', 'reset passlink', true]",
@@ -2251,7 +2263,10 @@ fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
         "data-space-create-submit data-wait=\"making\">make space</button>",
         "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
         ": `You already have a space called ${name.value}.`;",
-        "if (inline) control.textContent = 'making';",
+        // `make space` keeps focus and says `making` only past 400ms.
+        ".map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));",
+        // An error clears as the name is typed.
+        "if (error?.textContent) error.textContent = '';",
         "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
         "await links.makeDefault();",
         "self.querySelector('[data-link-copy]')?.focus();",
