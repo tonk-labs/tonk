@@ -65,8 +65,10 @@ test('current request reports progress and a fast terminal result without observ
     ['working', '', true, 'ask', ''],
     ['done', '', false, 'ask', ''],
     ['refused', 'refused callback', false, 'ask', /passkey prompt was cancelled/],
-    ['failed', 'refused callback', false, 'ask', /nothing was connected.*refused callback/],
+    // The mock's #device-failed words; the worker's detail goes to the console.
+    ['failed', 'refused callback', false, 'ask', /^Tonk couldn’t reach the device, so nothing was connected\. Check that it’s still waiting, then try again\.$/],
     ['failed', 'request expired', false, 'expired', ''],
+    ['failed', 'this handoff requires account did:key:a; the unlocked passkey belongs to did:key:b', false, 'ask', /requires account did:key:a/],
   ]) {
     const { self, row, line } = fixture();
     self.refresh();

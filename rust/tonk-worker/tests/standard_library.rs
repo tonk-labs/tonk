@@ -2390,6 +2390,21 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     assert!(pane.contains(">connect a device</h1>"));
     assert!(pane.contains("<dt>device</dt><dd data-link-name></dd>"));
     assert!(pane.contains("<dt>your account</dt>"));
+    // the account reads by its name (the mock's "Alex"), the email only
+    // while no name row has arrived
+    assert!(pane.contains(
+        "<dd data-link-account-cell>\n                          <tonk-display model=\"state:account-link\" view=\"label\">"
+    ));
+    assert!(PROFILE_LIBRARY.contains(
+        "account-settings [data-link-account-cell]:has([data-account-name]) [data-link-account-email] { display:none; }"
+    ));
+    // the connected step names the device it connected
+    assert!(pane.contains(
+        "<span data-link-connected-name>The device</span> can now use your account. You can close this page."
+    ));
+    assert!(PROFILE_LIBRARY.contains(
+        "self.text('[data-link-connected-name]', request.name || 'The device');"
+    ));
     assert!(
         pane.contains("BUG-246"),
         "a slot for the code the device shows"
@@ -2412,6 +2427,15 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     // a cancelled or failed passkey is the same step, the reason in the form
     assert!(PROFILE_LIBRARY.contains(
         "if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');"
+    ));
+    // a failure says what stayed, in the mock's words, without the
+    // worker's detail
+    assert!(PROFILE_LIBRARY.contains(
+        "self.linkError('Tonk couldn’t reach the device, so nothing was connected. Check that it’s still waiting, then try again.');"
+    ));
+    // except a handoff for another account, whose detail names both
+    assert!(PROFILE_LIBRARY.contains(
+        "else if (state === 'failed' && /requires account/.test(detail)) self.linkError(`Tonk couldn’t finish, so nothing was connected."
     ));
     // the other two panes keep their copy on the same parts
     assert!(PROFILE_LIBRARY.contains(">attach a local space to this account</h1>"));
