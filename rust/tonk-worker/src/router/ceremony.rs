@@ -419,11 +419,38 @@ async fn authorize_device_inner(
         base64::engine::general_purpose::STANDARD.encode(payload)
     };
     // Back to the task page, which says the device is connected.
-    let redirect = format!("{origin}settings/link");
+    let redirect = connected_return(&origin, &authorization.name);
     tonk_worker_api::callback::delivery_url(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],
     )
+}
+
+/// Where a device's callback sends the browser once it has the grant: the
+/// device task page, carrying the device's name so "device connected" can
+/// name it. The callback adds the outcome (`link=ok`) to this address.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn connected_return(origin: &str, name: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("name", name)
+        .finish();
+    format!("{origin}settings/link?{query}")
+}
+
+#[cfg(test)]
+mod connected_return_tests {
+    use super::connected_return;
+
+    #[dialog_common::test]
+    fn it_carries_the_device_name_back_to_the_task_page() {
+        assert_eq!(
+            connected_return("https://tonk.example/", "Jack’s laptop & co"),
+            "https://tonk.example/settings/link?name=Jack%E2%80%99s+laptop+%26+co"
+        );
+    }
 }
 
 #[cfg(test)]

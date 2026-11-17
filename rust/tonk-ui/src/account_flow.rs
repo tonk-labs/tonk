@@ -2698,6 +2698,54 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A ticket link to a space this device does not have fails on the
+    /// space route as a task page: the failure sheet sits under the
+    /// logotype, centred with it, at desktop and at phone width.
+    #[dialog_common::test]
+    async fn it_centres_a_failed_join_on_the_space_route(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        let seed = bs58::encode([7u8; 32]).into_string();
+        let link = env.tonk_web.join(&format!(
+            "space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+        ))?;
+
+        for (width, height) in [(1280, 900), (390, 844)] {
+            driver.enter_default_frame().await?;
+            driver.set_window_rect(0, 0, width, height).await?;
+            goto(&driver, link.as_str()).await?;
+            enter_guest(&driver).await?;
+            element(&driver, ".space-join .join-closed").await?;
+            let layout = driver
+                .execute(
+                    r#"
+                    const box = (selector) => {
+                      const rect = document.querySelector(selector).getBoundingClientRect();
+                      return { left: rect.left, centre: rect.left + rect.width / 2, width: rect.width };
+                    };
+                    return {
+                      viewport: document.documentElement.clientWidth,
+                      sheet: box('.space-join .join-closed'),
+                      top: box('.space-join .fabb-top'),
+                    };
+                    "#,
+                    vec![],
+                )
+                .await?;
+            let layout = layout.json();
+            let viewport = layout["viewport"].as_f64().unwrap_or_default();
+            let sheet = layout["sheet"]["centre"].as_f64().unwrap_or_default();
+            let top = layout["top"]["centre"].as_f64().unwrap_or_default();
+            anyhow::ensure!(
+                (sheet - viewport / 2.0).abs() < 2.0 && (sheet - top).abs() < 2.0,
+                "at {width}px the failure sheet is centred under the logotype: {layout}"
+            );
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_signs_back_into_the_same_account_after_signing_out(
         env: TestEnvironment,
@@ -9587,9 +9635,11 @@ pub(crate) mod tests {
     /// whatever the page delivered.
     /// The one-shot slot a delivered authorization lands in.
     type Delivery =
-        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>>;
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Delivered>>>>;
+    /// The outcome field, its value, and where the page asked to be sent back.
+    type Delivered = (String, String, Option<String>);
 
-    async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<(String, String)>)> {
+    async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<Delivered>)> {
         use axum::extract::{Form, State};
         use std::collections::HashMap;
 
@@ -9608,10 +9658,11 @@ pub(crate) mod tests {
                 .into_iter()
                 .find_map(|key| form.get(key).map(|value| (key.to_owned(), value.clone())))
                 .unwrap_or_else(|| ("none".to_owned(), String::new()));
+            let redirect = form.get("redirect").cloned();
             if let Ok(mut slot) = slot.lock()
                 && let Some(sender) = slot.take()
             {
-                let _ = sender.send((field, value));
+                let _ = sender.send((field, value, redirect));
             }
             "received"
         }
@@ -9718,7 +9769,8 @@ pub(crate) mod tests {
         url.query_pairs_mut()
             .append_pair("audience", audience)
             .append_pair("callback", &callback)
-            .append_pair("expectedAccount", &expected);
+            .append_pair("expectedAccount", &expected)
+            .append_pair("name", "Work laptop");
         goto(&driver, url.as_str()).await?;
 
         // Show the granting account's email; protocol identifiers stay
@@ -9794,7 +9846,7 @@ pub(crate) mod tests {
         // Generous: approving runs a passkey assertion, the unlock, and
         // the device registration before the callback navigation, and a loaded
         // CI runner stretches each of them.
-        let (field, value) = tokio::time::timeout(Duration::from_secs(60), delivered)
+        let (field, value, redirect) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("the page never delivered an authorization")??;
         assert_eq!(field, "authorize", "approving must deliver a grant");
@@ -9814,6 +9866,17 @@ pub(crate) mod tests {
                 "the authorization must carry {field}: {payload}"
             );
         }
+        // The CLI sends the browser back to where the page asked, with the
+        // outcome added; "device connected" names the device although the
+        // request's own parameters are gone.
+        let landing = redirect.context("the page never said where to come back to")?;
+        let mut landing = env.tonk_web.join(&landing)?;
+        assert_eq!(landing.path(), "/settings/link");
+        landing.query_pairs_mut().append_pair("link", "ok");
+        goto(&driver, landing.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-link-connected-name]", "Work laptop").await?;
+
         // A browser left running keeps writing its profile while the
         // workspace is being removed — the "Directory not empty"
         // teardown race every other test avoids by quitting.
@@ -9842,7 +9905,7 @@ pub(crate) mod tests {
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         click(&driver, "[data-link-decline]").await?;
 
-        let (field, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
+        let (field, _, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("cancelling never reached the waiting process")??;
         assert_eq!(
