@@ -249,7 +249,7 @@ fn upgrading_response(
                 subscribe = subscribe.client(client);
             }
             match subscribe.perform(&tonk.operator).await {
-                Ok(subscriber) => Ok(subscriber.receiver),
+                Ok(subscriber) => Ok(subscriber),
                 Err(error) if is_absence(&error) => {
                     let _ = sender.send(Bytes::from_static(PENDING_FRAME));
                     Err(())
@@ -260,6 +260,8 @@ fn upgrading_response(
                 }
             }
         };
+        // The forwarder owns the subscriber, so the page closing this
+        // stream ends the forwarding and drops it.
         let Ok(mut frames) = subscribed else {
             return;
         };
@@ -269,7 +271,7 @@ fn upgrading_response(
             }
         }
     });
-    sse_response(receiver)
+    sse_response(UnboundedReceiverStream::new(receiver))
 }
 
 /// Shared body for [`query`] and [`query_profile`]. Takes a
@@ -379,30 +381,22 @@ async fn query_on_branch(
             // subscriber onto the real branch and its first rows arrive
             // on this same stream. No polling, no reconnect.
             Err(error) if is_absence(&error) => {
-                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-                let _ = sender.send(Bytes::from_static(PENDING_FRAME));
-                if tonk
-                    .reactor
-                    .register_pending(
-                        branch.repository.name(),
-                        branch.name,
-                        dialog_reactor::PendingSubscription {
-                            query,
-                            client,
-                            level: params.level,
-                            sender,
-                        },
-                    )
-                    .is_err()
-                {
-                    return Ok(retry_later(None));
-                }
-                return Ok(sse_response(receiver));
+                return match tonk.reactor.register_pending(
+                    branch.repository.name(),
+                    branch.name,
+                    query,
+                    client,
+                    params.level,
+                    Bytes::from_static(PENDING_FRAME),
+                ) {
+                    Ok(subscriber) => Ok(sse_response(subscriber.into_stream())),
+                    Err(_) => Ok(retry_later(None)),
+                };
             }
             Err(error) => return Err(reactor_to_error(error)),
         };
 
-        Ok(sse_response(subscriber.receiver))
+        Ok(sse_response(subscriber.into_stream()))
     } else {
         let _ = migrate_while_opening(tonk, branch).await;
         // An absent repo/branch answers with the EMPTY SET, not a 404 —
@@ -454,13 +448,15 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     }
 }
 
-/// Frame an subscriber's receiver as an SSE response.
+/// Frame a stream of frames as an SSE response.
 ///
 /// Shared by the ordinary subscribe path and the waiting-room path so a
 /// pending subscription is indistinguishable on the wire from a live
-/// one — same content type, same framing, same open stream.
-fn sse_response(receiver: tokio::sync::mpsc::UnboundedReceiver<Bytes>) -> Response {
-    let body_stream = UnboundedReceiverStream::new(receiver).map(|bytes: Bytes| {
+/// one — same content type, same framing, same open stream. The stream
+/// owns the subscriber it reads, so the response body's end, when the
+/// page closes it, drops the subscriber and its dialog reader.
+fn sse_response(frames: impl futures_util::Stream<Item = Bytes> + Send + 'static) -> Response {
+    let body_stream = frames.map(|bytes: Bytes| {
         let mut framed = Vec::with_capacity(bytes.len() + 8);
         framed.extend_from_slice(b"data: ");
         framed.extend_from_slice(&bytes);

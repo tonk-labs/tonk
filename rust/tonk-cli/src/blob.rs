@@ -273,13 +273,16 @@ pub async fn add(
     // seeded media view matches only rows with every field present, so
     // a nameless blob would never render. A path with no file name
     // (`.`/`..`) falls back to the content-addressed entity string.
-    let tx = session
+    let name = name.unwrap_or_else(|| entity.to_string());
+    session
         .handle()
-        .transaction()
-        .assert(MediaType::of(entity.clone()).is(content_type.clone()))
-        .assert(Name::of(entity.clone()).is(name.unwrap_or_else(|| entity.to_string())));
-    tx.commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction
+                    .assert(MediaType::of(entity.clone()).is(content_type.clone()))
+                    .assert(Name::of(entity.clone()).is(name.clone())),
+            ))
+        })
         .perform(&site.operator)
         .await
         .map_err(|e| BlobError::Site(format!("assert metadata: {e}")))?;

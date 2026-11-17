@@ -311,7 +311,7 @@ impl SeedUpgrades {
 /// worker to try again. On wasm the task is not tied to the fetch
 /// lifetime, so an idling worker may cut it short — the same next-boot
 /// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
+/// same as `run_commands_detached`) runs it inline instead.
 pub(crate) async fn schedule_seed_upgrade(
     tonk: &TonkState,
     state: crate::router::AppState,
@@ -844,9 +844,10 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
+        let stack = stale.stack().perform(&tonk.operator).await.unwrap();
         cached.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(stale, stack)),
         );
         assert!(
             !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
@@ -1000,9 +1001,10 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
+        let stack = unrelated.stack().perform(&tonk.operator).await.unwrap();
         repo.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated, stack)),
         );
         assert!(!entry.valid(&tonk, &key));
     }

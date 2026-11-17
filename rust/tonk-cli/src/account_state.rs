@@ -587,11 +587,13 @@ async fn mount(
     trace("mount: upstream settled, stamping replica");
     let replica = Replica::account(profile.did(), subject);
     branch
-        .transaction()
-        .assert(replica.clone())
-        .assert(replica.branch(tonk_account::MAIN_BRANCH))
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction
+                    .assert(replica.clone())
+                    .assert(replica.branch(tonk_account::MAIN_BRANCH)),
+            ))
+        })
         .perform(operator)
         .await
         .context("failed to stamp account replica kind")?;
@@ -624,9 +626,9 @@ async fn hydrate(
         }
         Ok(RemotePresence::Absent) => {
             branch
-                .transaction()
-                .commit()
-                .publish()
+                .transact(|transaction| {
+                    std::future::ready(Ok::<_, dialog_repository::CommitError>(transaction))
+                })
                 .perform(operator)
                 .await?;
             if let CreateGenesis::Loser(_) =
