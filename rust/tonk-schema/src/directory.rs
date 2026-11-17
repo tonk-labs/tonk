@@ -130,40 +130,45 @@ where
 {
     let anchor_entity = subject.this();
     let anchor = DirectoryAnchor(anchor_entity.clone());
-    let mut transaction = account
-        .transaction()
-        .assert(Space::new(subject, Replica::initialized_status()));
-    if let Some(name) = name {
-        transaction = transaction.assert(SpaceName::new(subject, name));
-    }
-    let mut remote_concepts: std::collections::HashMap<String, Remote> =
-        std::collections::HashMap::new();
-    for remote in &record.remotes {
-        let concept = Remote::at(
-            &anchor_entity,
-            remote.subject.clone(),
-            RemoteAddress::encode(&remote.address),
-            remote.name.as_str(),
-        );
-        transaction = transaction.assert(concept.clone());
-        if let Some(revocation) = &remote.revocation {
-            transaction = transaction.assert(RemoteExecution::new(&concept, revocation.as_str()));
-        }
-        remote_concepts.insert(remote.name.clone(), concept);
-    }
-    for branch in &record.branches {
-        let local = BranchConcept::new(&anchor, branch.name.as_str());
-        transaction = transaction.assert(local.clone());
-        if let Some((remote_name, upstream_branch)) = &branch.upstream
-            && let Some(remote_concept) = remote_concepts.get(remote_name)
-        {
-            let upstream = BranchConcept::new(remote_concept, upstream_branch.as_str());
-            transaction = transaction
-                .assert(upstream.clone())
-                .assert(TrackingBranch::new(&local, &upstream));
-        }
-    }
-    transaction.commit().publish().perform(env).await?;
+    account
+        .transact(|transaction| {
+            let mut transaction =
+                transaction.assert(Space::new(subject, Replica::initialized_status()));
+            if let Some(name) = name {
+                transaction = transaction.assert(SpaceName::new(subject, name));
+            }
+            let mut remote_concepts: std::collections::HashMap<String, Remote> =
+                std::collections::HashMap::new();
+            for remote in &record.remotes {
+                let concept = Remote::at(
+                    &anchor_entity,
+                    remote.subject.clone(),
+                    RemoteAddress::encode(&remote.address),
+                    remote.name.as_str(),
+                );
+                transaction = transaction.assert(concept.clone());
+                if let Some(revocation) = &remote.revocation {
+                    transaction =
+                        transaction.assert(RemoteExecution::new(&concept, revocation.as_str()));
+                }
+                remote_concepts.insert(remote.name.clone(), concept);
+            }
+            for branch in &record.branches {
+                let local = BranchConcept::new(&anchor, branch.name.as_str());
+                transaction = transaction.assert(local.clone());
+                if let Some((remote_name, upstream_branch)) = &branch.upstream
+                    && let Some(remote_concept) = remote_concepts.get(remote_name)
+                {
+                    let upstream = BranchConcept::new(remote_concept, upstream_branch.as_str());
+                    transaction = transaction
+                        .assert(upstream.clone())
+                        .assert(TrackingBranch::new(&local, &upstream));
+                }
+            }
+            std::future::ready(Ok::<_, CommitError>(transaction))
+        })
+        .perform(env)
+        .await?;
     Ok(())
 }
 

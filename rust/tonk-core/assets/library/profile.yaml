@@ -7256,7 +7256,7 @@ concept!: &intent/pick
 # intent, each as a one-field concept on the field's own attribute with the
 # field named after the attribute (`subject` for `…/subject`), scoped to the
 # command (`intent` where `command: <the command>`). `intent/suggest`
-# reads the intents and those values back as readings.
+# reads the intents and those values back as readings, below.
 command!: &intent/interpret
   this: tonk:intent-interpret
   description: Interpret what was typed in the command palette, where it was opened.
@@ -7310,6 +7310,118 @@ concept!: &intent
       description: The command it would run.
       the: tonk.dialog.intent/command
       as: entity
+
+# What the line could mean, asked as a command and answered as session
+# facts. The palette asserts `intent/suggest` on each branch it asks (the
+# space's and the profile's) through the transact path, once the branch has
+# recorded the line's `intent/interpret`: the providers of one commit's
+# commands run in no set order, so the two are not sent together. A stack
+# provider answers it after the commit: it reads the branch's palette vocabulary (`intent/action`, the
+# roles on attributes, the `intent`s and what rules derived onto them, the
+# memory) and writes one `intent/reading` per reading, best first, and one
+# `intent/answer` saying how many, into the branch's `session:` layer. The
+# rows name the ask (the command entity the page minted), so the tab that
+# asked reads its own answer and no other's; an answer replaces the
+# previous one for the same asker (its site, else its expression). Nothing
+# is stored, and it goes with the process.
+command!: &intent/suggest
+  this: tonk:intent-suggest
+  description: Ask what a line typed in the command palette could mean.
+  with:
+    input:
+      description: What was typed; empty asks what can be done without saying more.
+      the: tonk.dialog.intent.suggest/input
+      as: text
+    now:
+      description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
+      the: tonk.dialog.intent.suggest/now
+      as: float
+    max:
+      description: How many readings at most.
+      the: tonk.dialog.intent.suggest/max
+      as: natural
+  maybe:
+    subject:
+      description: The entity the page shows, what "this" means, and the default for an argument it can fill.
+      the: tonk.dialog.intent.suggest/subject
+      as: entity
+    site:
+      description: The tab's site, whose selection is tried in every reading.
+      the: tonk.dialog.intent.suggest/site
+      as: entity
+    expression:
+      description: The palette opening `intent/interpret` recorded; its intents and what rules derived onto them fill the readings.
+      the: tonk.dialog.intent.suggest/expression
+      as: entity
+    memory:
+      description: What was run from the palette, kept on another branch, as JSON with `choices` and `picks`, each a list of rows.
+      the: tonk.dialog.intent.suggest/memory
+      as: text
+
+concept!: &intent/answer
+  description: How an `intent/suggest` was answered. Session facts, one per asker, replaced by the next ask.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.answer/ask
+      as: entity
+    readings:
+      description: How many readings the answer has; none is an answer too.
+      the: tonk.dialog.intent.answer/readings
+      as: natural
+
+concept!: &intent/reading
+  description: One reading of what was typed, as `intent/suggest` answered it. Session facts, best first by rank.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.reading/ask
+      as: entity
+    rank:
+      description: Its place among the answer's readings, from 0.
+      the: tonk.dialog.intent.reading/rank
+      as: natural
+    score:
+      description: How well it reads, higher is better.
+      the: tonk.dialog.intent.reading/score
+      as: float
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent.reading/command
+      as: entity
+    text:
+      description: The reading as plain text.
+      the: tonk.dialog.intent.reading/text
+      as: text
+    display:
+      description: Its segments, as JSON.
+      the: tonk.dialog.intent.reading/display
+      as: text
+    nouns:
+      description: Role to kind of thing, as JSON.
+      the: tonk.dialog.intent.reading/nouns
+      as: text
+    listed:
+      description: Whether it is one of the values listed for an argument nothing was typed for.
+      the: tonk.dialog.intent.reading/listed
+      as: boolean
+    entities:
+      description: The entities its arguments are filled with, as JSON.
+      the: tonk.dialog.intent.reading/entities
+      as: text
+  maybe:
+    input:
+      description: The words the reading took for its verb, when it took any.
+      the: tonk.dialog.intent.reading/input
+      as: text
+    completion:
+      description: The input extended by this reading, when it extends it.
+      the: tonk.dialog.intent.reading/completion
+      as: text
+    claim:
+      description: The transact request that runs it, as JSON, once nothing is missing.
+      the: tonk.dialog.intent.reading/claim
+      as: text
 
 # The directory row IS the repository's own entity (its subject DID), which
 # is what the space commands take: a space's label is what names it there.
@@ -7544,15 +7656,17 @@ rule!:
 # to another reading and the selection follows. Escape clears the line, then
 # leaves; so does leaving the line.
 #
-# It only queries and transacts. What the line could mean is the named query
-# `intent/suggest` — `{input, this, now}` in, one row per reading out —
-# asked of the space branch and of the profile, whose readings are merged by
-# score. On a page with no space (the hub, settings, join) the bar is
-# `latent`, hidden until the chord, and only the profile is asked. Running
-# one transacts its `claim` on the branch it came from, as a button bound to
-# that command would, and records a `intent/choice` on the profile. What
-# can be said is what commands declare (`action:`, `role:`) and what rules
-# derive for their fields; the query reads it.
+# It only queries and transacts. What the line could mean is the command
+# `intent/suggest` — `{input, subject, now, max, …}` asserted through the
+# transact path, one `intent/reading` row per reading answered into the
+# branch's `session:` layer by a provider on its stack — asked of the space
+# branch and of the profile, whose readings are merged by score. On a page
+# with no space (the hub, settings, join) the bar is `latent`, hidden until
+# the chord, and only the profile is asked. Running one transacts its
+# `claim` on the branch it came from, as a button bound to that command
+# would, and records a `intent/choice` on the profile. What can be said is
+# what commands declare (`action:`, `role:`) and what rules derive for
+# their fields; the provider reads it.
 #
 # Keys pressed inside the space's own frame are relayed to this document by
 # the portal bridge, so the shortcut works wherever focus is.
@@ -7788,6 +7902,14 @@ element!: &command-palette
         const expression = site ? self.__expression : null;
         const started = performance.now();
         const timing = {};
+        // The line's interpretation, a command of its own: the handler (the
+        // parser) records the expression and an intent per command the line
+        // could mean, and rules derive values for those commands' fields.
+        // Its own transact, before the ask: the providers of one commit's
+        // commands run in no order the page can count on, so an ask sent
+        // beside it could be answered before the line was recorded. The
+        // handler runs after the transact returns: wait until it has
+        // recorded this line.
         const interpreted = async (branch) => {
           const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
           await window.tonk.transact({ claims: [{ op: 'assert', application: {
@@ -7799,8 +7921,6 @@ element!: &command-palette
               } } },
             parameters: { expression, input: typed, site, time: now },
           } }] }, { with: branch });
-          // The handler runs after the transact returns: wait until it has
-          // recorded this line.
           const recorded = { predicate: { with: { input: {
             the: 'tonk.dialog.intent.expression/input', as: 'Text', cardinality: 'one' } } },
             terms: { this: expression, input: { '?': { name: 'input' } } } };
@@ -7813,7 +7933,7 @@ element!: &command-palette
           }
           return false;
         };
-        const subject = space ? { this: space } : {};
+        const subject = space ? { subject: space } : {};
         // What was run from the palette is kept on the profile; the space
         // ranks its own commands and their values by it too. Read once per
         // opening.
@@ -7844,12 +7964,57 @@ element!: &command-palette
         if (self.__asked !== asked) return;
         // Only to the space: the profile reads its own.
         const remembered = (branch) => (memory && branch !== profile ? { memory } : {});
-        const ofExpression = (branch) => ({ predicate: 'intent/suggest',
-          terms: { expression, ...subject, now, max, ...remembered(branch) } });
-        // No site to interpret against, or a branch that didn't interpret
-        // the line: ask with the line itself.
-        const ofLine = (branch) => ({ predicate: 'intent/suggest',
-          terms: { input: typed, ...subject, now, max, site, ...remembered(branch) } });
+        // What the line could mean is the command `intent/suggest`, asked
+        // of each branch through the transact path and answered by a
+        // provider on the branch's stack into its `session:` layer: an
+        // `intent/answer` saying how many readings, and one
+        // `intent/reading` per reading, every row naming the ask. Once the
+        // branch has recorded the line's interpretation, the ask names the
+        // expression; with no site to interpret against, or a branch that
+        // did not record it, the line itself.
+        const ofExpression = (branch) => ({ expression, ...subject, now, max, ...remembered(branch) });
+        const ofLine = (branch) => ({ input: typed, ...subject, now, max, site, ...remembered(branch) });
+        const askTypes = { input: 'Text', memory: 'Text', now: 'Float', max: 'UnsignedInteger',
+          subject: 'Entity', site: 'Entity', expression: 'Entity' };
+        const askClaim = (ask, fields) => {
+          const given = Object.entries(fields).filter(([, value]) => value !== undefined && value !== null);
+          return { op: 'assert', application: {
+            predicate: { kind: 'transient', concept: {
+              description: 'Ask what a line typed in the command palette could mean.',
+              with: Object.fromEntries(given.map(([name]) =>
+                [name, { the: `tonk.dialog.intent.suggest/${name}`, as: askTypes[name] }])),
+            } },
+            parameters: { this: ask, ...Object.fromEntries(given) },
+          } };
+        };
+        const rowsOf = (found) => (Array.isArray(found) ? found : (found && found.rows) || []);
+        // The answer arrives after the transact returns: wait for it.
+        const answered = async (branch, ask) => {
+          const query = { predicate: { with: {
+            ask: { the: 'tonk.dialog.intent.answer/ask', as: 'Entity', cardinality: 'one' },
+            readings: { the: 'tonk.dialog.intent.answer/readings', as: 'UnsignedInteger', cardinality: 'one' },
+          } }, terms: { this: { '?': { name: 'this' } }, ask, readings: { '?': { name: 'readings' } } } };
+          for (let tries = 0; tries < 300; tries++) {
+            if (self.__asked !== asked) return null;
+            const rows = rowsOf(await window.tonk.query(query, { with: branch }));
+            if (rows.length) return Number((rows[0].fields || {}).readings) || 0;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return null;
+        };
+        const readingsOf = (branch, ask) => {
+          const field = (name, as, optional) => ({
+            the: `tonk.dialog.intent.reading/${name}`, as, cardinality: 'one', ...(optional ? { optional: true } : {}) });
+          const names = [['rank', 'UnsignedInteger'], ['score', 'Float'], ['command', 'Entity'], ['text', 'Text'],
+            ['display', 'Text'], ['nouns', 'Text'], ['listed', 'Boolean'], ['entities', 'Text'],
+            ['input', 'Text', true], ['completion', 'Text', true], ['claim', 'Text', true]];
+          return window.tonk.query({
+            predicate: { with: { ask: field('ask', 'Entity'),
+              ...Object.fromEntries(names.map(([name, as, optional]) => [name, field(name, as, optional)])) } },
+            terms: { this: { '?': { name: 'this' } }, ask,
+              ...Object.fromEntries(names.map(([name]) => [name, { '?': { name } }])) },
+          }, { with: branch }).then(rowsOf);
+        };
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -7873,19 +8038,31 @@ element!: &command-palette
             return false;
           }) : false;
           if (self.__asked !== asked) return [];
+          const ask = `ask:${crypto.randomUUID()}`;
+          const claims = [askClaim(ask, done ? ofExpression(branch) : ofLine(branch))];
+          try {
+            await window.tonk.transact({ claims }, { with: branch });
+          } catch (error) {
+            console.warn('<command-palette> intent/suggest not asked on', branch, error);
+            return [];
+          }
+          const count = await answered(branch, ask).catch((error) => {
+            console.warn('<command-palette> intent/suggest not answered on', branch, error);
+            return null;
+          });
           timing[branch] = Math.round(performance.now() - started);
-          return window.tonk.query(done ? ofExpression(branch) : ofLine(branch), { with: branch })
-            .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
-              .map((row) => read(branch, row)))
+          if (self.__asked !== asked || !count) return [];
+          return readingsOf(branch, ask)
+            .then((rows) => rows.map((row) => read(branch, row)).sort((a, b) => a.rank - b.rank))
             .catch((error) => {
-              console.warn('<command-palette> intent/suggest failed on', branch, error);
+              console.warn('<command-palette> intent/suggest not read on', branch, error);
               return [];
             });
         }));
         if (self.__asked !== asked || !fab.hasAttribute('commanding')) return;
-        // How long a line took: per branch until it was interpreted, and in
+        // How long a line took: per branch until it was answered, and in
         // all until its readings arrived. For measuring, not for behaviour.
-        console.debug('[intent] interpreted', JSON.stringify(timing),
+        console.debug('[intent] answered', JSON.stringify(timing),
           'readings', Math.round(performance.now() - started), 'ms', JSON.stringify(typed));
         let readings = answers.flat();
         if (typed) {

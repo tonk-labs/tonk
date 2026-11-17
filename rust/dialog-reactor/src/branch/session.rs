@@ -12,15 +12,14 @@ use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 
 use crate::BranchState;
-use crate::env::SelectProvider;
-use crate::error::ReactorError;
-use crate::subscription::{QueryHash, Subscriber, SubscriptionReference};
+use crate::env::SettleProvider;
+use crate::subscription::Subscriber;
 
 /// Resolved branch handle paired with the cache entry that owns
-/// the subscriptions registered against it.
+/// the connections streaming its subscriptions.
 pub struct BranchSession {
-    /// Cache entry — owns the dialog branch and the subscription
-    /// table.
+    /// Cache entry — owns the dialog branch, its stack and the
+    /// connections.
     pub state: Arc<BranchState>,
 }
 
@@ -38,34 +37,21 @@ impl BranchSession {
         self.state.transactor()
     }
 
-    /// Re-poll every subscription on this branch.
+    /// Re-evaluate the branch's subscriptions: schedule its stack's poll
+    /// (for a write the stack did not see, a pull or an import through
+    /// the branch handle) and settle it, sending every connection what it
+    /// was delivered ([`BranchState::settle`]).
     ///
     /// `impl Future + 'a` (not `async fn`) so the env lifetime stays
-    /// named — see [`SubscriptionPoll::perform`](crate::SubscriptionPoll).
-    pub fn poll<'a, Env: SelectProvider>(&'a self, env: &'a Env) -> impl Future<Output = ()> + 'a {
-        self.state.poll(env)
+    /// named.
+    pub fn poll<'a, Env: SettleProvider>(&'a self, env: &'a Env) -> impl Future<Output = ()> + 'a {
+        self.state.stack().schedule_poll();
+        self.state.settle(env)
     }
 
-    /// Register a fresh subscriber for `query`, optionally tagged
-    /// with the client it serves (see
-    /// [`BranchState::retain_subscribers`]). Returns a
-    /// [`Subscriber`] carrying the subscription's hash and the
-    /// receiver to read broadcast bytes from.
-    pub fn subscribe(
-        &self,
-        query: ConceptQuery,
-        client: Option<String>,
-        level: u32,
-    ) -> Result<Subscriber, ReactorError> {
+    /// Subscribe a fresh connection to `query`, optionally tagged with
+    /// the client it serves (see [`BranchState::retain_subscribers`]).
+    pub fn subscribe(&self, query: ConceptQuery, client: Option<String>, level: u32) -> Subscriber {
         self.state.subscribe(query, client, level)
-    }
-
-    /// Reference a single subscription on this branch by its
-    /// hash. Chain `.poll().perform(&env)` to re-evaluate.
-    pub fn subscription(&self, hash: QueryHash) -> SubscriptionReference<'_> {
-        SubscriptionReference {
-            state: &self.state,
-            hash,
-        }
     }
 }
