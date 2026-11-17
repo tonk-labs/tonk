@@ -85,3 +85,22 @@ test("the hub menu's copy link copies the space's address at once, waiting on no
   assert.equal(refused.copied, false);
   assert.equal(attrs.get('data-copy'), 'failed');
 });
+
+test("a space's default passlink stays its oldest open link when this tab makes another", () => {
+  const made = new Map([['bafy-new', 'https://tonk.example/space/x#new']]);
+  const rows = Function(`return (${methodSource('space-links', 'rows')})`)();
+  const self = { made: () => made };
+  // The worker lists oldest first; the new link was made in this tab.
+  const invites = [
+    { kind: 'open', status: 'active', targetCid: 'bafy-old', invitation: 'i1' },
+    { kind: 'open', status: 'active', targetCid: 'bafy-new', invitation: 'i2' },
+  ];
+  const listed = rows(self, 'did:key:space', invites, [], []);
+  assert.deepEqual(listed.map((row) => [row.target, !!row.default]), [['bafy-old', true], ['bafy-new', false]]);
+});
+
+test('the default passlink offers reset, others remove, and reset carries the column hook', () => {
+  const source = methodSource('space-links', 'render');
+  assert.match(source, /data-link-ask="reset" data-ask="reset"/);
+  assert.match(source, /data-link-ask="remove"/);
+});

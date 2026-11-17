@@ -5519,15 +5519,15 @@ element!: &space-links
         self.render();
       }
     # Desktop's rules (`SpaceAccess.links`): an active open invite is a
-    # passlink, the first the default; a scoped one names its person; a
-    # live agent grant on this space is an agent link.
+    # passlink; a scoped one names its person; a live agent grant on this
+    # space is an agent link. The worker lists invites oldest first, so the
+    # first open one is the default, whatever this tab made since.
     rows: |
       (self, subject, invites, members, connections) => {
         const roster = (members ?? []).map((row) => row.fields ?? {});
         const usedBy = (invite) => !members || !invite.invitation ? null
           : [...new Set(roster.filter((m) => m.invitation === invite.invitation)
               .map((m) => (m.name ?? '').trim() || `member ${String(m.member).slice(-6)}`))];
-        const made = self.made();
         const rows = [];
         for (const invite of invites.filter((row) => row.status === 'active')) {
           if (invite.kind === 'scoped') {
@@ -5538,8 +5538,7 @@ element!: &space-links
             rows.push({ kind: 'open', target: invite.targetCid, used: usedBy(invite) });
           }
         }
-        const open = rows.filter((row) => row.kind === 'open');
-        const first = open.find((row) => made.has(row.target)) ?? open[0];
+        const first = rows.find((row) => row.kind === 'open');
         if (first) first.default = true;
         rows.sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0));
         for (const agent of connections) {
@@ -5565,7 +5564,7 @@ element!: &space-links
           const name = row.kind === 'agent' ? 'the agent link' : row.default ? 'the default passlink' : 'this passlink';
           const acts = (url ? `<button type="button" class="hub-btn hub-copy" data-link-copy="${esc(row.target)}"><span data-idle>copy<span class="hub-sr"> ${name}</span></span><span data-done aria-hidden="true">copied</span></button>` : '')
             + (row.default
-              ? `<button type="button" class="hub-btn" data-link-ask="reset" data-target="${esc(row.target)}">reset<span class="hub-sr"> ${name}</span></button>`
+              ? `<button type="button" class="hub-btn" data-link-ask="reset" data-ask="reset" data-target="${esc(row.target)}">reset<span class="hub-sr"> ${name}</span></button>`
               : `<button type="button" class="hub-btn" data-link-ask="remove" data-target="${esc(row.target)}" data-kind="${row.kind}">remove<span class="hub-sr"> ${name}</span></button>`);
           const asking = self._ask?.target === row.target ? self.askHtml(row) : '';
           return `<li class="hub-link"><div>
