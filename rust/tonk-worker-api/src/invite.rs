@@ -79,6 +79,10 @@ pub struct InvitationSummary {
     /// so a client can say who joined through this link.
     #[serde(default)]
     pub invitation: String,
+    /// When the invitation was minted, unix milliseconds. Absent for an
+    /// invitation minted before mint times were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minted_at: Option<u64>,
 }
 
 /// Canonical relay acknowledgement for an invitation revocation.
@@ -172,8 +176,10 @@ mod tests {
             recipient_root: Some(root()),
             status: "active".into(),
             invitation: "tonk:invitation".into(),
+            minted_at: Some(1_700_000_000_000),
         };
         let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(json["mintedAt"], 1_700_000_000_000_u64);
         assert_eq!(json["targetCid"], "bafycid");
         assert_eq!(json["invitation"], "tonk:invitation");
         assert_eq!(json["recipientRoot"], "did:key:z6Mktest");

@@ -813,6 +813,10 @@ view!:
         cursor:pointer; white-space:nowrap; }
       /* brightness on near-black reads as nothing — wash it instead */
       .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+      /* The hub waits for its stylesheets (`hub-discover` styled); should
+         that never say so, it shows anyway after 2s. */
+      .hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }
+      @keyframes hub-styled { to { visibility:visible; } }
       /* Inside the hub, its dialogs wear the hub's look: sentence type,
          its fields and its buttons (a quiet text button, a rounded main). */
       .tonk-hub tonk-dialog[appearance="hub"] :is(.space-create-form, .remove-form) {
@@ -851,6 +855,21 @@ view!:
       .tonk-hub tonk-dialog[appearance="hub"] .m-go { background:var(--tonk-main); color:var(--tonk-main-text); }
       .tonk-hub tonk-dialog[appearance="hub"] .m-go:is(:hover, :focus-visible) { outline:none; background:var(--tonk-main-hover); }
       .tonk-hub tonk-dialog[appearance="hub"] :is(.m-cancel, .m-go):active { scale:.96; }
+      /* The links sit on the name column, as the row's details do; the
+         open row has no address or note above them, so the first link
+         takes no rule under the row line. */
+      space-links { display:block; }
+      /* While a question about a link is open, `new space` steps back to a
+         plain button, so the question's answer is the one solid button. */
+      [data-spaces-sheet]:has(space-links .hub-ask) .hub-line .hub-btn--main[data-new-space] {
+        background:transparent; color:var(--tonk-text); }
+      space-links .hub-links { margin:0; padding:0; }
+      space-links .hub-link:first-child { border-top:0; padding-top:0; }
+      /* Until the list has answered, the line says `spaces loading` and
+         offers no `new space`; a list that didn't load shows no count. */
+      [data-spaces-sheet]:not([data-list="ready"]) .hub-line [data-new-space] { display:none; }
+      [data-spaces-sheet]:not([data-list]) [data-space-count]::before { content:"loading"; }
+      [data-spaces-sheet][data-list="failed"] [data-space-count] { display:none; }
       /* an empty list is one quiet line in the sheet */
       .hub-empty:not(.hub-failed) p { color:var(--tonk-text-soft); }
 
@@ -2510,8 +2529,11 @@ element!: &hub-collection
     # since an agent's own space leaves the list (`hub-discover`).
     count: |
       (self) => {
-        const slot = self.closest('[data-spaces-sheet]')?.querySelector('[data-space-count]');
-        if (!slot) return;
+        const sheet = self.closest('[data-spaces-sheet]');
+        const slot = sheet?.querySelector('[data-space-count]');
+        // Only a list that answered has a count; loading says so, and a
+        // list that didn't load says no number (`hub-discover` list).
+        if (!slot || sheet.dataset.list !== 'ready') return;
         const rows = [...self.querySelectorAll('.hub-row[data-space-subject]')]
           .filter(row => getComputedStyle(row).display !== 'none');
         const count = String(rows.length);
@@ -2774,27 +2796,81 @@ element!: &hub-discover
         const live = sheet.querySelector('[data-hub-live]');
         if (live) live.textContent = slot.textContent;
       }
-    # Undo the receipt's change. A failed undo says so in the line, and
-    # `try again` takes undo's place.
+    # A sentence in the line in place of its name, with no `by you` and
+    # no button: what happened that isn't a change, such as a copy that
+    # couldn't be made.
+    note: |
+      (self, text) => {
+        const sheet = self.querySelector('[data-spaces-sheet]');
+        const slot = sheet?.querySelector('[data-hub-receipt]');
+        if (!slot) return;
+        slot.textContent = text;
+        slot.hidden = false;
+        sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');
+        const button = sheet.querySelector('[data-hub-undo]');
+        self._undo = null;
+        if (button) button.hidden = true;
+        const live = sheet.querySelector('[data-hub-live]');
+        if (live) live.textContent = text;
+      }
+    # A change that didn't land, in the line: what happened and what stayed,
+    # and `try again`, which runs `retry` and says `wait` while it does.
+    # Focus goes to `try again`.
+    fail: |
+      (self, text, retry, wait) => {
+        self.note(text);
+        const button = self.querySelector('[data-spaces-sheet] [data-hub-undo]');
+        if (!button) return;
+        self._undo = { run: retry, again: true, wait };
+        button.hidden = false;
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('aria-disabled');
+        button.textContent = 'try again';
+        button.dataset.wait = wait || 'trying';
+        button.focus();
+      }
+    # What goes over the network says so on its own button: it takes no
+    # second press from the start and says `word` only past 400ms, so a
+    # quick answer never flickers. Focus stays on it. Returns the undo.
+    waiting: |
+      (self, button, word) => {
+        if (!button) return () => {};
+        const label = button.innerHTML;
+        button.setAttribute('aria-disabled', 'true');
+        const say = setTimeout(() => {
+          button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+          button.textContent = word;
+          button.setAttribute('aria-busy', 'true');
+        }, 400);
+        return () => {
+          clearTimeout(say);
+          if (button.getAttribute('aria-busy') === 'true') button.innerHTML = label;
+          button.removeAttribute('aria-busy');
+          button.removeAttribute('aria-disabled');
+          button.style.minWidth = '';
+        };
+      }
+    # Undo the receipt's change, or try a failed change again. A failed
+    # undo says so in the line, and `try again` takes undo's place.
     undo: |
       async (self) => {
         const pending = self._undo;
         const sheet = self.querySelector('[data-spaces-sheet]');
         const button = sheet?.querySelector('[data-hub-undo]');
-        if (!pending || !button) return;
-        button.disabled = true;
-        button.textContent = 'undoing';
+        if (!pending || !button || button.getAttribute('aria-disabled') === 'true') return;
+        const done = self.waiting(button, pending.again ? (pending.wait || 'trying') : 'undoing');
         try {
           await pending.run();
+          done();
+          if (pending.again) return;
           self.receipt(['undid:', ...pending.words]);
           sheet.querySelector('[data-hub-receipt]')?.focus();
         } catch (_) {
-          const slot = sheet.querySelector('[data-hub-receipt]');
-          if (slot) slot.textContent = 'Couldn’t undo that, so the change stays.';
-          const live = sheet.querySelector('[data-hub-live]');
-          if (live) live.textContent = slot?.textContent ?? '';
-          button.disabled = false;
-          button.textContent = 'try again';
+          done();
+          if (pending.again) return;
+          self.fail('Couldn’t undo that, so the change stays.', pending.run, 'undoing');
+          self._undo = pending;
         }
       }
     # Follow one hub command to its outcome and give its receipt on
@@ -2834,8 +2910,28 @@ element!: &hub-discover
         observer.observe(display, { attributes: true, attributeFilter: ['data-state'], childList: true });
         self._listObserver = observer;
       }
+    # Show the page once its stylesheets have loaded.
+    styled: |
+      (self) => {
+        const page = self.closest('.hub-page[data-styling]');
+        if (!page) return;
+        const links = [...page.querySelectorAll(':scope > link[rel="stylesheet"]')];
+        const reveal = () => {
+          if (links.some((link) => !link.sheet && !link.__failed)) return;
+          page.style.visibility = '';
+          page.removeAttribute('data-styling');
+        };
+        for (const link of links) {
+          if (link.sheet || link.__watched) continue;
+          link.__watched = true;
+          link.addEventListener('load', reveal);
+          link.addEventListener('error', () => { link.__failed = true; reveal(); });
+        }
+        reveal();
+      }
     connected: |
       (self) => {
+        self.styled();
         self.agents();
         self.watchList();
         self.list();
@@ -2868,6 +2964,10 @@ element!: &space-create
           if (error) error.textContent = '';
           form.elements.name.removeAttribute('aria-invalid');
           form.hidden = false;
+          // It comes in, as a question does.
+          form.classList.remove('hub-enter');
+          void form.offsetWidth;
+          form.classList.add('hub-enter');
           const touch = window.matchMedia?.('(pointer: coarse)')?.matches;
           requestAnimationFrame(() => (touch ? form.querySelector('[data-space-create-cancel]') : form.elements.name)?.focus());
           return;
@@ -2891,7 +2991,11 @@ element!: &space-create
         const form = self.querySelector('form[data-space-create-form]');
         if (!form || self.hasAttribute('busy')) return;
         form.hidden = true;
-        self.querySelector('[data-new-space]')?.focus();
+        // `new space` shows again once the row is hidden; focus it then,
+        // never leaving focus on the page.
+        const opener = self.querySelector('[data-new-space]');
+        opener?.focus();
+        if (opener && document.activeElement !== opener) requestAnimationFrame(() => opener.focus());
       }
     validate: |
       (self, event) => {
@@ -2926,9 +3030,14 @@ element!: &space-create
         }
         if (error) error.textContent = '';
         self.setAttribute('busy', '');
-        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
-          control.disabled = true;
-          if (inline) control.textContent = 'making';
+        if (inline) {
+          // `make space` keeps focus and takes no second press; it says
+          // `making` only past 400ms.
+          const hub = self.closest('hub-discover');
+          self.__waits = [...self.querySelectorAll('[data-space-create-submit]')]
+            .map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));
+        } else {
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = true;
         }
         self.create(form);
       }
@@ -2986,7 +3095,10 @@ element!: &space-create
             if (done) throw new Error('Creation status stream ended');
             const result = value.find(row => row.this === id)?.fields;
             if (result?.status === 'failed') {
-              if (error) error.textContent = result.detail;
+              // In the hub's words; what was typed stays.
+              if (error) error.textContent = self.hasAttribute('data-inline')
+                ? `Couldn’t make ${parameters.name}. Check your connection and try again.`
+                : result.detail;
               return;
             }
             if (result?.status === 'created') {
@@ -3004,15 +3116,16 @@ element!: &space-create
             }
           }
         } catch (failure) {
-          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+          if (error) error.textContent = self.hasAttribute('data-inline')
+            ? `Couldn’t make ${parameters.name}. Check your connection and try again.`
+            : "Couldn't confirm creation. Check your spaces before trying again.";
         } finally {
           if (reader) await reader.cancel().catch(() => {});
           if (self.__reader === reader) self.__reader = null;
           self.removeAttribute('busy');
-          for (const control of self.querySelectorAll('[data-space-create-submit]')) {
-            control.disabled = false;
-            if (self.hasAttribute('data-inline')) control.textContent = 'make space';
-          }
+          for (const done of self.__waits ?? []) done();
+          self.__waits = null;
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
         }
       }
     # After an inline create: wait for the new row, open it, and make its
@@ -3051,6 +3164,13 @@ element!: &space-create
           } else if (event.target?.closest?.('[data-space-create-cancel]')) {
             self.fold();
           }
+        });
+        // An error clears as the name is typed.
+        self.addEventListener('input', event => {
+          if (!event.target?.matches?.('input[name="name"]')) return;
+          const error = self.querySelector('[data-space-create-error]');
+          if (error?.textContent) error.textContent = '';
+          event.target.removeAttribute('aria-invalid');
         });
         // Escape closes the new space row, as `not now` does.
         self.addEventListener('keydown', event => {
@@ -3172,7 +3292,10 @@ view!:
   this: tonk:hub
   show:
     ui: |
-      <div class="hub-page tonk-hub">
+      <!-- Hidden until its stylesheets have loaded (`hub-discover`
+           reveals it), so a slow load never flashes the page unstyled.
+           `ui` reveals it anyway after 2s, should that never come. -->
+      <div class="hub-page tonk-hub" style="visibility:hidden" data-styling>
         <!-- The bar, latent: no space here, so it shows only for the
              command line (Cmd/Ctrl+K) and what a command opens. -->
         <tonk-fab with="{profile-branch}@profile:tonk" latent>
@@ -5575,15 +5698,15 @@ element!: &space-links
         self.render();
       }
     # Desktop's rules (`SpaceAccess.links`): an active open invite is a
-    # passlink, the first the default; a scoped one names its person; a
-    # live agent grant on this space is an agent link.
+    # passlink; a scoped one names its person; a live agent grant on this
+    # space is an agent link. The worker lists invites oldest first, so the
+    # first open one is the default, whatever this tab made since.
     rows: |
       (self, subject, invites, members, connections) => {
         const roster = (members ?? []).map((row) => row.fields ?? {});
         const usedBy = (invite) => !members || !invite.invitation ? null
           : [...new Set(roster.filter((m) => m.invitation === invite.invitation)
               .map((m) => (m.name ?? '').trim() || `member ${String(m.member).slice(-6)}`))];
-        const made = self.made();
         const rows = [];
         for (const invite of invites.filter((row) => row.status === 'active')) {
           if (invite.kind === 'scoped') {
@@ -5594,8 +5717,7 @@ element!: &space-links
             rows.push({ kind: 'open', target: invite.targetCid, used: usedBy(invite) });
           }
         }
-        const open = rows.filter((row) => row.kind === 'open');
-        const first = open.find((row) => made.has(row.target)) ?? open[0];
+        const first = rows.find((row) => row.kind === 'open');
         if (first) first.default = true;
         rows.sort((a, b) => (b.default ? 1 : 0) - (a.default ? 1 : 0));
         for (const agent of connections) {
@@ -5604,6 +5726,28 @@ element!: &space-links
             until: agent.expiresAt, used: (agent.installations ?? []).map((i) => i.name) });
         }
         return rows;
+      }
+    # What the line is told: a receipt, a note or a failure with `try again`.
+    hub: |
+      (self) => self.closest('hub-discover')
+    # What a row's link is called, for its buttons and its failures.
+    link-name: |
+      (self, row) => row.kind === 'agent' ? 'agent link'
+        : row.kind === 'scoped' ? `passlink for ${row.who}`
+        : row.default ? 'default passlink' : 'passlink'
+    # A passlink is a key: the row shows its address and the start of the
+    # key only. Shown whole (after a copy that failed), it is cut to fit and
+    # selects as one, and copying it by hand takes the whole link.
+    shown: |
+      (self, url) => {
+        const [address, key = ''] = url.replace(/^https?:\/\//, '').split('#');
+        const host = address.split('/')[0];
+        return `${host}/…#${key.slice(0, 3)}•••`;
+      }
+    whole: |
+      (self, url) => {
+        const cut = url.length - 12;
+        return `<p class="hub-link-url" data-whole="${self.esc(url)}"><span>${self.esc(url.slice(0, cut))}</span><span>${self.esc(url.slice(cut))}</span></p>`;
       }
     render: |
       (self) => {
@@ -5618,15 +5762,17 @@ element!: &space-links
             : row.kind === 'scoped' ? `only ${esc(row.who)} can join with it` : 'anyone with it can join';
           const until = row.until ? `until ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(row.until * 1000))}` : '';
           const used = row.used == null ? '' : row.used.length ? `${row.kind === 'agent' ? 'connected' : 'used by'} ${esc(self.names(row.used))}` : 'not used yet';
-          const name = row.kind === 'agent' ? 'the agent link' : row.default ? 'the default passlink' : 'this passlink';
+          const name = `the ${esc(self.linkName(row))}`;
           const acts = (url ? `<button type="button" class="hub-btn hub-copy" data-link-copy="${esc(row.target)}"><span data-idle>copy<span class="hub-sr"> ${name}</span></span><span data-done aria-hidden="true">copied</span></button>` : '')
             + (row.default
-              ? `<button type="button" class="hub-btn" data-link-ask="reset" data-target="${esc(row.target)}">reset<span class="hub-sr"> ${name}</span></button>`
+              ? `<button type="button" class="hub-btn" data-link-ask="reset" data-ask="reset" data-target="${esc(row.target)}">reset<span class="hub-sr"> ${name}</span></button>`
               : `<button type="button" class="hub-btn" data-link-ask="remove" data-target="${esc(row.target)}" data-kind="${row.kind}">remove<span class="hub-sr"> ${name}</span></button>`);
           const asking = self._ask?.target === row.target ? self.askHtml(row) : '';
+          const address = !url ? '' : self._whole === row.target ? self.whole(url)
+            : `<p class="hub-link-url">${esc(self.shown(url))}</p>`;
           return `<li class="hub-link"><div>
               <p class="hub-link-what">${what}</p>
-              ${url ? `<p class="hub-link-url">${esc(url.replace(/^https?:\/\//, '').slice(0, 24))}•••</p>` : ''}
+              ${address}
               <p class="hub-link-meta">${[gives, until, used].filter(Boolean).join(' · ')}</p></div>
             <div class="hub-link-acts">${acts}</div>${asking}</li>`;
         }).join('');
@@ -5640,20 +5786,27 @@ element!: &space-links
           + (note ? `<p class="hub-note">${note}</p>` : '')
           + `<p class="hub-err" data-links-err role="alert">${esc(self._error ?? '')}</p>`
           + `<button type="button" class="hub-btn hub-new-link" data-link-new data-wait="making">new link</button>`;
+        // A question that just opened comes in; one already open stays put.
+        const ask = self.querySelector('.hub-ask');
+        if (ask && self._entering) ask.classList.add('hub-enter');
+        self._entering = false;
         self._focus && self.querySelector(self._focus)?.focus();
         self._focus = null;
       }
+    # The question in place. A change that didn't land takes the question's
+    # sentence, and its answer becomes `try again`.
     ask-html: |
       (self, row) => {
         const name = self.esc(self.dataset.name || 'this space');
-        const [sentence, safe, yes, main] = self._ask.what === 'reset'
+        let [sentence, safe, yes, main] = self._ask.what === 'reset'
           ? [`Reset the default passlink of ${name}? Anyone holding the old one can’t join with it any more. People already in the space stay in.`, 'keep the link', 'reset passlink', true]
           : row.kind === 'agent'
             ? [`Remove the agent link? ${self.esc(row.who)} loses its access to ${name} at once.`, 'keep the link', 'remove link', false]
             : [`Remove this passlink? Anyone holding it can’t join ${name} with it any more. People already in the space stay in.`, 'keep the link', 'remove link', false];
+        if (self._ask.failed) { sentence = self.esc(self._ask.failed); yes = 'try again'; }
         return `<div class="hub-ask" role="group" aria-label="${sentence}"><p>${sentence}</p><div class="hub-ask-acts">`
           + `<button type="button" class="hub-btn" data-link-keep>${safe}</button>`
-          + `<button type="button" class="hub-btn ${main ? 'hub-btn--main' : 'hub-btn--ring'}" data-link-do data-wait="${self._ask.what === 'reset' ? 'resetting' : 'removing'}">${self._busy ? (self._ask.what === 'reset' ? 'resetting' : 'removing') : yes}</button></div></div>`;
+          + `<button type="button" class="hub-btn ${main ? 'hub-btn--main' : 'hub-btn--ring'}" data-link-do data-wait="${self._ask.what === 'reset' ? 'resetting' : 'removing'}">${yes}</button></div></div>`;
       }
     # Mint an open link and put it on the clipboard. The clipboard write
     # opens on the press, while it still counts as one, and settles when
@@ -5664,6 +5817,7 @@ element!: &space-links
         const base = `/api/repository/${encodeURIComponent(subject)}`;
         let settle;
         const pending = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+        pending.catch(() => {});
         let copied = false;
         try {
           const item = new ClipboardItem({ 'text/plain': pending.then((url) => new Blob([url], { type: 'text/plain' })) });
@@ -5682,25 +5836,31 @@ element!: &space-links
           throw error;
         }
       }
+    # One change at a time: a press while one runs is not a second change.
     act: |
-      async (self, kind, run) => {
+      async (self, button, word, run) => {
         if (self._busy) return;
         self._busy = true;
-        self._error = '';
+        const done = self.hub()?.waiting?.(button, word) ?? (() => {});
         try { await run(); }
-        catch (error) { self._error = error?.message ?? String(error); }
-        finally { self._busy = false; }
+        finally { done(); self._busy = false; }
       }
+    # `new link`: says `making` past 400ms; a link that couldn't be made
+    # says so under the links. Focus goes to the new link's `copy`.
     make: |
-      (self) => self.act('make', async () => {
-        try {
-          const made = await self.mint();
-          self._error = made.copied ? '' : 'The link was made, but couldn’t be copied. Copy it from its row.';
-          self.closest('hub-discover')?.receipt?.(['made a passlink for', self.dataset.name || 'this space']);
-        } catch (error) {
-          self._error = `Couldn’t make a link: ${error?.message ?? error}`;
+      (self, button) => self.act(button, 'making', async () => {
+        self._error = '';
+        let made;
+        try { made = await self.mint(); }
+        catch (_) {
+          self._error = 'Couldn’t make the link. Check your connection and try again.';
+          self._focus = '[data-link-new]';
+          self.render();
+          return;
         }
-        self._focus = '[data-link-new]';
+        self._error = made.copied ? '' : 'The link was made, but couldn’t be copied. Copy it from its row.';
+        self.hub()?.receipt?.(['made a passlink for', self.dataset.name || 'this space']);
+        self._focus = made.target ? `[data-link-copy="${made.target}"]` : '[data-link-new]';
         await self.load();
       })
     # A new space's default link, made right after the space. The remote
@@ -5729,61 +5889,84 @@ element!: &space-links
           self.querySelector('[data-link-new]')?.focus();
         }
       }
+    # Reset the default: make its replacement, then revoke it. A reset that
+    # made the new link but couldn't revoke the old one tries the revoke
+    # again, not a second link.
     reset: |
-      (self, target) => self.act('reset', async () => {
+      (self, button, target) => self.act(button, 'resetting', async () => {
         const subject = self.dataset.space;
-        let made;
-        try { made = await self.mint(); }
-        catch (error) {
-          self._error = `Couldn’t reset the passlink, so the old one still works: ${error?.message ?? error}`;
+        self._replaced ??= new Set();
+        try {
+          if (!self._replaced.has(target)) {
+            const made = await self.mint();
+            self._replaced.add(target);
+            self._copiedReset = made.copied;
+          }
+          await self.api(`/api/repository/${encodeURIComponent(subject)}/invites/${encodeURIComponent(target)}/revoke`, {});
+        } catch (_) {
+          self._ask = { ...self._ask, failed: 'Couldn’t reset the passlink, so the old one still works.' };
+          self._focus = '[data-link-do]';
           self.render();
           return;
         }
-        try {
-          await self.api(`/api/repository/${encodeURIComponent(subject)}/invites/${encodeURIComponent(target)}/revoke`, {});
-          self.made().delete(target);
-          self._ask = null;
-          self._error = made.copied ? '' : 'The new link couldn’t be copied. Copy it from its row.';
-          self.closest('hub-discover')?.receipt?.(['reset the default passlink of', self.dataset.name || 'this space']);
-        } catch (error) {
-          self._ask = null;
-          self._error = `A new passlink was made, but the old one still works: ${error?.message ?? error}`;
-        }
+        self._replaced.delete(target);
+        self.made().delete(target);
+        self._ask = null;
+        self._error = self._copiedReset ? '' : 'The new link couldn’t be copied. Copy it from its row.';
+        self.hub()?.receipt?.(['reset the default passlink of', self.dataset.name || 'this space']);
         self._focus = '[data-link-ask="reset"]';
         await self.load();
       })
+    # Remove a link. One that didn't go says so in Tonk's line, with
+    # `try again`; it still works.
     unlink: |
-      (self, target, kind) => self.act('remove', async () => {
+      (self, button, target, kind) => self.act(button, 'removing', async () => {
         const subject = self.dataset.space;
+        const row = (self._rows ?? []).find((each) => each.target === target) ?? { kind };
         try {
           if (kind === 'agent') {
             const result = await self.api(`/api/account/connections/${encodeURIComponent(target)}/revoke`, {});
-            if (result?.status !== 'revoked') throw new Error('the removal is not confirmed yet');
+            if (result?.status !== 'revoked') throw new Error('not confirmed');
           } else {
             await self.api(`/api/repository/${encodeURIComponent(subject)}/invites/${encodeURIComponent(target)}/revoke`, {});
           }
-          self.made().delete(target);
+        } catch (_) {
           self._ask = null;
-          self.closest('hub-discover')?.receipt?.([kind === 'agent' ? 'removed an agent link from' : 'removed a passlink from', self.dataset.name || 'this space']);
-          self._focus = '[data-link-new]';
-        } catch (error) {
-          self._error = `Couldn’t remove the link, so it still works: ${error?.message ?? error}`;
-          self._focus = '[data-link-do]';
+          self.render();
+          self.hub()?.fail?.(`Couldn’t remove the ${self.linkName(row)}, so it still works.`,
+            () => self.unlink(null, target, kind), 'removing');
+          return;
         }
+        self.made().delete(target);
+        self._ask = null;
+        self.hub()?.receipt?.([kind === 'agent' ? 'removed an agent link from' : 'removed a passlink from', self.dataset.name || 'this space']);
+        self._focus = '[data-link-new]';
         await self.load();
       })
+    # Copy says `copied` for 1.5s and tells a screen reader. A copy that
+    # couldn't be made shows the link whole, cut to fit and selected as one,
+    # and says so in the line.
     copy: |
       async (self, button) => {
-        const url = self.made().get(button.dataset.linkCopy);
+        const target = button.dataset.linkCopy;
+        const url = self.made().get(target);
         if (!url) return;
+        const row = (self._rows ?? []).find((each) => each.target === target) ?? {};
+        const what = `the ${self.linkName(row)} for ${self.dataset.name || 'this space'}`;
         try {
           await navigator.clipboard.writeText(url);
-          button.setAttribute('data-copied', '');
-          setTimeout(() => button.removeAttribute('data-copied'), 1500);
         } catch (_) {
-          self._error = `Couldn’t copy the link. It is ${url}`;
+          self._whole = target;
+          self._focus = `[data-link-copy="${target}"]`;
           self.render();
+          self.hub()?.note?.(`Couldn’t copy ${what}. Select it below and copy it by hand.`);
+          return;
         }
+        button.setAttribute('data-copied', '');
+        const live = self.closest('[data-spaces-sheet]')?.querySelector('[data-hub-live]');
+        if (live) live.textContent = `copied ${what}`;
+        clearTimeout(button._copied);
+        button._copied = setTimeout(() => button.removeAttribute('data-copied'), 1500);
       }
     # The row opened (`hub-collection` says so): read the links once; a
     # closed row keeps what it read.
@@ -5800,15 +5983,25 @@ element!: &space-links
         if (self.closest('.hub-row')?.hasAttribute('data-open')) self.opened();
         if (self.__wired) return;
         self.__wired = true;
+        // Copying a link shown whole by hand takes the whole link.
+        self.addEventListener('copy', (event) => {
+          const from = getSelection()?.anchorNode;
+          const el = (from?.nodeType === 1 ? from : from?.parentElement)?.closest?.('[data-whole]');
+          if (!el || !self.contains(el)) return;
+          event.clipboardData.setData('text/plain', el.dataset.whole);
+          event.preventDefault();
+        });
         self.addEventListener('click', (event) => {
           const target = event.target;
           const copy = target?.closest?.('[data-link-copy]');
           if (copy) { self.copy(copy); return; }
-          if (target?.closest?.('[data-link-new]')) { self.make(); return; }
+          const make = target?.closest?.('[data-link-new]');
+          if (make) { self.make(make); return; }
           const ask = target?.closest?.('[data-link-ask]');
           if (ask) {
             self._ask = { what: ask.dataset.linkAsk, target: ask.dataset.target, kind: ask.dataset.kind };
             self._error = '';
+            self._entering = true;
             self._focus = '[data-link-keep]';
             self.render();
             return;
@@ -5820,15 +6013,14 @@ element!: &space-links
             self.render();
             return;
           }
-          if (target?.closest?.('[data-link-do]') && self._ask) {
+          const yes = target?.closest?.('[data-link-do]');
+          if (yes && self._ask) {
             const { what, target: cid, kind } = self._ask;
-            const run = what === 'reset' ? self.reset(cid) : self.unlink(cid, kind);
-            self.render();
-            return run;
+            return what === 'reset' ? self.reset(yes, cid) : self.unlink(yes, cid, kind);
           }
         });
         self.addEventListener('keydown', (event) => {
-          if (event.key !== 'Escape' || !self._ask) return;
+          if (event.key !== 'Escape' || !self._ask || self._busy) return;
           event.stopPropagation();
           const what = self._ask.what;
           self._ask = null;

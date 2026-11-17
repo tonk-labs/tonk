@@ -736,7 +736,9 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     for contract in [
         "look: !include/text ./gooey/tonk-look.css",
         "hub: !include/text ./gooey/in-browser/hub.css",
-        "<div class=\"hub-page tonk-hub\">",
+        // Hidden until its stylesheets load, so it never flashes unstyled.
+        "<div class=\"hub-page tonk-hub\" style=\"visibility:hidden\" data-styling>",
+        ".hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }",
         "<link rel=\"stylesheet\" with:src=\"look@space\">",
         "<link rel=\"stylesheet\" with:src=\"hub@space\">",
     ] {
@@ -2257,7 +2259,10 @@ fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
         "data-space-create-submit data-wait=\"making\">make space</button>",
         "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
         ": `You already have a space called ${name.value}.`;",
-        "if (inline) control.textContent = 'making';",
+        // `make space` keeps focus and says `making` only past 400ms.
+        ".map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));",
+        // An error clears as the name is typed.
+        "if (error?.textContent) error.textContent = '';",
         "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
         "await links.makeDefault();",
         "self.querySelector('[data-link-copy]')?.focus();",
