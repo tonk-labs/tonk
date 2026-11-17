@@ -2213,7 +2213,7 @@ fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
         "<div class=\"hub-sr\" role=\"status\" aria-live=\"polite\" data-hub-live></div>",
         "document.createTextNode(' · by you')",
         "sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');",
-        "slot.textContent = 'Couldn’t undo that, so the change stays.';",
+        "self.fail('Couldn’t undo that, so the change stays.', pending.run, 'undoing');",
         "self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',",
         "self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',",
         "[action === 'leave' ? 'left' : 'deleted', name]",
@@ -2237,7 +2237,8 @@ fn it_lists_a_spaces_links_in_its_open_hub_row() {
         "self.api(`${base}/invites`)",
         "member: field('xyz.tonk.membership/member', 'Entity'),",
         "self.api('/api/account/connections')",
-        "const first = open.find((row) => made.has(row.target)) ?? open[0];",
+        // The default is the oldest open link, whatever this tab made.
+        "const first = rows.find((row) => row.kind === 'open');",
         "/invites/${encodeURIComponent(target)}/revoke",
         "/api/account/connections/${encodeURIComponent(target)}/revoke",
         "'keep the link', 'reset passlink', true]",
