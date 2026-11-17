@@ -1,5 +1,10 @@
 # `TonkReactor`: query subscriptions over branches
 
+> Superseded in part: the subscription registry, `QueryHash` and the poll
+> scheduling described below are dialog's stack subscriptions now
+> (`Stack::subscribe`, `Stack::settle`, dialog's `QueryHash`). The reactor
+> keeps each client's connection and its wire frames; see `src/subscription.rs`.
+
 `TonkReactor` is the worker's reactive layer over dialog
 branches. It holds (a) the worker's `profile` handle and (b) a
 two-tier cache of open repository and branch handles, with the

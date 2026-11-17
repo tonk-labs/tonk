@@ -34,7 +34,8 @@
 
 use dialog_query::query::{Application, Output};
 use dialog_repository::{
-    Branch, QueryLayer, SelectQuery, Transaction, TransactionQuery, TransactionSelectQuery,
+    Branch, QueryLayer, SelectQuery, StackTransaction, Transaction, TransactionQuery,
+    TransactionSelectQuery,
 };
 use futures_util::future::Either;
 
@@ -125,6 +126,14 @@ impl Pending for Transaction<&Branch> {
     }
 }
 
+/// A transaction through a branch's stack reads every layer the stack
+/// holds, the way the transaction it wraps reads the primary.
+impl Pending for StackTransaction<&Branch> {
+    fn query(&self) -> TransactionQuery<'_> {
+        StackTransaction::<&Branch>::query(self)
+    }
+}
+
 impl<'a> From<&'a Branch> for Source<'a> {
     fn from(branch: &'a Branch) -> Self {
         Self::Branch(branch.query())
@@ -133,6 +142,12 @@ impl<'a> From<&'a Branch> for Source<'a> {
 
 impl<'a, 'b> From<&'a Transaction<&'b Branch>> for Source<'a> {
     fn from(transaction: &'a Transaction<&'b Branch>) -> Self {
+        Self::Transaction(transaction)
+    }
+}
+
+impl<'a, 'b> From<&'a StackTransaction<&'b Branch>> for Source<'a> {
+    fn from(transaction: &'a StackTransaction<&'b Branch>) -> Self {
         Self::Transaction(transaction)
     }
 }

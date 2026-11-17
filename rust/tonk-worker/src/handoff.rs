@@ -4,8 +4,9 @@
 //! would start without it. On retirement the outgoing worker writes a
 //! snapshot of every cached branch's overlay to CacheStorage, even an empty
 //! one, so the successor can tell "nothing to carry" from "not written yet".
-//! The successor's JS `activate` handler holds activation until the snapshot
-//! exists (bounded), and the successor takes it once while booting, before
+//! The successor's JS `activate` handler holds activation until the outgoing
+//! worker has written it (the shim's handoff lock frees when it has, or when
+//! that worker is gone), and the successor takes it once while booting, before
 //! it serves a request, and restores it. A snapshot older than
 //! [`MAX_AGE_MS`] is discarded instead: after that long its facts may no
 //! longer describe the session.

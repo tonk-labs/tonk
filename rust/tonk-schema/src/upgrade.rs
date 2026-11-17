@@ -103,6 +103,63 @@ where
         + dialog_capability::Provider<dialog_effects::blob::Import>
         + dialog_capability::Provider<dialog_effects::blob::Size>,
 {
+    let (upgraded, writes) = plan(branch, env).await?;
+    if upgraded.is_empty() {
+        return Ok(upgraded);
+    }
+    // A lost race plans the upgrade again over the head that won, which
+    // may have upgraded some of it already; the report is the last plan's.
+    let report = std::sync::Mutex::new(upgraded);
+    let report = &report;
+    let mut planned = Some(writes);
+    branch
+        .transact(|transaction| {
+            let planned = planned.take();
+            async move {
+                let writes = match planned {
+                    Some(writes) => writes,
+                    None => {
+                        let (upgraded, writes) = plan(branch, env).await.map_err(Failed)?;
+                        *report.lock().map_err(|e| Failed(e.to_string()))? = upgraded;
+                        writes
+                    }
+                };
+                Ok::<_, Failed>(writes.into_iter().fold(transaction, |transaction, write| {
+                    match write {
+                        Write::Statement(statement) => transaction.assert(statement),
+                        Write::Concept(concept) => transaction.assert(concept),
+                        Write::Transient(concept) => transaction.assert(concept),
+                        Write::Raw(raw) => transaction.assert(raw),
+                        Write::Retract(raw) => transaction.retract(raw),
+                    }
+                }))
+            }
+        })
+        .perform(env)
+        .await
+        .map_err(|Failed(error)| error)?;
+    let mut upgraded = std::mem::take(&mut *report.lock().map_err(|e| e.to_string())?);
+    upgraded.moves.sort();
+    upgraded.rewritten.sort();
+    Ok(upgraded)
+}
+
+/// Why an upgrade's commit failed, whether in planning it again or in
+/// committing.
+struct Failed(String);
+
+impl From<dialog_repository::CommitError> for Failed {
+    fn from(error: dialog_repository::CommitError) -> Self {
+        Self(error.to_string())
+    }
+}
+
+/// What upgrading `branch` would do, read from its head: the report, and
+/// the writes that carry it out.
+async fn plan<Env: QueryEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<(DefinitionsUpgraded, Vec<Write>), String> {
     let mut upgraded = DefinitionsUpgraded::default();
     let mut writes: Vec<Write> = Vec::new();
 
@@ -305,28 +362,7 @@ where
         }
     }
 
-    if upgraded.is_empty() {
-        return Ok(upgraded);
-    }
-    let mut transaction = branch.transaction();
-    for write in writes {
-        transaction = match write {
-            Write::Statement(statement) => transaction.assert(statement),
-            Write::Concept(concept) => transaction.assert(concept),
-            Write::Transient(concept) => transaction.assert(concept),
-            Write::Raw(raw) => transaction.assert(raw),
-            Write::Retract(raw) => transaction.retract(raw),
-        };
-    }
-    transaction
-        .commit()
-        .publish()
-        .perform(env)
-        .await
-        .map_err(|e| e.to_string())?;
-    upgraded.moves.sort();
-    upgraded.rewritten.sort();
-    Ok(upgraded)
+    Ok((upgraded, writes))
 }
 
 /// The descriptor an attribute recorded the earlier way spells, from its
