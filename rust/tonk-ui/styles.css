@@ -438,6 +438,14 @@ tonk-site {
     display: contents;
 }
 
+/* Web Awesome's native layer spaces an iframe from what follows it
+   (`iframe:has(+ *)`, 24px; 16px on a phone). The guest's iframe fills
+   the viewport, so that margin made the page taller than the window and
+   left it scrollable by that much. */
+tonk-site > iframe {
+    margin: 0;
+}
+
 /* Pre-stamp placeholder for a `<tonk-site>` guest display. Between the
    sealed iframe booting and the SW stamping the tab's `tonk:site` (route
    match + stamp, ~1s) the site entity carries none of its required

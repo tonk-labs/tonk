@@ -1393,7 +1393,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }",
-        ".mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;",
+        ".mobile-nav > a, .mobile-nav .mobile-create { display:flex; width:100%; min-height:54px;",
         ".account-menu__row { min-height:44px; }",
     ] {
         assert!(
