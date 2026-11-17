@@ -406,7 +406,7 @@ const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 /// field that says no. A create that carries no `open` field still lands
 /// its creator in the new space, as every create did before the hub's
 /// inline row asked to stay.
-fn stays_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+fn stays_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
     use dialog_corpus::Value;
 
     facts
@@ -421,7 +421,7 @@ fn stays_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
 }
 
 /// Whether the create should navigate the caller into the new space.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(test)]
 fn open_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
     use dialog_corpus::Value;
 
