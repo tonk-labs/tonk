@@ -2404,9 +2404,10 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     assert!(pane.contains(
         "<span data-link-connected-name>The device</span> can now use your account. You can close this page."
     ));
-    assert!(PROFILE_LIBRARY.contains(
-        "self.text('[data-link-connected-name]', request.name || 'The device');"
-    ));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("self.text('[data-link-connected-name]', request.name || 'The device');")
+    );
     assert!(
         pane.contains("BUG-246"),
         "a slot for the code the device shows"
