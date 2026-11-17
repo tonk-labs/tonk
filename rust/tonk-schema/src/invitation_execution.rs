@@ -6,7 +6,7 @@ use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 use crate::Invitation;
-use crate::domain::invitation_execution::{Kind, MintedAt};
+use crate::domain::invitation_execution::{Kind, ListedAt, MintedAt};
 
 /// Audience metadata stored beside an [`Invitation`].
 ///
@@ -47,6 +47,26 @@ impl InvitationMinted {
         Self {
             this: invitation.this.clone(),
             minted_at: MintedAt(minted_at),
+        }
+    }
+}
+
+/// Where an [`Invitation`] that replaced another lists: at the place of the
+/// one it replaced, so a reset default passlink stays the default.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InvitationListed {
+    /// The associated invitation entity.
+    pub this: Entity,
+    /// The replaced link's place, unix milliseconds.
+    pub listed_at: ListedAt,
+}
+
+impl InvitationListed {
+    /// List `invitation` at `place`.
+    pub fn new(invitation: &Invitation, place: u64) -> Self {
+        Self {
+            this: invitation.this.clone(),
+            listed_at: ListedAt(place),
         }
     }
 }

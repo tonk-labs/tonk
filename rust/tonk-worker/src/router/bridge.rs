@@ -112,11 +112,17 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
-        // The top page's passkey prompt or card was cancelled: say so on
-        // the ceremony row the account sheet follows, which would otherwise
-        // wait for a passkey forever. Only the ceremonies that report there.
-        "custody-cancelled" => {
+        // The top page's passkey prompt or card ended without the work
+        // (cancelled, or failed, as an authenticator with no PRF does): say
+        // so on the ceremony row the account sheet follows, which would
+        // otherwise wait for a passkey forever. Only the ceremonies that
+        // report there.
+        "custody-ended" => {
             let ceremony = envelope.get("ceremony").and_then(|v| v.as_str());
+            let detail = match envelope.get("outcome").and_then(|v| v.as_str()) {
+                Some("cancelled") => "cancelled",
+                _ => "the passkey did not finish",
+            };
             if let Some(
                 ceremony @ (tonk_schema::ceremony::ADD_PASSKEY
                 | tonk_schema::ceremony::DELETE_ACCOUNT),
@@ -127,7 +133,7 @@ pub async fn handle_message(
                     &tonk,
                     ceremony,
                     tonk_schema::ceremony_state::FAILED,
-                    "cancelled",
+                    detail,
                 )
                 .await;
             }

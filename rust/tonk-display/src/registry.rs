@@ -2772,6 +2772,19 @@ mod tests {
             .query_selector("[data-add-passkey]")
             .expect("query")
             .expect("the add button");
+        // A row left from before a reload says nothing: the add it was
+        // waiting on is over.
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_briefly().await;
+        assert!(
+            add.get_attribute("aria-disabled").is_none(),
+            "a pending add from before this page holds nothing"
+        );
+        add.dyn_ref::<web_sys::HtmlElement>()
+            .expect("a button")
+            .click();
         rows.set_inner_html(
             r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
         );

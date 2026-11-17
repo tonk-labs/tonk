@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
-use tonk_schema::{Invitation, InvitationExecution, InvitationMinted};
+use tonk_schema::{Invitation, InvitationExecution, InvitationListed, InvitationMinted};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 
 use super::AppState;
@@ -474,6 +474,21 @@ pub async fn list(
             TonkWorkerError::Internal(format!("invitation mint time query failed: {error:?}"))
         })?;
 
+    // Places, for links that replaced another: they list where it did.
+    let listed: Vec<InvitationListed> = session
+        .handle()
+        .query()
+        .select(Query::<InvitationListed> {
+            this: Term::var("this"),
+            listed_at: Term::var("listed_at"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invitation place query failed: {error:?}"))
+        })?;
+
     let mut rows = proved_invitations(session.handle(), &tonk, &subject)
         .await?
         .into_iter()
@@ -503,6 +518,10 @@ pub async fn list(
                     .iter()
                     .find(|row| row.this == invitation.this)
                     .map(|row| row.minted_at.0),
+                listed_at: listed
+                    .iter()
+                    .find(|row| row.this == invitation.this)
+                    .map(|row| row.listed_at.0),
             }
         })
         .collect::<Vec<_>>();
@@ -511,13 +530,13 @@ pub async fn list(
 }
 
 /// Order invitations oldest first: the first open link is a space's
-/// default, and it must stay first when a newer link is made beside it.
-/// One minted before mint times were recorded counts as oldest; ties fall
-/// back to the target CID so the order is total.
+/// default, and it must stay first when a newer link is made beside it. A
+/// link that replaced another lists in its place (see
+/// [`InvitationSummary::place`]); ties fall back to the target CID so the
+/// order is total.
 fn oldest_first(rows: &mut [InvitationSummary]) {
     rows.sort_by(|left, right| {
-        (left.minted_at.unwrap_or(0), &left.target_cid)
-            .cmp(&(right.minted_at.unwrap_or(0), &right.target_cid))
+        (left.place(), &left.target_cid).cmp(&(right.place(), &right.target_cid))
     });
 }
 
@@ -533,7 +552,24 @@ mod order_tests {
             status: "active".into(),
             invitation: String::new(),
             minted_at,
+            listed_at: None,
         }
+    }
+
+    #[dialog_common::test]
+    fn it_lists_a_reset_link_in_the_place_of_the_one_it_replaced() {
+        // The default (minted at 1_000) was reset after a second link was
+        // made: the reset link, minted last, lists where the default did.
+        let mut rows = vec![
+            row("bafy-second", Some(2_000)),
+            InvitationSummary {
+                listed_at: Some(1_000),
+                ..row("bafy-reset", Some(3_000))
+            },
+        ];
+        super::oldest_first(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|row| row.target_cid.as_str()).collect();
+        assert_eq!(order, ["bafy-reset", "bafy-second"]);
     }
 
     #[dialog_common::test]
