@@ -7269,6 +7269,10 @@ element!: &account-settings
         // callback sends the browser back with ?link=): what happened.
         const outcome = self.linkOutcome();
         if (outcome) {
+          // The worker sends the browser back with the device's name; the
+          // request's own parameters are gone by now.
+          const name = (new URLSearchParams(self.context().search).get('name') ?? '').trim();
+          self.text('[data-link-connected-name]', name || 'The device');
           self.pane('link');
           self.linkStep(outcome);
           return;

@@ -9588,9 +9588,11 @@ pub(crate) mod tests {
     /// whatever the page delivered.
     /// The one-shot slot a delivered authorization lands in.
     type Delivery =
-        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<(String, String)>>>>;
+        std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Delivered>>>>;
+    /// The outcome field, its value, and where the page asked to be sent back.
+    type Delivered = (String, String, Option<String>);
 
-    async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<(String, String)>)> {
+    async fn waiting_cli() -> Result<(String, tokio::sync::oneshot::Receiver<Delivered>)> {
         use axum::extract::{Form, State};
         use std::collections::HashMap;
 
@@ -9609,10 +9611,11 @@ pub(crate) mod tests {
                 .into_iter()
                 .find_map(|key| form.get(key).map(|value| (key.to_owned(), value.clone())))
                 .unwrap_or_else(|| ("none".to_owned(), String::new()));
+            let redirect = form.get("redirect").cloned();
             if let Ok(mut slot) = slot.lock()
                 && let Some(sender) = slot.take()
             {
-                let _ = sender.send((field, value));
+                let _ = sender.send((field, value, redirect));
             }
             "received"
         }
@@ -9719,7 +9722,8 @@ pub(crate) mod tests {
         url.query_pairs_mut()
             .append_pair("audience", audience)
             .append_pair("callback", &callback)
-            .append_pair("expectedAccount", &expected);
+            .append_pair("expectedAccount", &expected)
+            .append_pair("name", "Work laptop");
         goto(&driver, url.as_str()).await?;
 
         // Show the granting account's email; protocol identifiers stay
@@ -9795,7 +9799,7 @@ pub(crate) mod tests {
         // Generous: approving runs a passkey assertion, the unlock, and
         // the device registration before the callback navigation, and a loaded
         // CI runner stretches each of them.
-        let (field, value) = tokio::time::timeout(Duration::from_secs(60), delivered)
+        let (field, value, redirect) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("the page never delivered an authorization")??;
         assert_eq!(field, "authorize", "approving must deliver a grant");
@@ -9815,6 +9819,17 @@ pub(crate) mod tests {
                 "the authorization must carry {field}: {payload}"
             );
         }
+        // The CLI sends the browser back to where the page asked, with the
+        // outcome added; "device connected" names the device although the
+        // request's own parameters are gone.
+        let landing = redirect.context("the page never said where to come back to")?;
+        let mut landing = env.tonk_web.join(&landing)?;
+        assert_eq!(landing.path(), "/settings/link");
+        landing.query_pairs_mut().append_pair("link", "ok");
+        goto(&driver, landing.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-link-connected-name]", "Work laptop").await?;
+
         // A browser left running keeps writing its profile while the
         // workspace is being removed — the "Directory not empty"
         // teardown race every other test avoids by quitting.
@@ -9843,7 +9858,7 @@ pub(crate) mod tests {
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         click(&driver, "[data-link-decline]").await?;
 
-        let (field, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
+        let (field, _, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
             .await
             .context("cancelling never reached the waiting process")??;
         assert_eq!(
