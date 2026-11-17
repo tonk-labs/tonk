@@ -855,17 +855,15 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the responsive Hub collection must reject `{rejected}`",
     );
-    // An empty list says so inside the sheet, in the mock's words, so the
-    // sheet does not end at its line (Jack's call: a list still arriving
+    // An empty list says so inside the sheet in one short, quiet line, so
+    // the sheet does not end at its line (Jack's call: a list still arriving
     // after sign-in shows it for a moment). It is the display's `empty`
     // slot, so it shows only once the list has answered.
     assert!(
-        PROFILE_LIBRARY.contains(
-            "<div slot=\"empty\" class=\"hub-empty\"><p>You don’t have any spaces yet. A space keeps your data at a link you can send to people and agents.</p></div>"
-        ),
+        PROFILE_LIBRARY
+            .contains("<div slot=\"empty\" class=\"hub-empty\"><p>No spaces yet.</p></div>"),
         "the empty Hub must say it has no spaces, in the sheet",
     );
-    assert_eq!(PROFILE_LIBRARY.matches("no spaces yet").count(), 0);
     // The one place that may say so is the wall on a settings task page
     // (an app or a terminal asking for the account), where it is true.
     let wall_start = PROFILE_LIBRARY
@@ -939,28 +937,31 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
 }
 
 #[dialog_common::test]
-fn it_mints_an_invite_when_copying_a_hub_space_link() {
+fn it_copies_a_hub_spaces_address_without_minting() {
     assert!(
-        PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
-        "the Hub copy action must name the space whose invite it mints"
+        PROFILE_LIBRARY.contains(
+            r#"<button type="button" role="menuitem" data-space-copy-link data-space={subject}>"#
+        ),
+        "the Hub copy action is a plain menu item that names its space"
     );
     assert!(
-        PROFILE_LIBRARY
-            .contains(r#"<tonk-share space={subject}><button type="button" role="menuitem">"#),
-        "the copy verb is a plain button inside the share, never a form submit"
+        !PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
+        "the Hub menu must not mint an invite to copy: that waits on a link"
     );
-    for (state, label) in [
-        ("idle", "idle"),
-        ("copying", "copying"),
-        ("copied", "copied"),
-        ("blocked", "failed"),
-        ("failed", "failed"),
-    ] {
+    let actions = PROFILE_LIBRARY
+        .split("element!: &space-actions")
+        .nth(1)
+        .expect("space-actions element");
+    assert!(
+        actions.contains("const url = `${origin}/space/${button.dataset.space}`;"),
+        "the copy action copies the space's own address"
+    );
+    for (state, label) in [("copied", "copied"), ("failed", "failed")] {
         assert!(
             PROFILE_LIBRARY.contains(&format!(
-                "data-share-state=\"{state}\"] [data-share-copy-label=\"{label}\"]"
+                "[data-space-copy-link][data-copy=\"{state}\"] [data-copy-label=\"{label}\"]"
             )),
-            "the Hub invite action must display its `{label}` answer in `{state}` state"
+            "the Hub copy action must display its `{label}` answer"
         );
     }
 }
@@ -1007,12 +1008,8 @@ fn it_renames_a_space_from_the_hub_menu() {
 #[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(
-            PROFILE_LIBRARY,
-            ".space-menu tonk-share, .space-menu space-remove {"
-        )
-        .contains("display:contents"),
-        "share and authority-aware removal must remain direct rows in the card menu"
+        css_rule(PROFILE_LIBRARY, ".space-menu space-remove {").contains("display:contents"),
+        "authority-aware removal must remain a direct row in the card menu"
     );
     assert!(
         PROFILE_LIBRARY.contains("data-space-actions-open aria-haspopup=\"menu\""),
