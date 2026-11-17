@@ -508,14 +508,16 @@ pub(crate) async fn record_invitation(
     dialog_reactor::migrate(&meta, &site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to migrate meta branch: {e}")))?;
-    meta.transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
+    meta.transact(|transaction| {
+        std::future::ready(Ok::<_, dialog_repository::CommitError>(
+            transaction
+                .assert(invitation.clone())
+                .assert(execution.clone()),
+        ))
+    })
+    .perform(&site.operator)
+    .await
+    .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
     Ok(())
 }
 
@@ -853,52 +855,57 @@ async fn record_claim_roster(
         .map_err(|e| InviteError::Io(format!("failed to open the roster branch: {e}")))?;
     let branch = session.handle();
 
-    let roles: Vec<MemberRole> = branch
-        .query()
-        .select(Query::<MemberRole> {
-            this: Term::from(membership.this().clone()),
-            role: Term::var("role"),
-        })
-        .perform(&joined.operator)
-        .try_vec()
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to read membership roles: {e:?}")))?;
-    let stamps: Vec<InvitedVia> = branch
-        .query()
-        .select(Query::<InvitedVia> {
-            this: Term::from(membership.this().clone()),
-            invitation: Term::var("invitation"),
-        })
-        .perform(&joined.operator)
-        .try_vec()
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to read membership provenance: {e:?}")))?;
-
     // A member claiming their own invite is not provenance: it answers "how
     // did this member first get in", which is meaningless when the inviter is
     // the claimer.
     let self_invite = invitation.inviter.0 == member.this();
     let invitation_entity = invitation.this().clone();
-    let mut transaction = branch
-        .transaction()
-        .assert(invitation)
-        .assert(invitation_execution)
-        .assert(membership.clone());
-    if roles.is_empty() {
-        transaction = transaction.assert(MemberRole::member(membership.this().clone()));
-    }
-    if stamps.is_empty() && !self_invite {
-        transaction = transaction.assert(InvitedVia::new(
-            membership.this().clone(),
-            invitation_entity,
-        ));
-    }
-    transaction
-        .commit()
-        .publish()
-        .perform(&joined.operator)
+    // The roles and provenance already recorded are read on each try, so a
+    // lost race decides what to add over the head that won.
+    let membership = &membership;
+    let operator = &joined.operator;
+    let (invitation, invitation_execution, invitation_entity) =
+        (&invitation, &invitation_execution, &invitation_entity);
+    branch
+        .transact(|transaction| async move {
+            let roles: Vec<MemberRole> = transaction
+                .query()
+                .select(Query::<MemberRole> {
+                    this: Term::from(membership.this().clone()),
+                    role: Term::var("role"),
+                })
+                .perform(operator)
+                .try_vec()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to read membership roles: {e:?}"))?;
+            let stamps: Vec<InvitedVia> = transaction
+                .query()
+                .select(Query::<InvitedVia> {
+                    this: Term::from(membership.this().clone()),
+                    invitation: Term::var("invitation"),
+                })
+                .perform(operator)
+                .try_vec()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to read membership provenance: {e:?}"))?;
+            let mut transaction = transaction
+                .assert(invitation.clone())
+                .assert(invitation_execution.clone())
+                .assert(membership.clone());
+            if roles.is_empty() {
+                transaction = transaction.assert(MemberRole::member(membership.this().clone()));
+            }
+            if stamps.is_empty() && !self_invite {
+                transaction = transaction.assert(InvitedVia::new(
+                    membership.this().clone(),
+                    invitation_entity.clone(),
+                ));
+            }
+            anyhow::Ok(transaction)
+        })
+        .perform(operator)
         .await
-        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
+        .map_err(|e| InviteError::Io(format!("failed to record membership: {e:#}")))?;
     Ok(())
 }
 

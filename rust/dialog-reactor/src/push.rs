@@ -246,7 +246,7 @@ mod tests {
             .await?;
         let mut stored = 0;
         for node in delta.flush_nodes() {
-            remote.store(node.buffer().clone());
+            remote.store(node.buffer()?.clone());
             stored += 1;
         }
         Ok(stored)
