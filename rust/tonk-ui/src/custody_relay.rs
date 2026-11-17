@@ -736,6 +736,10 @@ fn followed(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
     match intent {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => Some("add-passkey"),
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => Some("delete-account"),
+        // The device task page answers on its own row and offers its own
+        // `allow whole account` again (gooey task-page.html, the device
+        // step's cancel), so no card goes over it.
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => Some("authorize-device"),
         _ => None,
     }
 }
@@ -744,6 +748,27 @@ fn followed(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
 /// is `cancelled`, anything else (an authenticator with no PRF, say)
 /// `failed`. `true` when `intent` is followed and was told.
 fn report_ended(intent: &tonk_worker_api::CustodyIntent, error: &CeremonyError) -> bool {
+    use tonk_identity::passkey::CeremonyRefusal;
+    // A device approval's own failures (the wrong account, a callback that
+    // would not take the grant) are the worker's answer, already on the
+    // request's row with their detail. Only a prompt that ended here is
+    // this page's to report; either way its task page answers, not a card.
+    if matches!(intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+        let outcome = match &error.refusal {
+            Some(CeremonyRefusal::NotAllowed) => Some("cancelled"),
+            Some(
+                CeremonyRefusal::NoPrf
+                | CeremonyRefusal::NotSupported
+                | CeremonyRefusal::Security
+                | CeremonyRefusal::InvalidState,
+            ) => Some("failed"),
+            Some(CeremonyRefusal::Other) | None => None,
+        };
+        if let Some(outcome) = outcome {
+            report_outcome(intent, outcome);
+        }
+        return true;
+    }
     let outcome = if matches!(
         error.refusal,
         Some(tonk_identity::passkey::CeremonyRefusal::NotAllowed)
@@ -771,6 +796,13 @@ fn report_outcome(intent: &tonk_worker_api::CustodyIntent, outcome: &str) -> boo
     let _ = js_sys::Reflect::set(&message, &"type".into(), &"custody-ended".into());
     let _ = js_sys::Reflect::set(&message, &"ceremony".into(), &ceremony.into());
     let _ = js_sys::Reflect::set(&message, &"outcome".into(), &outcome.into());
+    // A device approval's row is the request's own, so the worker needs
+    // the request to find it.
+    if let tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) = intent
+        && let Ok(authorization) = serde_json::to_string(authorization)
+    {
+        let _ = js_sys::Reflect::set(&message, &"authorization".into(), &authorization.into());
+    }
     controller.post_message(&message).is_ok()
 }
 
