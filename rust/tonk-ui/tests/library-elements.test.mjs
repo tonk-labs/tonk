@@ -146,6 +146,49 @@ test('a reset that did not land takes the question, and its answer becomes try a
   assert.doesNotMatch(html, /raw/);
 });
 
+test('a reset asks the worker to list the new link in the place of the one it replaces', async () => {
+  const minted = [];
+  const calls = [];
+  const self = linksSelf({
+    hub: () => ({}),
+    _ask: { what: 'reset', target: 'bafy-a' },
+    mint: async (replaces) => { minted.push(replaces); return { copied: true }; },
+    api: async (path, body) => { calls.push([path, body]); return {}; },
+  });
+  await method('space-links', 'reset')(self, null, 'bafy-a');
+  assert.deepEqual(minted, ['bafy-a']);
+  assert.match(calls[0][0], /invites\/bafy-a\/revoke$/);
+
+  const posted = [];
+  const mintSelf = {
+    dataset: { space: 'did:key:space' },
+    made: () => new Map(),
+    api: async (path, body) => { posted.push([path, body]); return path.endsWith('/invite') ? { url: 'https://x/#k' } : []; },
+  };
+  const mint = method('space-links', 'mint', {
+    ClipboardItem: class {}, Blob: class {}, navigator: { clipboard: { write: async () => {} } },
+  });
+  await mint(mintSelf, 'bafy-a');
+  await mint(mintSelf);
+  const bodies = posted.filter(([path]) => path.endsWith('/invite')).map(([, body]) => body);
+  assert.deepEqual(bodies, [{ replaces: 'bafy-a' }, {}]);
+});
+
+test('the copy note shows only while no listed link can be copied', () => {
+  const note = (made) => {
+    const self = linksSelf({ made: () => made, _rows: [{ kind: 'open', target: 'bafy-a', default: true, used: [] }, { kind: 'open', target: 'bafy-b', used: [] }] });
+    self.esc = (text) => method('space-links', 'esc')(self, text);
+    self.names = (list) => method('space-links', 'names')(self, list);
+    self.shown = (url) => method('space-links', 'shown')(self, url);
+    self.askHtml = () => '';
+    self.querySelector = () => null;
+    method('space-links', 'render', { Intl })(self);
+    return /Only a link made in this tab can be copied/.test(self.innerHTML);
+  };
+  assert.equal(note(new Map()), true);
+  assert.equal(note(new Map([['bafy-b', 'https://tonk.example/space/x#key']])), false);
+});
+
 test('a passlink row shows its host and the start of its key, never the key', () => {
   const shown = method('space-links', 'shown')({}, 'https://tonk.example/space/did:key:z6Mk#abcdefSECRET');
   assert.equal(shown, 'tonk.example/…#abc•••');
@@ -185,4 +228,32 @@ test('a passkey date shows its year only when it is not this year', () => {
   method('account-settings', 'passkey-dates')(self);
   assert.doesNotMatch(thisYear.textContent, new RegExp(String(now.getFullYear())));
   assert.match(lastYear.textContent, new RegExp(String(now.getFullYear() - 1)));
+});
+
+test("every hub dialog's heading is lower case, as the hub's sheets are", () => {
+  const headings = [...library.matchAll(/<tonk-dialog appearance="hub"[^>]*\bheading="([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(headings.length > 0, 'the library has hub dialogs');
+  assert.deepEqual(headings.filter((heading) => heading !== heading.toLowerCase()), []);
+});
+
+test('the seed page is a hub page, so its dialog wears the hub look', () => {
+  const view = library.split('this: tonk:seed/route\n  show:')[1].split('\nroute!:')[0];
+  assert.match(view, /class="hub-page tonk-hub seed-page"/);
+  assert.match(view, /with:src="look@space"/);
+  assert.match(view, /with:src="hub@space"/);
+  assert.match(view, /class="hub-sheet"/);
+});
+
+test('the space menu steps out of sight under its delete dialog and closes with it', () => {
+  const connected = methodSource('space-remove', 'connected');
+  assert.match(connected, /setAttribute\('data-behind', ''\)/);
+  assert.match(connected, /'fabb-close'/);
+  assert.match(connected, /menu\.close\?\.\(\)/);
+  assert.match(library, /\.space-menu\[data-behind\][^{]*\{[^}]*visibility:hidden/);
+  assert.match(library, /\.space-menu\[data-behind\] tonk-dialog \{ visibility:visible; \}/);
+});
+
+test("the mobile nav's button rules stop at its own controls, not its dialog's", () => {
+  assert.doesNotMatch(library, /\.mobile-nav button\b/);
+  assert.match(library, /\.mobile-nav > a, \.mobile-nav \.mobile-create \{ display:flex; width:100%;/);
 });

@@ -72,6 +72,56 @@ const CARD_HTML: &str = r#"
 </div>
 "#;
 
+/// The floating card wears the hub's dialog look: its sheet, radius and
+/// soft shadow over the hub's backdrop, the label face for the heading,
+/// a plain `not now` and a solid `use passkey`. The top page has no Tonk
+/// tokens, so the values are gooey's (`tonk-look.css`), written out. The
+/// anchored rows keep [`CARD_HTML`]: they sit under a dialog's column.
+const FLOATING_CARD_HTML: &str = r#"
+<div class="tc-card" role="dialog" aria-modal="true" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <h2 id="tonk-custody-heading">passkey needed</h2>
+  <p id="tonk-custody-text">Tonk is securing something to your account and needs your passkey to
+    unlock the account&rsquo;s custody key on this device.</p>
+  <div id="tonk-custody-actions">
+    <button id="tonk-custody-dismiss" type="button">not now</button>
+    <button id="tonk-custody-continue" type="button" class="tc-main">use passkey</button>
+  </div>
+</div>
+<div class="tc-backdrop"></div>
+<style>
+#tonk-custody-consent { color-scheme: light dark;
+  --tc-text: light-dark(#38182a, #f7f6f5); --tc-soft: light-dark(#5b4953, #c9bec4);
+  --tc-sheet: light-dark(#f7f6f5, #23141c); --tc-main-text: light-dark(#f7f6f5, #38182a);
+  --tc-wash: color-mix(in oklab, var(--tc-text) 6%, transparent);
+  --tc-wash-strong: color-mix(in oklab, var(--tc-text) 12%, transparent);
+  --tc-label: 600 14px/1.3 "IBM Plex Sans Condensed", "Tonk Narrow", sans-serif; }
+#tonk-custody-consent .tc-backdrop { position: fixed; inset: 0; z-index: 2147483646;
+  background: light-dark(rgb(56 24 42 / 32%), rgb(0 0 0 / 45%)); }
+#tonk-custody-consent .tc-card { position: fixed; z-index: 2147483647; left: 50%; top: 50%;
+  translate: -50% -50%; box-sizing: border-box; width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px); overflow: auto; padding: 18px 20px 20px;
+  border-radius: 12px; background: var(--tc-sheet); color: var(--tc-text);
+  box-shadow: 0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 6%)),
+    0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
+    0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
+  font: 400 16px/1.5 "IBM Plex Sans", system-ui, sans-serif; text-align: left; text-transform: none; }
+#tonk-custody-consent h2 { margin: 0 0 12px; font: 600 16px/1.3 "IBM Plex Sans Condensed", "Tonk Narrow", sans-serif;
+  letter-spacing: .02em; text-transform: none; }
+#tonk-custody-consent p { margin: 0; text-wrap: pretty; }
+#tonk-custody-consent #tonk-custody-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+#tonk-custody-consent button { height: 36px; padding: 0 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--tc-text); font: var(--tc-label); letter-spacing: .02em;
+  cursor: pointer; transition: background-color 150ms ease-out, scale 150ms ease-out; }
+#tonk-custody-consent button:hover { background: var(--tc-wash); }
+#tonk-custody-consent button:focus-visible { outline: none; background: var(--tc-wash-strong); }
+#tonk-custody-consent button.tc-main { background: var(--tc-text); color: var(--tc-main-text); }
+#tonk-custody-consent button.tc-main:is(:hover, :focus-visible) { background: color-mix(in oklab, var(--tc-main-text) 12%, var(--tc-text)); }
+#tonk-custody-consent button:active { scale: .96; }
+@media (pointer: coarse) { #tonk-custody-consent button { height: 44px; } }
+@media (prefers-reduced-motion: reduce) { #tonk-custody-consent button { transition: none; } }
+</style>
+"#;
+
 /// Derive the account's encryption key through a passkey assertion and
 /// save it with the root. `Ok(false)` when there was nothing to do: no
 /// root on this device, or the key is already recorded.
@@ -228,9 +278,38 @@ fn mount_card(anchored: bool) -> Option<Element> {
         host.set_attribute("style", "--custody-message-padding:7px")
             .ok()?;
     }
-    host.set_inner_html(CARD_HTML);
+    host.set_inner_html(if anchored {
+        CARD_HTML
+    } else {
+        FLOATING_CARD_HTML
+    });
     body.append_child(&host).ok()?;
     position_card();
+    if !anchored
+        && let Ok(Some(button)) = host.query_selector("#tonk-custody-continue")
+        && let Some(button) = button.dyn_ref::<web_sys::HtmlElement>()
+    {
+        let _ = button.focus();
+    }
+    if !anchored {
+        // Escape is `not now`, as a dialog's is; once the answer is out
+        // there is nothing to dismiss.
+        let closure =
+            Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(|event: web_sys::KeyboardEvent| {
+                if event.key() != "Escape" {
+                    return;
+                }
+                if let Some(dismiss) = card()
+                    .and_then(|card| card.query_selector("#tonk-custody-dismiss").ok().flatten())
+                    .and_then(|dismiss| dismiss.dyn_into::<web_sys::HtmlElement>().ok())
+                {
+                    event.prevent_default();
+                    dismiss.click();
+                }
+            });
+        let _ = host.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
     if anchored {
         RETURN_FOCUS.with(|focus| {
             if let Some(focus) = focus.borrow().as_ref() {
@@ -389,6 +468,11 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
             return;
         };
         report(&error.message);
+        // A ceremony the account sheet follows answers on its row, which
+        // offers `try again`: no card on top of it.
+        if report_ended(&intent, &error) {
+            return;
+        }
         let said = user_error::ceremony(action, &error);
         if matches!(
             error.refusal,
@@ -439,7 +523,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
     let dismissed = intent.clone();
     on_click(&host, "#tonk-custody-dismiss", move || {
-        report_cancelled(&dismissed);
+        report_outcome(&dismissed, "cancelled");
         remove_card();
     });
 
@@ -454,12 +538,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Err(error) = mediation.finish().await {
                         report(&error.message);
-                        if matches!(
-                            error.refusal,
-                            Some(tonk_identity::passkey::CeremonyRefusal::NotAllowed)
-                        ) {
-                            report_cancelled(&asked);
-                        }
+                        report_ended(&asked, &error);
                         set_card_text(&user_error::ceremony(action, &error));
                         remove_card_after(4000);
                     } else {
@@ -469,6 +548,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
             }
             Err(error) => {
                 report(&error.message);
+                report_ended(&intent, &error);
                 set_card_text(&user_error::ceremony(action, &error));
                 remove_card_after(4000);
             }
@@ -650,27 +730,52 @@ impl Mediation {
     }
 }
 
-/// Log a mediation failure, keeping a dismissed prompt quiet: declining
-/// the passkey is a decision, not a fault.
-/// Tell the worker a ceremony the account sheet follows was cancelled
-/// here, so its row says so instead of waiting for a passkey forever.
-/// Only the ceremonies that report their outcome on that row.
-fn report_cancelled(intent: &tonk_worker_api::CustodyIntent) {
-    let ceremony = match intent {
-        tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
-        tonk_worker_api::CustodyIntent::PurgeAccount(_) => "delete-account",
-        _ => return,
+/// The ceremony the account sheet follows for `intent`: the ones that
+/// report their outcome on its row.
+fn followed(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
+    match intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => Some("add-passkey"),
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => Some("delete-account"),
+        _ => None,
+    }
+}
+
+/// Tell the worker how a followed ceremony ended here: a dismissed prompt
+/// is `cancelled`, anything else (an authenticator with no PRF, say)
+/// `failed`. `true` when `intent` is followed and was told.
+fn report_ended(intent: &tonk_worker_api::CustodyIntent, error: &CeremonyError) -> bool {
+    let outcome = if matches!(
+        error.refusal,
+        Some(tonk_identity::passkey::CeremonyRefusal::NotAllowed)
+    ) {
+        "cancelled"
+    } else {
+        "failed"
+    };
+    report_outcome(intent, outcome)
+}
+
+/// Tell the worker a ceremony the account sheet follows ended here
+/// without its work, so its row says so instead of waiting for a passkey
+/// forever. Only the ceremonies that report their outcome on that row.
+fn report_outcome(intent: &tonk_worker_api::CustodyIntent, outcome: &str) -> bool {
+    let Some(ceremony) = followed(intent) else {
+        return false;
     };
     let Some(controller) =
         web_sys::window().and_then(|window| window.navigator().service_worker().controller())
     else {
-        return;
+        return false;
     };
     let message = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&message, &"type".into(), &"custody-cancelled".into());
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"custody-ended".into());
     let _ = js_sys::Reflect::set(&message, &"ceremony".into(), &ceremony.into());
-    let _ = controller.post_message(&message);
+    let _ = js_sys::Reflect::set(&message, &"outcome".into(), &outcome.into());
+    controller.post_message(&message).is_ok()
 }
+
+/// Log a mediation failure, keeping a dismissed prompt quiet: declining
+/// the passkey is a decision, not a fault.
 
 fn report(error: &str) {
     if error.starts_with("NotAllowedError") {
@@ -862,10 +967,28 @@ mod tests {
         assert_eq!(rows.get_bounding_client_rect().top(), 167.0);
         assert_eq!(rows.get_bounding_client_rect().width(), 576.0);
         remove_card();
-        // A subsequent unrelated custody request keeps its floating placement.
+        // A subsequent unrelated custody request floats as the hub's
+        // dialog does: centred, over a backdrop, its answer in focus.
         let host = mount_card(false).unwrap();
-        let rows: web_sys::HtmlElement = host.first_element_child().unwrap().dyn_into().unwrap();
-        assert_eq!(rows.style().get_property_value("bottom").unwrap(), "16px");
+        let card = host.query_selector(".tc-card").unwrap().unwrap();
+        let rect = card.get_bounding_client_rect();
+        let window = web_sys::window().unwrap();
+        let width = window.inner_width().unwrap().as_f64().unwrap();
+        assert!(((rect.left() + rect.width() / 2.0) - width / 2.0).abs() < 1.0);
+        assert_eq!(
+            window
+                .get_computed_style(&card)
+                .unwrap()
+                .unwrap()
+                .get_property_value("border-radius")
+                .unwrap(),
+            "12px"
+        );
+        assert!(host.query_selector(".tc-backdrop").unwrap().is_some());
+        assert_eq!(
+            window.document().unwrap().active_element().unwrap().id(),
+            "tonk-custody-continue"
+        );
         remove_card();
         ANCHOR.with(|seat| seat.borrow_mut().take());
     }
