@@ -97,11 +97,13 @@ where
             open_local_account_branch(profile, operator)
                 .await
                 .map_err(|error| format!("open: {error:#}"))?
-                .transaction()
-                .retract(principal)
-                .retract(message)
-                .commit()
-                .publish()
+                .transact(|transaction| {
+                    std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                        transaction
+                            .retract(principal.clone())
+                            .retract(message.clone()),
+                    ))
+                })
                 .perform(operator)
                 .await
                 .map(|_| ())

@@ -23,7 +23,7 @@ use ::axum::{
     http::HeaderMap,
 };
 use dialog_corpus::Changes;
-use dialog_repository::{RepositoryExt as _, Revision};
+use dialog_repository::{Effect, RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -167,7 +167,7 @@ pub async fn evaluate(
         path.branch,
         query.transact
     );
-    let (response, transients) = {
+    let (response, commands) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
         // a single write-lock holder stalls every new reader — a boot-time evaluate
         // (or the editor's auto-evaluate) blocked every concurrent `query` for its
@@ -183,8 +183,9 @@ pub async fn evaluate(
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
-        let (response, transients) =
-            evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
+        let client = client.as_ref().map(|Extension(id)| id.clone());
+        let (response, commands) =
+            evaluate_on_branch(&tonk_state, tonk_branch, client, body, query).await?;
 
         // A commit moves the branch head. Announce it on the branch's
         // channel so subscribed UIs refresh their revision/sync-state
@@ -220,7 +221,7 @@ pub async fn evaluate(
                 },
             );
         }
-        (response, transients)
+        (response, commands)
     };
 
     // Mark the repo dirty so the next sync drain pushes the new commits —
@@ -234,17 +235,23 @@ pub async fn evaluate(
             .mark_dirty(&path.repo, super::sync::now_millis());
     }
 
-    // Dispatch the document's transient commands, mirroring `/transact`:
-    // detached so a slow handler never delays the response, with the
-    // origin carrying the branch this commit landed in and the client
-    // that asked.
-    if let Some(transients) = transients {
+    // Run the commands the document's commit landed in the branch's
+    // `control:` layer, mirroring `/transact`: detached so a slow
+    // handler never delays the response, with the origin carrying the
+    // branch this commit landed in and the client that asked.
+    if let Some(effect) = commands {
         let origin = super::CommandOrigin {
             repo: path.repo,
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(
+            state,
+            origin,
+            Some(super::transact::Pending::Landed(effect)),
+            lifetime,
+        )
+        .await;
     }
     Ok(response)
 }
@@ -322,13 +329,14 @@ pub async fn evaluate_profile(
             ));
         }
     }
-    let (response, transients) = {
+    let (response, commands) = {
         // Read lock — see [`evaluate`] for why a write lock here serialized every
         // concurrent request behind a commit.
         let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-        let (response, transients) =
-            evaluate_on_branch(&tonk_state, tonk_branch, body, query).await?;
+        let client = client.as_ref().map(|Extension(id)| id.clone());
+        let (response, commands) =
+            evaluate_on_branch(&tonk_state, tonk_branch, client, body, query).await?;
 
         // Same durable-commit gate as [`evaluate`]: pure queries and dry
         // runs leave the head unchanged and announce nothing. The profile
@@ -352,18 +360,24 @@ pub async fn evaluate_profile(
                 },
             );
         }
-        (response, transients)
+        (response, commands)
     };
 
-    // Dispatch transient commands with the empty-repo origin profile
-    // commits carry — mirroring `transact_profile`.
-    if let Some(transients) = transients {
+    // Run the commands the commit landed with the empty-repo origin
+    // profile commits carry — mirroring `transact_profile`.
+    if let Some(effect) = commands {
         let origin = super::CommandOrigin {
             repo: String::new(),
             branch: path.branch,
             client: client.map(|Extension(id)| id),
         };
-        super::transact::spawn_dispatch(state, origin, transients, lifetime).await;
+        super::transact::run_commands_detached(
+            state,
+            origin,
+            Some(super::transact::Pending::Landed(effect)),
+            lifetime,
+        )
+        .await;
     }
     Ok(response)
 }
@@ -381,6 +395,89 @@ pub async fn evaluate_profile(
 pub type SeedRecord<'a> =
     &'a (dyn Fn(&dialog_corpus::history::Version) -> Vec<dialog_corpus::Instruction> + Send + Sync);
 
+/// The transaction an evaluation stages on: one through the branch's
+/// stack, which reads every layer and whose publish reports what it
+/// landed, or a private handle's own, outside the stack (a conditional
+/// evaluation's, which carries no command).
+pub(super) enum Staged<'a> {
+    /// Through the branch's stack.
+    Stack(dialog_repository::StackTransaction<&'a dialog_repository::Branch>),
+    /// On a private handle, outside the stack.
+    Private(dialog_repository::Transaction<&'a dialog_repository::Branch>),
+}
+
+impl Staged<'_> {
+    fn assert(self, claim: crate::router::claim::RawClaim) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.assert(claim)),
+            Self::Private(txn) => Self::Private(txn.assert(claim)),
+        }
+    }
+
+    fn retract(self, claim: crate::router::claim::RawClaim) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.retract(claim)),
+            Self::Private(txn) => Self::Private(txn.retract(claim)),
+        }
+    }
+
+    /// Write `rows`, rows of the `control:` entity, into the tick the
+    /// transaction's commands land in. A private handle lands no tick,
+    /// so it takes none.
+    fn on_tick(self, rows: Changes) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.assert(rows)),
+            private => private,
+        }
+    }
+}
+
+impl tonk_schema::query_source::Pending for Staged<'_> {
+    fn query(&self) -> dialog_repository::TransactionQuery<'_> {
+        match self {
+            Self::Stack(txn) => txn.query(),
+            Self::Private(txn) => txn.query(),
+        }
+    }
+}
+
+impl tonk_evaluator::evaluate::Staging for Staged<'_> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        match self {
+            Self::Stack(txn) => Self::Stack(txn.stage(changes, dispatched)),
+            Self::Private(txn) => Self::Private(txn.stage(changes, dispatched)),
+        }
+    }
+}
+
+/// The facts a seed record asserts, as the claims a transaction takes.
+fn record_claims(
+    instructions: Vec<dialog_corpus::Instruction>,
+) -> impl Iterator<Item = (bool, crate::router::claim::RawClaim)> {
+    instructions
+        .into_iter()
+        .map(|instruction| match instruction {
+            dialog_corpus::Instruction::Assert(artifact, _) => (
+                true,
+                crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_corpus::Pick::All,
+                },
+            ),
+            dialog_corpus::Instruction::Retract(artifact) => (
+                false,
+                crate::router::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy: dialog_corpus::Pick::All,
+                },
+            ),
+        })
+}
+
 /// Commit the evaluated transaction, optionally chaining a second commit
 /// that names the first's version, then publish the whole chain.
 ///
@@ -391,66 +488,89 @@ pub type SeedRecord<'a> =
 /// commits as the next link, and the single `publish` moves the head to
 /// the chain tip — so either both land or neither does, and no reader
 /// ever observes a library without the record describing it.
+///
+/// A chain through the branch's stack answers, beside the revision, the
+/// effect of the commands its links landed on `control:`, which the
+/// stack's providers perform as they do a transact's.
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
 pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
-    txn: dialog_repository::Transaction<&dialog_repository::Branch>,
+    txn: Staged<'_>,
     record: Option<SeedRecord<'_>>,
-) -> Result<dialog_corpus::Revision, dialog_repository::CommitError> {
-    let batch = txn.commit().perform(&tonk_state.operator).await?;
-    let Some(record) = record else {
-        return batch.publish().perform(&tonk_state.operator).await;
-    };
-
-    // Authoritative, not predicted: the commit that minted this version
-    // has already happened. It just is not visible yet.
-    let instructions = record(&batch.version());
-    let mut next = batch.transaction();
-    for instruction in instructions {
-        next = match instruction {
-            dialog_corpus::Instruction::Assert(artifact, _) => {
-                next.assert(crate::router::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
-                })
+) -> Result<(dialog_corpus::Revision, Option<Effect>), dialog_repository::CommitError> {
+    let env = &tonk_state.operator;
+    match txn {
+        Staged::Stack(txn) => {
+            let batch = txn.commit().perform(env).await?;
+            let report = match record {
+                None => batch.publish().perform(env).await?,
+                Some(record) => {
+                    // Authoritative, not predicted: the commit that minted
+                    // this version has already happened. It just is not
+                    // visible yet.
+                    let version = batch.version();
+                    let mut next = batch.transaction();
+                    for (asserted, claim) in record_claims(record(&version)) {
+                        next = if asserted {
+                            next.assert(claim)
+                        } else {
+                            next.retract(claim)
+                        };
+                    }
+                    next.commit()
+                        .perform(env)
+                        .await?
+                        .publish()
+                        .perform(env)
+                        .await?
+                }
+            };
+            Ok((report.revision().clone(), Some(report.effect())))
+        }
+        Staged::Private(txn) => {
+            let batch = txn.commit().perform(env).await?;
+            let Some(record) = record else {
+                return Ok((batch.publish().perform(env).await?, None));
+            };
+            let version = batch.version();
+            let mut next = batch.transaction();
+            for (asserted, claim) in record_claims(record(&version)) {
+                next = if asserted {
+                    next.assert(claim)
+                } else {
+                    next.retract(claim)
+                };
             }
-            dialog_corpus::Instruction::Retract(artifact) => {
-                next.retract(crate::router::claim::RawClaim {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
-                })
-            }
-        };
+            let revision = next
+                .commit()
+                .perform(env)
+                .await?
+                .publish()
+                .perform(env)
+                .await?;
+            Ok((revision, None))
+        }
     }
-    next.commit()
-        .perform(&tonk_state.operator)
-        .await?
-        .publish()
-        .perform(&tonk_state.operator)
-        .await
 }
 
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is
 /// the only difference between the two routes.
 ///
-/// Alongside the response, returns the transient facts (commands) the
-/// committed document dispatched — `None` for dry runs, pure queries,
-/// and documents that carried no transients. The caller hands them to
-/// the post-commit command dispatcher, exactly as `/transact` does.
+/// Alongside the response, returns the effect of the commands the
+/// committed document landed in the branch's `control:` layer — `None`
+/// for dry runs, pure queries, and documents that carried none. The
+/// caller performs it after answering, exactly as `/transact` does.
 async fn evaluate_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
+    client: Option<super::ClientId>,
     body: Bytes,
     query: EvaluateQuery,
-) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
+) -> Result<(Json<EvaluateResponse>, Option<Effect>), TonkWorkerError> {
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
@@ -458,7 +578,7 @@ async fn evaluate_on_branch<'a>(
         query,
         Retractions::Fixed(Vec::new()),
         None,
-        EvaluationMode::Interactive,
+        EvaluationMode::Interactive { client },
     )
     .await
 }
@@ -471,9 +591,14 @@ enum Document {
     Parsed(Syntax),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum EvaluationMode {
-    Interactive,
+    /// A request's document: parsed strictly, committed only when it
+    /// writes, as one invocation through the branch's stack, with the
+    /// asking client on the tick when known.
+    Interactive {
+        client: Option<super::ClientId>,
+    },
     LibrarySeed,
     #[cfg(test)]
     LibrarySeedWithRace,
@@ -589,8 +714,13 @@ async fn evaluate_on_branch_with<'a>(
     retract: Retractions<'a>,
     record: Option<SeedRecord<'_>>,
     mode: EvaluationMode,
-) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
+) -> Result<(Json<EvaluateResponse>, Option<Effect>), TonkWorkerError> {
     let total_start = web_time::Instant::now();
+    let interactive = matches!(mode, EvaluationMode::Interactive { .. });
+    let client = match &mode {
+        EvaluationMode::Interactive { client } => client.clone(),
+        _ => None,
+    };
     let evaluation_passes = std::sync::atomic::AtomicUsize::new(0);
     let t_parse = web_time::Instant::now();
     let syntax = match body {
@@ -602,9 +732,10 @@ async fn evaluate_on_branch_with<'a>(
             // A library seed is parsed where the library lives, so it can
             // `!include` the files beside it. Anything else arrived as a
             // request body with no location of its own, and may not.
-            match mode {
-                EvaluationMode::Interactive => surface_parse_diagnostics(parse(text))?,
-                _ => super::library::parse(text).await?,
+            if interactive {
+                surface_parse_diagnostics(parse(text))?
+            } else {
+                super::library::parse(text).await?
             }
         }
     };
@@ -690,7 +821,17 @@ async fn evaluate_on_branch_with<'a>(
         // explicit integrate here, and they never reach the durable write (the
         // overlay is session-only). Match queries resolve stored `db.rule/*`
         // rules automatically via the branch query's layer stack.
-        let mut txn = branch.transaction();
+        //
+        // The transaction comes from the branch's dialog stack and answers
+        // the document's reads; the committing path below publishes it,
+        // and its report names the commands that landed on `control:`
+        // for the providers. A
+        // conditional evaluation commits on its private handle, outside
+        // the stack, and so refuses a document with any command below.
+        let mut txn = match conditional_branch.as_ref() {
+            Some(private) => Staged::Private(private.transaction()),
+            None => Staged::Stack(session.state.stack().transaction()),
+        };
         let desired = match &retract {
             Retractions::Planned { desired, .. } => *desired,
             Retractions::Fixed(_) => &[],
@@ -756,7 +897,7 @@ async fn evaluate_on_branch_with<'a>(
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
-        if query.expected_revision.is_some() && !evaluated.transients.is_empty() {
+        if query.expected_revision.is_some() && !evaluated.dispatched.is_empty() {
             return Err(TonkWorkerError::Forbidden(
                 "Conditional builds accept durable changes only; transient commands are unavailable".into(),
             ));
@@ -768,8 +909,8 @@ async fn evaluate_on_branch_with<'a>(
         // below answers commits nothing, and answers its matches before
         // for after, so they are not computed a second time.
         let t_matches = web_time::Instant::now();
-        let answered_as_read = mode == EvaluationMode::Interactive
-            && !(query.transact && evaluated.analysis.analysis.has_statements());
+        let answered_as_read =
+            interactive && !(query.transact && evaluated.analysis.analysis.has_statements());
         let matches_after = if answered_as_read {
             Vec::new()
         } else {
@@ -794,7 +935,7 @@ async fn evaluate_on_branch_with<'a>(
     // lock. We can't know it's a dry run until after evaluating, so a peek: if
     // the first (lock-free) evaluation shows no commit, return it directly; only
     // a committing document re-enters under the transactor lock.
-    if mode == EvaluationMode::Interactive {
+    if interactive {
         let (evaluated, revision_before, matches_after, ..) = evaluate_once().await?;
         if !(query.transact && evaluated.analysis.analysis.has_statements()) {
             // Pure-query or dry-run: drop the transaction without committing. The
@@ -843,7 +984,7 @@ async fn evaluate_on_branch_with<'a>(
         matches_after,
         matches_before,
         commits,
-        transients,
+        effect,
         eval_ms,
         matches_ms,
         commit_ms,
@@ -852,8 +993,7 @@ async fn evaluate_on_branch_with<'a>(
         loop {
             let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
-            if mode != EvaluationMode::Interactive && !evaluated.analysis.analysis.has_statements()
-            {
+            if !interactive && !evaluated.analysis.analysis.has_statements() {
                 return Err(TonkWorkerError::Internal(
                     "library seed must contain mutation statements".to_owned(),
                 ));
@@ -914,21 +1054,42 @@ async fn evaluate_on_branch_with<'a>(
             }
             // Extract what the response needs before the commit consumes the
             // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
-            // by value). The transients mirror is what post-commit command
-            // dispatch runs on — the commit sweeps them from the transaction.
+            // by value).
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
-            let transients = evaluated.transients;
             let t_commit = web_time::Instant::now();
-            match stage_and_publish(tonk_state, evaluated.txn, record).await {
-                Ok(revision_after) => {
+            // The evaluated transaction commits as it stands: through the
+            // branch's stack, its publish reports what it landed on
+            // `control:` — the document's commands and the ones its rules
+            // dispatched — and the report's effect runs the stack's
+            // providers over exactly those, as a transact's does. The
+            // asking client rides on the tick, a row of `control:` itself,
+            // beside the document's commands. A publish that lost its
+            // compare-and-swap lands nothing and is re-evaluated against
+            // the new head by the retry arm below. A conditional commit
+            // goes through its private handle, outside the stack, with no
+            // command, and reports nothing; a library seed that records
+            // its own version chains a second commit on the first's
+            // batch before the one publish.
+            let commands = evaluated.commands;
+            let mut txn = evaluated.txn;
+            if commands > 0
+                && let Some(client) = client.as_ref()
+            {
+                let mut row = Changes::new();
+                super::command::client_row(&mut row, client);
+                txn = txn.on_tick(row);
+            }
+            let outcome = stage_and_publish(tonk_state, txn, record).await;
+            match outcome {
+                Ok((revision_after, effect)) => {
                     break (
                         revision_before,
                         revision_after,
                         matches_after,
                         matches_before,
                         commits,
-                        transients,
+                        effect,
                         eval_ms,
                         matches_ms,
                         t_commit.elapsed().as_millis(),
@@ -1017,7 +1178,7 @@ async fn evaluate_on_branch_with<'a>(
             matches_after,
             commits,
         }),
-        (!transients.is_empty()).then_some(transients),
+        effect.filter(|effect| !effect.is_empty()),
     ))
 }
 
@@ -1042,34 +1203,36 @@ pub async fn evaluate_body(
         ..Default::default()
     };
     let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+    evaluate_on_branch(tonk_state, tonk_branch, None, bytes, query)
         .await
         .map(|(Json(r), _)| r)
 }
 
-/// [`evaluate_body`], additionally returning the transient facts
-/// (commands) the committed document dispatched. The bridge's evaluate
-/// handler uses this so a sealed guest's document triggers command
-/// dispatch the same way the HTTP `/evaluate` route does; callers that
-/// evaluate authored documents with no commands (seeding, joins) keep
-/// using [`evaluate_body`].
+/// [`evaluate_body`], additionally returning the effect of the commands
+/// the committed document landed in the branch's `control:` layer, the
+/// asking `client` on each command's rows. The bridge's
+/// evaluate handler uses this so a sealed guest's document reaches the
+/// command providers the same way the HTTP `/evaluate` route does;
+/// callers that evaluate authored documents with no commands (seeding,
+/// joins) keep using [`evaluate_body`].
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-pub async fn evaluate_body_with_transients(
+pub async fn evaluate_body_with_commands(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
     branch: &str,
+    client: Option<super::ClientId>,
     body: String,
     transact: bool,
-) -> Result<(EvaluateResponse, Option<Changes>), TonkWorkerError> {
+) -> Result<(EvaluateResponse, Option<Effect>), TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
     let query = EvaluateQuery {
         transact,
         ..Default::default()
     };
     let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+    evaluate_on_branch(tonk_state, tonk_branch, client, bytes, query)
         .await
-        .map(|(Json(r), transients)| (r, transients))
+        .map(|(Json(r), effect)| (r, effect))
 }
 
 /// [`evaluate_body`], with a second commit that names the first's
@@ -1222,7 +1385,7 @@ pub async fn evaluate_profile_body(
         ..Default::default()
     };
     let bytes = Bytes::from(body.into_bytes());
-    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+    evaluate_on_branch(tonk_state, tonk_branch, None, bytes, query)
         .await
         .map(|(Json(r), _)| r)
 }
@@ -1336,6 +1499,7 @@ mod tests {
         super::evaluate_on_branch(
             &tonk,
             tonk.reactor.repository(repo).branch("main"),
+            None,
             body.to_owned().into(),
             super::EvaluateQuery {
                 transact: true,
@@ -2005,14 +2169,14 @@ command!: &counter/+1
         );
     }
 
-    /// The evaluate pipeline must surface a committed document's
-    /// transient facts for post-commit command dispatch — the seam
-    /// the route and the bridge hand to `router::command::dispatch`,
-    /// mirroring `/transact`. A durable document and a dry run
-    /// surface none.
+    /// A committed document's commands land in the branch's `control:`
+    /// layer and come back for the post-commit command providers — the
+    /// seam the route and the bridge hand to
+    /// `router::command::run_commands`, mirroring `/transact`. A
+    /// durable document and a dry run land none.
     #[dialog_common::test]
-    async fn it_returns_transients_for_command_dispatch() {
-        let (state, repo) = state_with_repo("test-evaluate-transients").await;
+    async fn it_returns_the_commands_a_document_landed() {
+        let (state, repo) = state_with_repo("test-evaluate-commands").await;
         let repo = repo.as_str();
 
         evaluate(&state, repo, CONCEPTS, true).await;
@@ -2023,13 +2187,19 @@ command!: &counter/+1
   name: "Dispatch Joe"
   age: 9
 "#;
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), true)
-                .await
-                .expect("transient instance evaluates");
+        let (_, commands) = super::evaluate_body_with_commands(
+            &guard,
+            repo,
+            "main",
+            None,
+            instance.to_owned(),
+            true,
+        )
+        .await
+        .expect("transient instance evaluates");
         assert!(
-            transients.is_some(),
-            "a committed transient-concept assertion must surface for dispatch",
+            commands.is_some(),
+            "a committed transient-concept assertion lands in control: and comes back",
         );
 
         let durable = r#"person!:
@@ -2037,20 +2207,32 @@ command!: &counter/+1
   name: "Durable Joe"
   age: 9
 "#;
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", durable.to_owned(), true)
-                .await
-                .expect("durable instance evaluates");
+        let (_, commands) = super::evaluate_body_with_commands(
+            &guard,
+            repo,
+            "main",
+            None,
+            durable.to_owned(),
+            true,
+        )
+        .await
+        .expect("durable instance evaluates");
         assert!(
-            transients.is_none(),
-            "a durable-only document dispatches nothing",
+            commands.is_none(),
+            "a durable-only document lands no command",
         );
 
-        let (_, transients) =
-            super::evaluate_body_with_transients(&guard, repo, "main", instance.to_owned(), false)
-                .await
-                .expect("dry run evaluates");
-        assert!(transients.is_none(), "a dry run dispatches nothing");
+        let (_, commands) = super::evaluate_body_with_commands(
+            &guard,
+            repo,
+            "main",
+            None,
+            instance.to_owned(),
+            false,
+        )
+        .await
+        .expect("dry run evaluates");
+        assert!(commands.is_none(), "a dry run lands no command");
     }
 
     /// A pure-query document must not advance the branch even with

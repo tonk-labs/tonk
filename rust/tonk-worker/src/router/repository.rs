@@ -345,7 +345,7 @@ const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
 /// separate problems.
 ///
 /// [`CreateSpace`]: tonk_schema::command::CreateSpace
-fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+fn remote_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
     use dialog_corpus::Value;
 
     facts
@@ -363,7 +363,7 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+fn description_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
     use dialog_corpus::Value;
 
     facts
@@ -377,7 +377,7 @@ fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String>
         .filter(|value| !value.is_empty())
 }
 
-fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+fn seed_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
     use dialog_corpus::Value;
 
     facts
@@ -405,7 +405,7 @@ const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 
 /// Whether the create should navigate the caller into the new space.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
-fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+fn open_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
     use dialog_corpus::Value;
 
     facts
@@ -436,11 +436,11 @@ const ENABLE_SYNC_SHARE_ATTR: &str = "xyz.tonk.enable-sync/share";
 /// `Entity` representations — a URL or a DID round-trips through JSON as an
 /// `Entity` (any `:`-bearing string does), so a single-representation read
 /// would silently miss them. Mirrors [`remote_from_facts`].
-fn text_fact(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
+fn text_fact(facts: &[dialog_corpus::Fact], attribute: &str) -> Option<String> {
     text_fact_any_target(facts, attribute)
 }
 
-fn text_fact_any_target(facts: &crate::reactor::EntityFacts, attribute: &str) -> Option<String> {
+fn text_fact_any_target(facts: &[dialog_corpus::Fact], attribute: &str) -> Option<String> {
     use dialog_corpus::Value;
 
     facts
@@ -589,16 +589,14 @@ pub(crate) struct CreateSpaceRequest {
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
-    fn trigger_attributes() -> Vec<String> {
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
         crate::reactor::Migrated::<
             tonk_schema::command::CreateSpace,
             tonk_schema::command::legacy::CreateSpace,
-        >::new()
-        .trigger_attributes()
-        .to_vec()
+        >::concepts()
     }
 
-    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::CreateSpace,
             tonk_schema::command::legacy::CreateSpace,
@@ -1003,7 +1001,7 @@ const INVITE_SPACE_ATTR: &str = "xyz.tonk.invite/space";
 /// `Value::String`, tolerating both representations like `remote_from_facts`
 /// does). `None` for an older claim carrying no such fact — the handler
 /// falls back to the dispatch origin in that case.
-fn invite_space_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+fn invite_space_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
     use dialog_corpus::Value;
 
     facts
@@ -1034,16 +1032,14 @@ pub(crate) struct InviteRequest {
 }
 
 impl crate::reactor::Decode for InviteRequest {
-    fn trigger_attributes() -> Vec<String> {
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
         crate::reactor::Migrated::<
             tonk_schema::command::Invite,
             tonk_schema::command::legacy::Invite,
-        >::new()
-        .trigger_attributes()
-        .to_vec()
+        >::concepts()
     }
 
-    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::Invite,
             tonk_schema::command::legacy::Invite,
@@ -1155,16 +1151,14 @@ pub(crate) struct EnableSyncRequest {
 }
 
 impl crate::reactor::Decode for EnableSyncRequest {
-    fn trigger_attributes() -> Vec<String> {
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
         crate::reactor::Migrated::<
             tonk_schema::command::EnableSync,
             tonk_schema::command::legacy::EnableSync,
-        >::new()
-        .trigger_attributes()
-        .to_vec()
+        >::concepts()
     }
 
-    fn decode(_this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(_this: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         let command = crate::reactor::Migrated::<
             tonk_schema::command::EnableSync,
             tonk_schema::command::legacy::EnableSync,
@@ -1191,11 +1185,11 @@ pub(crate) struct AgentHandoffRequest {
 const AGENT_HANDOFF_SPACE_ATTR: &str = "xyz.tonk.agent-handoff/space";
 
 impl crate::reactor::Decode for AgentHandoffRequest {
-    fn trigger_attributes() -> Vec<String> {
-        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::trigger_attributes()
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
+        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::concepts()
     }
 
-    fn decode(this: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(this: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::decode(this, facts)?;
         Some(Self {
             fresh: text_fact(facts, "xyz.tonk.agent-handoff/fresh").as_deref() == Some("new"),
@@ -6368,11 +6362,13 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", key, e))
     })?;
+    let changes = transaction.into_changes();
     let revision = meta
-        .transaction()
-        .assert(transaction.into_changes())
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction.assert(changes.clone()),
+            ))
+        })
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -8289,11 +8285,13 @@ where
     meta.refresh(&tonk.operator).await.map_err(|e| {
         RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", name, e))
     })?;
+    let changes = transaction.into_changes();
     let revision = meta
-        .transaction()
-        .assert(transaction.into_changes())
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction.assert(changes.clone()),
+            ))
+        })
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -9420,7 +9418,7 @@ mod notebook_creation_tests {
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_repository_tests {
     use super::*;
-    use crate::router::command::{CommandOrigin, dispatch};
+    use crate::router::command::{CommandOrigin, invoke_commands};
     use dialog_corpus::Statement;
     use dialog_query::the;
     use tonk_schema::RepositoryDescription;
@@ -9562,7 +9560,7 @@ mod rename_repository_tests {
             .of(command)
             .is(key.parse::<dialog_corpus::Entity>().unwrap())
             .assert(&mut changes);
-        dispatch(
+        invoke_commands(
             &state,
             CommandOrigin {
                 repo: key.clone(),
@@ -10499,13 +10497,11 @@ route!: &foreign-profile-route
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
-        let mut subscriber = subscribed_session
-            .subscribe(query, None, 0)
-            .expect("view subscription registers");
+        let mut subscriber = subscribed_session.subscribe(query, None, 0);
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&subscribed_session.state));
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         tonk.shared_mut().profile_library = Default::default();
         let outcome = reconcile_profile_library(&tonk)
@@ -10528,7 +10524,7 @@ route!: &foreign-profile-route
             "current facet resolves: {after}"
         );
         let mut delivered = Vec::new();
-        while let Ok(bytes) = subscriber.receiver.try_recv() {
+        while let Ok(bytes) = subscriber.try_recv() {
             delivered.extend_from_slice(&bytes);
         }
         let delivered: serde_json::Value =
@@ -11655,7 +11651,12 @@ mod tests {
         // command (the FAB dispatches it routeless on the profile
         // branch); a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameCmd", "brave-lynx");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::command::invoke_commands(
+            &state,
+            crate::router::CommandOrigin::default(),
+            changes,
+        )
+        .await;
 
         // Override is on the profile meta branch.
         {
@@ -11715,7 +11716,12 @@ mod tests {
         // Rename from the profile branch, where the FAB dispatches it
         // routeless; a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameAll", "brave-lynx");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::command::invoke_commands(
+            &state,
+            crate::router::CommandOrigin::default(),
+            changes,
+        )
+        .await;
 
         assert_eq!(
             self_member_name(&state, &key_a).await.as_deref(),
@@ -11742,7 +11748,7 @@ mod tests {
 
         // Realistic origin: a profile-branch rename command has no repo.
         let changes = profile_rename_transient("did:key:zRenameChip", "brave-lynx");
-        crate::router::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: String::new(),
@@ -11797,7 +11803,12 @@ mod tests {
         // Profile origin, like the FAB's routeless dispatch; a
         // space-branch `profile/rename` is contained by design.
         let changes = profile_rename_transient("did:key:zRenameEmpty", "   ");
-        crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::command::invoke_commands(
+            &state,
+            crate::router::CommandOrigin::default(),
+            changes,
+        )
+        .await;
 
         assert_eq!(
             self_member_name(&state, &key).await,
@@ -12493,14 +12504,12 @@ block/insert!:
                 .acquire(&guard.operator)
                 .await
                 .expect("acquire cached main");
-            subscriber = session
-                .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
-                .expect("subscribe");
+            subscriber = session.subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0);
             before_ptr = Arc::as_ptr(&session.state);
         }
         // Drain whatever subscribing itself delivered, so anything that
         // arrives next can only be a later write's doing.
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         // An ephemeral session fact — the kind a tab's `tonk:site` stamp
         // or the sync status is made of. It must survive the refresh.
@@ -12522,10 +12531,10 @@ block/insert!:
             guard.reactor.run_scheduled_polls(&guard.operator).await;
         }
         assert!(
-            subscriber.receiver.try_recv().is_ok(),
+            subscriber.try_recv().is_ok(),
             "the overlay write must reach the live subscriber",
         );
-        while subscriber.receiver.try_recv().is_ok() {}
+        while subscriber.try_recv().is_ok() {}
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -12542,7 +12551,7 @@ block/insert!:
             "refresh must keep the cached BranchState, not swap it",
         );
         assert_eq!(
-            session.state.subscriptions().lock().len(),
+            session.state.subscriptions_held(),
             1,
             "the live subscription must survive the refresh",
         );
@@ -12555,15 +12564,13 @@ block/insert!:
         // snapshot carries the ephemeral fact. Before the in-place
         // refresh this was the share-flow regression — the swapped-in
         // handle's empty overlay silently dropped every session fact.
-        let mut fresh = session
-            .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
-            .expect("subscribe after refresh");
+        let mut fresh = session.subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0);
         // A new subscriber is Pending until a poll serves its snapshot;
         // drive one the way the request dispatcher would.
         guard.reactor.schedule_poll(Arc::clone(&session.state));
         guard.reactor.run_scheduled_polls(&guard.operator).await;
         let mut snapshot = Vec::new();
-        while let Ok(bytes) = fresh.receiver.try_recv() {
+        while let Ok(bytes) = fresh.try_recv() {
             snapshot.extend_from_slice(&bytes);
         }
         let snapshot = String::from_utf8_lossy(&snapshot);
@@ -12738,7 +12745,7 @@ block/insert!:
         }
         let before = content_invitations(&state, &key).await.len();
 
-        crate::router::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::CommandOrigin::default(),
             fabb_invite_transient("did:key:zJoinedMemberFabbInvite", &subject),
@@ -12847,7 +12854,7 @@ block/insert!:
         // Drive the invite command through the real dispatcher — same path
         // the share modal takes.
         let changes = invite_transient("did:key:zInviteCmd");
-        crate::router::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: key.clone(),
@@ -13568,7 +13575,12 @@ block/insert!:
                 .assert(&mut changes);
         }
 
-        crate::router::dispatch(state, crate::router::CommandOrigin::default(), changes).await;
+        crate::router::command::invoke_commands(
+            state,
+            crate::router::CommandOrigin::default(),
+            changes,
+        )
+        .await;
     }
 
     /// Whether the repo's `main` tracks a remote upstream — the exact condition
@@ -13648,7 +13660,7 @@ block/insert!:
         };
 
         let changes = remove_space_transient("did:key:zRemoveWrongOrigin", &subject);
-        crate::router::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::CommandOrigin {
                 repo: "somerepo".to_string(),
