@@ -5345,16 +5345,21 @@ element!: &space-remove
           const dialog = self.querySelector('[data-space-remove-dialog]');
           dialog?.show?.();
           // The dialog lives in the menu, so the menu stays open under it,
-          // unseen; it closes with the dialog and focus goes back to `more`.
+          // unseen; it shows again when the dialog closes, with focus back
+          // on the item that opened it.
           const menu = self.closest('hub-menu');
           if (!dialog || !menu) return;
           menu.setAttribute('data-behind', '');
           const done = () => {
             dialog.removeEventListener('fabb-close', done);
             native?.removeEventListener('close', done);
-            if (!menu.hasAttribute('data-behind')) return;
             menu.removeAttribute('data-behind');
-            menu.close?.();
+            // The dialog hands focus back while the menu is still unseen,
+            // which drops it; give it to the item that opened the dialog.
+            const active = document.activeElement;
+            if (menu.getAttribute('open') === 'true' && (!active || active === document.body)) {
+              self.querySelector('[data-space-remove-open]')?.focus({ preventScroll: true });
+            }
           };
           const native = dialog.shadowRoot?.querySelector('dialog');
           dialog.addEventListener('fabb-close', done);
