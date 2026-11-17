@@ -1087,7 +1087,7 @@ mod tests {
                 (status, bytes)
             }
         };
-        let targets = || async {
+        let rows = || async {
             let (status, bytes) = call(
                 "GET",
                 format!("/api/repository/{key}/invites"),
@@ -1095,47 +1095,52 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            let listed: Vec<tonk_worker_api::InvitationSummary> =
-                serde_json::from_slice(&bytes).unwrap();
-            listed
-                .into_iter()
-                .map(|row| row.target_cid)
-                .collect::<Vec<_>>()
+            serde_json::from_slice::<Vec<tonk_worker_api::InvitationSummary>>(&bytes).unwrap()
         };
         let invite = format!("/api/repository/{key}/invite");
 
         let (status, _) = call("POST", invite.clone(), "{}".into()).await;
         assert_eq!(status, StatusCode::OK);
-        let default = targets().await;
-        assert_eq!(default.len(), 1);
+        let first = rows().await;
+        assert_eq!(first.len(), 1);
+        let default = first[0].clone();
         let (status, _) = call("POST", invite.clone(), "{}".into()).await;
         assert_eq!(status, StatusCode::OK);
-        let before = targets().await;
-        assert_eq!(before[0], default[0], "the older link lists first");
+        let before = rows().await;
+        assert_eq!(
+            before[0].target_cid, default.target_cid,
+            "the older link lists first"
+        );
+        let second = before[1].target_cid.clone();
 
-        // Reset: mint the replacement, then revoke the default.
+        // Reset mints the replacement first; revoking the old one is the
+        // service's (not reachable here), and the order already holds.
         let (status, _) = call(
             "POST",
             invite.clone(),
-            serde_json::json!({ "replaces": default[0] }).to_string(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, _) = call(
-            "POST",
-            format!("/api/repository/{key}/invites/{}/revoke", default[0]),
-            "{}".into(),
+            serde_json::json!({ "replaces": default.target_cid }).to_string(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
 
-        let listed = targets().await;
-        assert_eq!(listed.len(), 2);
-        assert!(
-            !before.contains(&listed[0]),
-            "the replacing link lists first, in the default's place"
+        let listed = rows().await;
+        assert_eq!(listed.len(), 3);
+        let replacing = listed
+            .iter()
+            .position(|row| row.target_cid != default.target_cid && row.target_cid != second)
+            .expect("the replacing link is listed");
+        assert_eq!(
+            listed[replacing].listed_at, default.minted_at,
+            "the replacing link takes the default's place"
         );
-        assert_eq!(listed[1], before[1], "the second link stays second");
+        assert!(
+            replacing
+                < listed
+                    .iter()
+                    .position(|row| row.target_cid == second)
+                    .unwrap(),
+            "the replacing link lists ahead of the link made before it"
+        );
 
         // Replacing a link this space doesn't list is refused.
         let (status, _) = call(
