@@ -1031,7 +1031,11 @@
               .then(async (result) => {
                 route = m.params.structuredContent;
                 note('view handed over');
-                if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
+                if (hostFrames(result) && (await tryFrame())) {
+                  note('framed');
+                  reached("waiting for the provider's page");
+                  return offer();
+                }
                 if (viewFrame !== undefined) restoreSandbox();
                 await connect();
                 await navigate(route.path);
@@ -1048,7 +1052,12 @@
         }
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
-          if (m?.tonkFrame === 'size') resize(m.height);
+          if (m?.tonkFrame === 'size') {
+            // The provider's page shows, or shows its own error: either
+            // way the relay is no longer waiting on a stage of its own.
+            reached('');
+            resize(m.height);
+          }
           else if (m?.tonkFrame === 'loading') viewFrame.loading?.();
           else if (m?.tonkFrame === 'hello' && typeof m.did === 'string') {
             viewFrame.did = m.did;

@@ -31,7 +31,9 @@ concepts and expand the overview, or `tonk show --notation` for the full schema
 export. `tonk show --json` returns the complete structured concept list.
 
 `tonk assert ... --json` returns a `tonk.assert.v1` receipt with `committed`,
-`dryRun`, revisions, claim count, entity, `verification` and `sync`. Verification
+`changed`, `dryRun`, revisions, claim count, entity, `verification` and `sync`.
+Asserting values the space already holds is a no-op: it returns the existing
+entity with `changed: false`, and the text receipt says `unchanged`. Verification
 is local: `verified`, `not-matched`, `failed`, or `not-run` for a dry run. Remote
 push is reported separately as `pushed`, `failed`, `no-upstream`, `disabled`, or
 `not-committed`. If push failed, the local write is still saved; retry `tonk push`,

@@ -1,5 +1,10 @@
 # Journey catalog
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## How to read this catalog
 
 This is the complete map of user goals entered through the current `tonk` CLI
@@ -91,6 +96,7 @@ the most important gaps, not the only variants required.
 | `SPACE-15` | Browse a live community catalog in Discover, inspect details and an expanded photo, then copy with a separate name/description modal. | Catalog loading/failure/retry; empty or populated collection; details and photo; back from copy options; unavailable or changed source; retry; remote template home. | Node coverage for remote metadata escaping and catalog retry; native command coverage for ordered required files and checksum refusal before creation; cross-origin browser regression for catalog retry, two-step modal, refusal/retry, single creation and copied home. | Upstream availability, interrupted writes, response loss after creation, account changes, hosted sync, and full interactions within every template. |
 
 | `SPACE-16` | Recognize a visited home from its blurred Hub thumbnail. | Unvisited/visited; unsupported view; cache miss/expiry; account switch; desktop/narrow. | Focused cache/authorization/fallback tests and a pre-rebase Chrome smoke check of automatic capture, decoded blurred cards, and zero mounted space frames in the Hub. | Browser coverage after the Discover rebase, other browsers, physical mobile performance, and complex media fidelity. |
+| `SPACE-17` | Open a branch of a space by URL (`/space/{branch}@{did}`), and make one the space lacks from the panel that offers "branch off main" or "start empty". | Existing branch; missing branch on a space that is here; space still arriving; remote holding the branch; remote unreachable; invalid name. | Native worker tests for the missing check, a tab's load through `/transact` making nothing, starting from main, empty or the remote's branch, and the profile-only command; a whole-browser regression drives the panel and asserts the space view renders on the new branch. | Remote-held branch and unreachable remote in a browser, the FABB on a non-main branch, refusals surfaced in the panel, branch listing and merge. |
 
 ## Spaces: account directory, sync, and collaboration
 

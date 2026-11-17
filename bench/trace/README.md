@@ -18,11 +18,22 @@ scenarios that have made the interface reload or stall:
 | `remote-write-then-stall`, `stall-before-sync` | Remote writes around a stalled network |
 | `slow-reload`, `stalled-reload`, `offline-reload` | Reload and switch spaces at 2 s latency, on a network that never answers, and offline |
 
-`gate.mjs` is the network: `open`, `latency`, `offline` (refuse at once) or
-`stall` (accept and never answer, so nothing fails and nothing falls back).
-Connections opened before a switch are left alone, as a real network would.
-The UCAN remote the worker syncs with is the access service itself, which the
-gate does not sit in front of.
+The network is `tonk-perf link`: a shaped TCP link in front of the page
+(`page`) and one in front of the access service (`ucan`), the remote the
+browser syncs with, its live-update socket and its block reads and writes
+included. The access service names the `ucan` link in its object permits
+(`ACCESS_PUBLIC_ENDPOINT`), so nothing the browser sends goes around it.
+The CLI "other device" pushes to the service directly, so a stalled link
+never holds up a remote write.
+
+`TRACE_PROFILE` names the network the links start as (`lan` by default;
+`broadband`, `mobile`, `slow3g`, `satellite`, `flaky`, `nat`; see
+`tonk-perf profiles`). A scenario switches it through the control server
+(`config.gate`): `GET /__gate?mode=open|latency|offline|stall[&ms=N]`.
+`offline` resets every connection and refuses new ones; `stall` holds every
+byte, on open connections too, until the link opens, when it is delivered;
+`open` goes back to the profile. `/profile?name=...`, `/reset` and `/stats`
+are there too, each optionally `&link=page` or `&link=ucan`.
 
 ## Output
 
@@ -36,8 +47,14 @@ Each run writes `bench/trace/runs/<stamp>/`:
 - `summary.json`: per scenario, time to settle (content in a guest and no
   pulse for 1 s), top-page loads, guest frames built and removed, views
   removed, and pulse count and duration.
-- `gate.log`: every request the gate saw, with the mode it was in. In `stall`
-  mode, this log names the request the page is waiting on.
+- `links.jsonl`: every HTTP exchange that crossed a link, with its link,
+  kind (`ucan`, `object-get`, `object-put`, `socket`, `service`, `api`,
+  `asset`), bytes, and when the browser sent it, got its first byte and its
+  last. An exchange still unanswered when the run ends was never answered;
+  in `stall` mode, those name what the page is waiting on.
+- `inflight.json`: the exchanges still open when the run ended; one never
+  answered is a request the page waited on to the end. `links-stats.json`:
+  connections, bytes, resets and forgotten connections per link.
 - `requests.jsonl`, screenshots, and the access service's and proxy's logs.
 
 ## Running

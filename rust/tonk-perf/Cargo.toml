@@ -6,18 +6,42 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "tonk-perf"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# The binary: the front proxy, the analyzer, and links run from a script.
+# A test that only needs `tonk_perf::link` turns default features off.
+cli = [
+  "dep:anyhow",
+  "dep:axum",
+  "dep:bytes",
+  "dep:clap",
+  "dep:futures",
+  "dep:reqwest",
+  "dep:sha2_0_10",
+  "tokio/full",
+]
 
 [dependencies]
-anyhow.workspace = true
-axum = { workspace = true, features = ["http1", "tokio"] }
-bytes.workspace = true
-clap.workspace = true
-futures.workspace = true
-reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sha2_0_10 = { workspace = true }
+tokio = { workspace = true, features = ["net", "time", "sync", "rt", "io-util", "macros"] }
+tokio-util.workspace = true
+
+anyhow = { workspace = true, optional = true }
+axum = { workspace = true, features = ["http1", "tokio"], optional = true }
+bytes = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+sha2_0_10 = { workspace = true, optional = true }
+
+[dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

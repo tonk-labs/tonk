@@ -45,7 +45,7 @@ test("identity rejects malformed identifiers and eventually resolves", async () 
   assert.equal(calls, 3);
 });
 
-function sdk({ optedOut = false, identifyThrows = false, acceptsIdentity = true } = {}) {
+function sdk({ optedOut = false, identifyThrows = false, acceptsIdentity = true, hostname = "tonk.network" } = {}) {
   const props = {};
   let current = "anonymous";
   let config;
@@ -59,7 +59,7 @@ function sdk({ optedOut = false, identifyThrows = false, acceptsIdentity = true 
     get_distinct_id: () => current,
   };
   const context = vm.createContext({ window: { posthog },
-    location: { hostname: "tonk.network" },
+    location: { hostname },
     localStorage: { getItem: () => optedOut ? "off" : null },
   });
   vm.runInContext(bridge, context);
@@ -82,4 +82,19 @@ test("opt-out never initializes PostHog", () => {
   const { context, config } = sdk({ optedOut: true });
   assert.equal(context.ph_init("test-key", "test-host", "test-version"), false);
   assert.equal(config(), undefined);
+});
+
+test("environment follows the deployment's hostname", () => {
+  for (const [hostname, environment] of [
+    ["tonk.network", "production"],
+    ["staging.tonk.xyz", "staging"],
+    ["tonk.spot", "staging"],
+    ["tonk.foundation", "dev"],
+    ["localhost", "dev"],
+    ["preview.workers.dev", "dev"],
+  ]) {
+    const { context, props } = sdk({ hostname });
+    assert.equal(context.ph_init("test-key", "test-host", "test-version"), true);
+    assert.equal(props.environment, environment, hostname);
+  }
 });

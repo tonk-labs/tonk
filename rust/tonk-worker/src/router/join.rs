@@ -55,9 +55,9 @@
 //! from a closed set rather than anything an upstream response said.
 
 use ::axum::{Json, extract::State, http::StatusCode};
-use dialog_artifacts::{ArtifactSelector, Changes, Entity, Relation, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
 use dialog_capability::{Fork, Provider};
+use dialog_corpus::{Changes, Entity, Relation, Selector, Statement as _, Value};
 use dialog_credentials::Credential;
 use dialog_effects::archive::Get;
 use dialog_query::{Output as _, Query, Term};
@@ -600,19 +600,20 @@ pub(crate) async fn join_invite_as(
     Ok(outcome)
 }
 
-/// Open a space this device holds no replica of from its bare address,
-/// `/space/{did}`: with access the account already holds, or else with
-/// the public ticket the space keeps if it is published.
+/// Open a space this device holds no replica of from its address,
+/// `/space/{did}` or any route under it: with access this profile already
+/// holds, or else with a ticket the space keeps, the account's own ahead
+/// of the public one (see [`claim_space_ticket`]).
 ///
-/// The public ticket makes its redeemer a reader, not a member. It
-/// grants only `/use/get`, so nothing this does writes to the space: no
-/// roster claim, no retained hop, no custodied seed. The ticket is saved
-/// in the profile, where it proves through the account's powerline from
-/// the public principal, so the next open finds it here rather than
-/// claiming again.
+/// Neither ticket makes its redeemer a member: nothing this does writes
+/// to the space, no roster claim, no retained hop, no custodied seed. The
+/// public ticket grants only `/use/get`; the account's grants whatever it
+/// was issued with. The ticket is saved in the profile, where it proves
+/// through the account's powerline, so the next open finds it here rather
+/// than claiming again.
 ///
-/// [`JoinFailure::private`] when the space keeps no public ticket and
-/// the account holds no access to it.
+/// [`JoinFailure::private`] when the space keeps neither ticket and the
+/// profile holds no access to it.
 async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, JoinFailure> {
     let subject = ticket.subject().clone();
     let key = subject.repo_key().to_owned();
@@ -637,15 +638,15 @@ async fn open_space(tonk: &TonkState, ticket: Ticket) -> Result<JoinOutcome, Joi
     super::public_access::ensure_powerline(tonk, &account)
         .await
         .map_err(|error| JoinFailure::claim_failed(format!("public powerline: {error}")))?;
-    super::public_access::save(tonk, device_grant)
+    super::public_access::save(tonk, device_grant.clone())
         .await
         .map_err(|error| JoinFailure::claim_failed(format!("device grant: {error}")))?;
 
     if !super::public_access::can_read(tonk, &subject).await {
-        let chain = claim_public_ticket(&ticket).await?;
+        let chain = claim_space_ticket(tonk, &ticket, &account, &device_grant).await?;
         super::public_access::save(tonk, chain)
             .await
-            .map_err(|error| JoinFailure::claim_failed(format!("public ticket: {error}")))?;
+            .map_err(|error| JoinFailure::claim_failed(format!("space ticket: {error}")))?;
     }
 
     let remote_url = ticket.remote().to_string();
@@ -704,6 +705,93 @@ async fn adopt_waiting_views(tonk: &TonkState, key: &str) {
         log!("join: views waiting on '{key}' were not handed the space: {error}");
     }
     crate::router::session::stamp_waiting_sites(tonk, key).await;
+}
+
+/// Claim the ticket the space keeps for `account` and its public ticket
+/// at once, and answer the account's when it has one: it carries what the
+/// account was granted, where the public one grants only reads. With no
+/// ticket for the account, the public ticket's answer stands, including
+/// [`JoinFailure::private`] when there is none.
+///
+/// The account's ticket is claimed by this profile, on the account's
+/// behalf: it signs as itself and presents `device_grant`, the account's
+/// powerline to it, as the service's claim allows a holder's delegates.
+/// No account key or passkey is needed.
+async fn claim_space_ticket(
+    tonk: &TonkState,
+    public: &Ticket,
+    account: &Did,
+    device_grant: &DelegationChain,
+) -> Result<DelegationChain, JoinFailure> {
+    let (own, open) = futures_util::future::join(
+        claim_account_ticket(tonk, public, account, device_grant),
+        claim_public_ticket(public),
+    )
+    .await;
+    match own {
+        Ok(Some(chain)) => {
+            log!("join: opened with the ticket kept for the account");
+            Ok(chain)
+        }
+        Ok(None) => open,
+        Err(failure) => {
+            log!(
+                "join: the account's ticket was not claimed ({}); using the public one",
+                failure.kind().as_str()
+            );
+            open
+        }
+    }
+}
+
+/// The ticket `public`'s space keeps for `account`, claimed by this
+/// profile with `device_grant` as its proof; `None` when it keeps none.
+async fn claim_account_ticket(
+    tonk: &TonkState,
+    public: &Ticket,
+    account: &Did,
+    device_grant: &DelegationChain,
+) -> Result<Option<DelegationChain>, JoinFailure> {
+    let profile = tonk.profile.credential().signer().clone();
+    let fetched = tonk_account::ticket::claim(
+        public.remote(),
+        profile,
+        account,
+        Some(device_grant),
+        public.subject(),
+    )
+    .await
+    .map_err(|error| match error {
+        tonk_account::ticket::ClaimError::Refused(reason) => classify_authorization(&reason),
+        _ => JoinFailure::unavailable("the account's ticket could not be fetched"),
+    })?;
+    let Some(bytes) = fetched else {
+        return Ok(None);
+    };
+    accept_account_ticket(&bytes, public.subject(), account).map(Some)
+}
+
+/// `bytes` as the ticket `space` keeps for `account`: a delegation chain
+/// on that space, made out to that account.
+fn accept_account_ticket(
+    bytes: &[u8],
+    space: &Did,
+    account: &Did,
+) -> Result<DelegationChain, JoinFailure> {
+    let chain = DelegationChain::try_from(bytes).map_err(|error| {
+        JoinFailure::malformed(format!("the account's ticket is not a chain: {error}"))
+    })?;
+    if chain.subject() != Some(space) {
+        return Err(JoinFailure::malformed(
+            "the account's ticket grants another space",
+        ));
+    }
+    if chain.audience() != account {
+        return Err(JoinFailure::malformed(
+            "the account's ticket was kept for another principal",
+        ));
+    }
+    Ok(chain)
 }
 
 /// Claim the ticket a space keeps for the public principal, signed as
@@ -998,50 +1086,41 @@ async fn perform_join(
     // holds other writers of this branch off meanwhile (a space's seeding
     // commits into it in the background), so a commit that loses the
     // head's race is computed again on the head that won.
-    const CLAIM_ATTEMPTS: usize = 4;
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let (changes, _already_claimed) = claim_changes(
-            tonk,
-            &branch,
-            &tonk.operator,
-            &prepared.invitation,
-            &prepared.invitation_execution,
-            &prepared.inviter,
-            &prepared.member,
-            &prepared.subject,
-            agent,
-        )
-        .await?;
-        if changes.is_empty() {
-            break;
-        }
-        match branch
-            .transaction()
-            .assert(changes)
-            .commit()
-            .publish()
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(_) => break,
-            Err(dialog_repository::CommitError::Publish(
-                dialog_repository::PublishError::VersionMismatch { .. },
-            )) if attempt < CLAIM_ATTEMPTS => {
-                branch.refresh(&tonk.operator).await.map_err(|error| {
-                    JoinFailure::claim_failed(format!(
-                        "failed to read the content branch again: {error}"
-                    ))
-                })?;
-            }
-            Err(error) => {
-                return Err(JoinFailure::claim_failed(format!(
-                    "failed to commit the claim: {error}"
-                )));
-            }
+    enum ClaimTry {
+        Read(JoinFailure),
+        Commit(dialog_repository::CommitError),
+    }
+    impl From<dialog_repository::CommitError> for ClaimTry {
+        fn from(error: dialog_repository::CommitError) -> Self {
+            Self::Commit(error)
         }
     }
+    let (claimed, claiming) = (&branch, &prepared);
+    claimed
+        .transact(|transaction| async move {
+            let (changes, _already_claimed) = claim_changes(
+                tonk,
+                claimed,
+                &tonk.operator,
+                &claiming.invitation,
+                &claiming.invitation_execution,
+                &claiming.inviter,
+                &claiming.member,
+                &claiming.subject,
+                agent,
+            )
+            .await
+            .map_err(ClaimTry::Read)?;
+            Ok::<_, ClaimTry>(transaction.assert(changes))
+        })
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| match error {
+            ClaimTry::Read(failure) => failure,
+            ClaimTry::Commit(error) => {
+                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+            }
+        })?;
 
     // The reactor may hold a handle from an earlier attempt at this key;
     // the pull and commit moved the head underneath it. Leaving a stale
@@ -1415,8 +1494,15 @@ async fn save_authority(
 /// The typed service response survives the pull's error chain, so a
 /// revoked credential is separated from an unreachable service without
 /// reading either one's body.
-async fn pull_upstream<Env: BranchEnv>(branch: &Branch, env: &Env) -> Result<(), JoinFailure> {
-    match branch.pull().perform(env).await {
+async fn pull_upstream<Env: BranchEnv + dialog_repository::PullEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<(), JoinFailure> {
+    match branch
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(env)
+        .await
+    {
         Ok(_) => Ok(()),
         Err(error) => Err(classify_pull(&error)),
     }
@@ -1528,7 +1614,7 @@ async fn first_value<Env: BranchEnv>(
         .map_err(|error| JoinFailure::claim_failed(format!("bad validation attribute: {error}")))?;
     let claims = branch
         .claims()
-        .select(ArtifactSelector::new().of(entity).the(attribute))
+        .select(Selector::new().of(entity).the(attribute))
         .perform(env)
         .await
         .map_err(|error| {
@@ -1927,8 +2013,7 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 /// subscribes to.
 ///
 /// [`Join`]: tonk_schema::command::Join
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Join) {
         // A short link (`/@/{hash}#seed`) resolves to the long form
@@ -2140,7 +2225,7 @@ fn after_join(page: &str, space: &str) -> AfterJoin {
 /// display lost its entity, fell back to its pending spinner, and
 /// nothing downstream ever rendered. Scope the clear to the join's own
 /// entities, exactly as the site re-stamp does with its own.
-fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
+fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_corpus::Entity) {
     let status = status.clone();
     session
         .state
@@ -2154,8 +2239,8 @@ fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_a
 /// whole contract, and getting it backwards is invisible until a page
 /// silently stops rendering.
 fn retains_overlay_entity(
-    overlaid: &dialog_artifacts::Entity,
-    status: &dialog_artifacts::Entity,
+    overlaid: &dialog_corpus::Entity,
+    status: &dialog_corpus::Entity,
 ) -> bool {
     overlaid != status
 }
@@ -2190,7 +2275,7 @@ async fn run_join(env: &crate::router::CommandEnv, page: &str, link: String) {
         }
     };
 
-    let status_entity: dialog_artifacts::Entity = match JOIN_STATUS_URI.parse() {
+    let status_entity: dialog_corpus::Entity = match JOIN_STATUS_URI.parse() {
         Ok(entity) => entity,
         Err(e) => {
             log!("join: bad status URI: {e}");
@@ -2518,7 +2603,7 @@ mod invite_presence_tests {
 #[cfg(test)]
 mod overlay_scope_tests {
     use super::{JOIN_STATUS_URI, retains_overlay_entity};
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
 
     #[test]
     fn it_clears_only_the_joins_own_overlay_entity() {
@@ -2705,7 +2790,7 @@ mod invite_name_tests {
     /// never the wire.
     #[dialog_common::test]
     async fn it_resolves_a_pasted_short_link_before_joining() {
-        use dialog_artifacts::Statement as _;
+        use dialog_corpus::Statement as _;
         use dialog_query::the;
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -2742,12 +2827,12 @@ mod invite_name_tests {
         // The same transient the Hub paste form commits, through the
         // full dispatch path (profile origin selects the vocabulary
         // that carries Join).
-        let mut changes = dialog_artifacts::Changes::new();
+        let mut changes = dialog_corpus::Changes::new();
         the!("xyz.tonk.command.join/url")
-            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .of("cmd:join".parse::<dialog_corpus::Entity>().unwrap())
             .is(short)
             .assert(&mut changes);
-        crate::router::command::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::command::CommandOrigin::default(),
             changes,
@@ -2768,7 +2853,7 @@ mod invite_name_tests {
     /// `/join` visit.
     #[dialog_common::test]
     async fn it_joins_a_link_carried_to_join() {
-        use dialog_artifacts::Statement as _;
+        use dialog_corpus::Statement as _;
         use dialog_query::the;
 
         let state = crate::router::command::tests::native::test_state().await;
@@ -2779,12 +2864,12 @@ mod invite_name_tests {
         )
         .unwrap();
 
-        let mut changes = dialog_artifacts::Changes::new();
+        let mut changes = dialog_corpus::Changes::new();
         the!("xyz.tonk.command.join/url")
-            .of("cmd:join".parse::<dialog_artifacts::Entity>().unwrap())
+            .of("cmd:join".parse::<dialog_corpus::Entity>().unwrap())
             .is(page)
             .assert(&mut changes);
-        crate::router::command::dispatch(
+        crate::router::command::invoke_commands(
             &state,
             crate::router::command::CommandOrigin::default(),
             changes,
@@ -3162,7 +3247,7 @@ pub(crate) mod tests {
     /// device. Every roster write resolves the member through
     /// `account::member_did`, so a test that looked up its own row by
     /// profile DID would never find it.
-    async fn member_entity(state: &crate::router::AppState) -> dialog_artifacts::Entity {
+    async fn member_entity(state: &crate::router::AppState) -> dialog_corpus::Entity {
         let tonk = state.read().await;
         crate::router::identity::root_did(&tonk)
             .await
@@ -4368,7 +4453,7 @@ mod renewal_tests {
             .await
             .expect("the member's branch opens");
         branch
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(&member.operator)
             .await
             .map(|_| ())

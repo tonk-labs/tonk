@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use tonk_notation::{
     Anchor, Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar,
@@ -24,8 +24,8 @@ use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
 
 /// The `as:` spelling of a value type, for diagnostics.
-fn type_spelling(ty: dialog_query::artifact::Type) -> String {
-    use dialog_query::artifact::Type;
+fn type_spelling(ty: dialog_query::corpus::Type) -> String {
+    use dialog_query::corpus::Type;
     match ty {
         Type::String => "text".into(),
         Type::UnsignedInt => "unsigned-integer".into(),
@@ -41,8 +41,8 @@ fn type_spelling(ty: dialog_query::artifact::Type) -> String {
 /// What literal the declared type would read. A number literal's
 /// spelling carries no type, so the hint names a number the lens
 /// reads unchanged, never a sign or a decimal point.
-fn divergence_hint(expected: dialog_query::artifact::Type, value: &Value) -> String {
-    use dialog_query::artifact::Type;
+fn divergence_hint(expected: dialog_query::corpus::Type, value: &Value) -> String {
+    use dialog_query::corpus::Type;
     match (expected.storage(), value) {
         (Type::UnsignedInt, Value::SignedInt(_) | Value::Float(_)) => {
             "write a non-negative whole number for a natural".into()
@@ -710,16 +710,15 @@ pub(crate) fn derive_head_intent(
         Some(field) => match &field.value {
             FieldValue::Variable(v) => ThisIntent::Variable(v.clone()),
             FieldValue::Uri(uri) => {
-                let entity: Entity =
-                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::InvalidSubjectUri {
-                                subject: uri.clone(),
-                                reason: e.to_string(),
-                            },
-                            field.value_range,
-                        )
-                    })?;
+                let entity: Entity = uri.parse().map_err(|e: dialog_corpus::IdentityError| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidSubjectUri {
+                            subject: uri.clone(),
+                            reason: e.to_string(),
+                        },
+                        field.value_range,
+                    )
+                })?;
                 ThisIntent::Uri(entity)
             }
             FieldValue::Symbol(name) => {
@@ -918,16 +917,15 @@ fn digest_into(
                 Value::Entity(entity)
             }
             FieldValue::Uri(uri) => {
-                let entity: Entity =
-                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::InvalidSubjectUri {
-                                subject: uri.clone(),
-                                reason: e.to_string(),
-                            },
-                            field.value_range,
-                        )
-                    })?;
+                let entity: Entity = uri.parse().map_err(|e: dialog_corpus::IdentityError| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidSubjectUri {
+                            subject: uri.clone(),
+                            reason: e.to_string(),
+                        },
+                        field.value_range,
+                    )
+                })?;
                 Value::Entity(entity)
             }
             // Unbound variables, blanks and premises carry no content

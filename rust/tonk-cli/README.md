@@ -179,7 +179,9 @@ CLI space creation and transplant stay local and do not provision account hostin
 with errors that name the upstream-not-configured and non-fast-forward cases.
 `status` classifies the local branch against its upstream without merging.
 Its `tonk.status.v3` JSON describes only the selected space, sync state, access
-kind, and any space-scoped authority. Version three deliberately removes the
+kind, and any space-scoped authority. The access kind comes from the stored
+grant; when the status fetch is refused by the access service (a revoked or
+expired grant), `accessRejected` carries the service's reason. Version three deliberately removes the
 cached CLI account/session section: unrelated legacy account state neither
 authorizes nor changes the selected space.
 

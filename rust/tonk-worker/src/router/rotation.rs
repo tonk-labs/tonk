@@ -1044,11 +1044,11 @@ async fn issued_link_entities(
     tonk: &TonkState,
     branch: &dialog_repository::Branch,
     issuer: &Did,
-) -> Result<Vec<dialog_artifacts::Entity>, TonkWorkerError> {
-    use dialog_artifacts::{ArtifactSelector, Value};
+) -> Result<Vec<dialog_corpus::Entity>, TonkWorkerError> {
+    use dialog_corpus::{Selector, Value};
     use futures_util::StreamExt as _;
 
-    let selector = ArtifactSelector::new()
+    let selector = Selector::new()
         .the(
             dialog_repository::DELEGATION_ISSUER
                 .parse()
@@ -1070,7 +1070,7 @@ async fn issued_link_entities(
         let bytes = fact.of_bytes().map_err(|error| {
             TonkWorkerError::Internal(format!("read an issued grant's entity: {error}"))
         })?;
-        let entity: dialog_artifacts::Entity =
+        let entity: dialog_corpus::Entity =
             String::from_utf8_lossy(&bytes).parse().map_err(|error| {
                 TonkWorkerError::Internal(format!("parse an issued grant's entity: {error:?}"))
             })?;
@@ -1101,7 +1101,7 @@ mod tests {
         repo: &str,
         audience: &Did,
     ) -> usize {
-        use dialog_artifacts::{ArtifactSelector, Value};
+        use dialog_corpus::{Selector, Value};
         use futures_util::StreamExt as _;
 
         let tonk = state.read().await;
@@ -1112,7 +1112,7 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .expect("the content branch opens");
-        let selector = ArtifactSelector::new()
+        let selector = Selector::new()
             .the(
                 dialog_repository::DELEGATION_AUDIENCE
                     .parse()
@@ -1439,7 +1439,7 @@ mod tests {
         tonk.reactor
             .repository(&key)
             .branch("roster-replica")
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(&tonk.operator)
             .await
             .unwrap();
@@ -1454,7 +1454,7 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        let initial = subscription.receiver.recv().await.unwrap();
+        let initial = subscription.recv().await.unwrap();
         assert!(String::from_utf8_lossy(&initial).contains(&old.member.0.to_string()));
         assert!(
             super::super::profile_name::project_member_name(&tonk, &key, &root, "jack")
@@ -1464,7 +1464,6 @@ mod tests {
         );
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         let update = subscription
-            .receiver
             .try_recv()
             .expect("live roster receives repair");
         let update = String::from_utf8_lossy(&update);
@@ -1488,7 +1487,7 @@ mod tests {
         tonk.reactor
             .repository(&key)
             .branch("roster-replica")
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(&tonk.operator)
             .await
             .unwrap();
