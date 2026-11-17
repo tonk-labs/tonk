@@ -761,7 +761,9 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         .and_then(|tail| tail.split("</div>").next())
         .expect("the space route's join sits in a task page");
     assert!(join_page.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
-    assert!(join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">"));
+    assert!(
+        join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">")
+    );
     for contract in [
         ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
         ".space-unknown:has(.space-join .join-status) { padding:0; }",
@@ -2402,9 +2404,10 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     assert!(pane.contains(
         "<span data-link-connected-name>The device</span> can now use your account. You can close this page."
     ));
-    assert!(PROFILE_LIBRARY.contains(
-        "self.text('[data-link-connected-name]', request.name || 'The device');"
-    ));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("self.text('[data-link-connected-name]', request.name || 'The device');")
+    );
     assert!(
         pane.contains("BUG-246"),
         "a slot for the code the device shows"
