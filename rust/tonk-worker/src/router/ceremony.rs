@@ -213,10 +213,10 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
 /// Decode optional account constraints without accepting malformed constraints.
 pub(crate) struct AuthorizeDeviceRequest(tonk_worker_api::DeviceAuthorization);
 impl crate::reactor::Decode for AuthorizeDeviceRequest {
-    fn trigger_attributes() -> Vec<String> {
-        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::trigger_attributes()
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
+        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::concepts()
     }
-    fn decode(_entity: dialog_corpus::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+    fn decode(_entity: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         decode_authorization(facts).map(Self)
     }
 }
@@ -226,7 +226,7 @@ impl dialog_capability::Command for AuthorizeDeviceRequest {
 }
 
 fn decode_authorization(
-    facts: &crate::reactor::EntityFacts,
+    facts: &[dialog_corpus::Fact],
 ) -> Option<tonk_worker_api::DeviceAuthorization> {
     use crate::reactor::Decode as _;
     let entity = facts.first()?.of.clone();
@@ -453,7 +453,7 @@ mod authorization_tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         for state in [
             ceremony_state::PENDING_CEREMONY,
             ceremony_state::WORKING,
@@ -462,7 +462,6 @@ mod authorization_tests {
         ] {
             super::report_authorization(&tonk, &request, state, "").await;
             let frame = subscription
-                .receiver
                 .try_recv()
                 .expect("a ceremony report must broadcast before returning");
             let frame = String::from_utf8_lossy(&frame);
@@ -501,13 +500,12 @@ mod authorization_tests {
                 .await
                 .unwrap()
         };
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         {
             let tonk = state.read().await;
             super::report_working(&state, &tonk, &request).await;
         }
         let frame = subscription
-            .receiver
             .recv()
             .await
             .expect("the detached refresh broadcasts the progress");

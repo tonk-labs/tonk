@@ -6800,6 +6800,12 @@ pub(crate) mod tests {
         // document; the hub lives in the guest frame, so go back in.
         watch_guest_clipboard(&driver).await?;
         enter_guest(&driver).await?;
+        driver
+            .execute(
+                "window.__sawLinks = !!document.querySelector('space-links');",
+                Vec::new(),
+            )
+            .await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
         wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         let first = guest_copied_text(&driver).await?;
@@ -6825,20 +6831,46 @@ pub(crate) mod tests {
         .await?;
         wait_for_displayed(&driver, &format!("{row} .hub-ask [data-link-keep]")).await?;
         click(&driver, &format!("{row} .hub-ask [data-link-do]")).await?;
-        if let Err(error) =
-            wait_for_text_containing(&driver, "[data-hub-receipt]", "removed a passlink from").await
-        {
+        // Each poll re-enters the guest: if the hub reloads under the
+        // removal, the frame WebDriver held is gone. A reload also drops the
+        // clipboard hook, which says it happened.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(&driver).await?;
             let state = driver
                 .execute(
-                    "const links = document.querySelector(arguments[0]); \
-                     return { error: links?.querySelector('[data-links-err]')?.textContent ?? null, \
-                       links: links ? links.outerHTML.slice(0, 2000) : null };",
-                    vec![serde_json::json!(format!("{row} space-links"))],
+                    "const row = document.querySelector(arguments[1]); \
+                     return { receipt: document.querySelector('[data-hub-receipt]')?.textContent ?? null, \
+                       links: !!document.querySelector(arguments[0]), \
+                       error: document.querySelector(arguments[0] + ' [data-links-err]')?.textContent ?? null, \
+                       reloaded: window.__tonkWrote === undefined, \
+                       allLinks: document.querySelectorAll('space-links').length, \
+                       rows: [...document.querySelectorAll('.hub-row')].map((each) => (each.dataset.spaceSubject ?? '').slice(-6) + (each.hasAttribute('data-open') ? '+open' : '')), \
+                       fold: row?.querySelector('.hub-fold')?.outerHTML.slice(0, 1500) ?? null, \
+                       oldAddress: document.querySelectorAll('[data-space-address]').length, \
+                       sawLinksOnce: window.__sawLinks === true };",
+                    vec![
+                        serde_json::json!(format!("{row} space-links")),
+                        serde_json::json!(row),
+                    ],
                 )
-                .await
-                .map(|value| value.json().to_string())
-                .unwrap_or_else(|inspect| format!("unable to inspect the links: {inspect}"));
-            return Err(error).context(format!("after remove: {state}"));
+                .await?
+                .json()
+                .clone();
+            if state["receipt"]
+                .as_str()
+                .is_some_and(|text| text.contains("removed a passlink from"))
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
+                let invites = get_json(&driver, &format!("/api/repository/{key}/invites")).await?;
+                return Err(anyhow!(
+                    "no removal receipt: guest={state} invites={invites}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
 
         // Resetting the default hands over a new link.

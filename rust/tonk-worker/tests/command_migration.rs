@@ -26,7 +26,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use dialog_corpus::{Entity, Fact};
-use dialog_reactor::{EntityFacts, Migrated};
+use dialog_reactor::Migrated;
 use tonk_schema::command;
 
 fn entity(source: &str) -> Entity {
@@ -37,7 +37,7 @@ fn entity(source: &str) -> Entity {
 ///
 /// Built as raw artifacts rather than through a typed concept: the whole
 /// point is to post attribute names no current type declares.
-fn facts(pairs: Vec<(&str, Value)>) -> EntityFacts {
+fn facts(pairs: Vec<(&str, Value)>) -> Vec<Fact> {
     let this = entity("did:key:zCommand");
     pairs
         .into_iter()

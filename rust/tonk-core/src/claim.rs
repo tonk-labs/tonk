@@ -402,9 +402,9 @@ impl TryFrom<SourceClaim> for Claim {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransactRequest {
     /// In document order. Each claim contributes facts to the
-    /// transaction; the reactor buckets transient applications
-    /// separately so they can be retracted before the durable
-    /// write.
+    /// transaction; the reactor writes a transient application's into
+    /// the `control:` layer, where they are the dispatch's stimulus and
+    /// never reach durable storage.
     pub claims: Vec<SourceClaim>,
 }
 

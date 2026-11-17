@@ -8,6 +8,10 @@
 //! `#![cfg(..)]` it had as a target, so what runs where is unchanged;
 //! nextest still runs every test in a process of its own.
 
+// These tests commit with the one-step publish, which fails on a lost
+// race: a test's branch has no other writer to lose one to.
+#![allow(deprecated)]
+
 mod account_remote;
 mod behind_link;
 mod connections;
