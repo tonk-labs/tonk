@@ -3358,10 +3358,7 @@ pub(crate) mod tests {
     }
 
     /// The membership entity of this device's account on `key`'s roster.
-    async fn own_membership(
-        state: &crate::router::AppState,
-        key: &str,
-    ) -> dialog_corpus::Entity {
+    async fn own_membership(state: &crate::router::AppState, key: &str) -> dialog_corpus::Entity {
         let member_entity = member_entity(state).await;
         content_memberships(state, key)
             .await
