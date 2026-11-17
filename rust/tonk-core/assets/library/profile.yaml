@@ -7552,7 +7552,7 @@ element!: &account-settings
         const destination = linked === 'true' ? '/settings' : '/account';
         if (trigger && trigger.getAttribute('href') !== destination) trigger.setAttribute('href', destination);
         const path = self.context().path;
-        // Settings with no account here (just signed out, say) go back to
+        // Settings with no account here (after signing out, say) go back to
         // your spaces, where `add an account` is; they never raise the
         // ceremony on their own. A terminal's request page stays, and
         // raises the ceremony itself, because the request rides its
