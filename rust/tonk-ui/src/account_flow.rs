@@ -9626,7 +9626,9 @@ pub(crate) mod tests {
         goto(&driver, url.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
-        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
+        // The account reads as its name, as the hub's bar shows it; the
+        // email stands in only while no name row has arrived.
+        wait_for_text(&driver, "[data-link-account-cell]", "Tab Owner").await?;
         click(&driver, "[data-link-approve]").await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(
@@ -9689,7 +9691,9 @@ pub(crate) mod tests {
                 .await?,
             Some(audience.to_owned())
         );
-        wait_for_text(&driver, "[data-link-account]", EMAIL).await?;
+        // The account reads as its name, as the hub's bar shows it; the
+        // email stands in only while no name row has arrived.
+        wait_for_text(&driver, "[data-link-account-cell]", "Tab Owner").await?;
 
         // The passkey is asked for on the approving click itself, so the
         // watch on what it allows goes in before that click.
