@@ -9837,6 +9837,94 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A passkey prompt cancelled on `allow whole account` leaves the device
+    /// task page where it was: the request stays, with the mock's refusal
+    /// (gooey task-page.html, the device step's cancel) above its buttons,
+    /// and the hub's settings never show through.
+    #[dialog_common::test]
+    async fn it_keeps_the_device_task_page_when_the_passkey_is_refused(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+
+        let (callback, mut delivered) = waiting_cli().await?;
+        let mut url = env.tonk_web.join("settings/link")?;
+        url.query_pairs_mut()
+            .append_pair(
+                "audience",
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            )
+            .append_pair("callback", &callback)
+            .append_pair("name", "Work laptop");
+        goto(&driver, url.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
+
+        // The passkey is asked for in the top page; refuse it there, as a
+        // cancelled prompt does.
+        driver.enter_default_frame().await?;
+        driver
+            .execute(
+                r#"Object.defineProperty(navigator.credentials, "get", {
+                     configurable: true,
+                     value: () => Promise.reject(new DOMException(
+                       "controlled passkey rejection", "NotAllowedError"))
+                   });"#,
+                Vec::new(),
+            )
+            .await?;
+        enter_hub(&driver).await?;
+        click(&driver, "[data-link-approve]").await?;
+        wait_for_text_containing(
+            &driver,
+            "[data-link-error]",
+            "The passkey prompt was cancelled. Try again when you’re ready.",
+        )
+        .await?;
+        // Long enough for anything the refusal sets off to land.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let page = driver
+            .execute(
+                r#"const settings = document.querySelector('account-settings');
+                   const pane = settings?.querySelector('[data-pane="link"]');
+                   const style = pane && getComputedStyle(pane);
+                   const ask = pane?.querySelector('[data-link-step="ask"]');
+                   return {
+                     pane: settings?.getAttribute('data-pane') ?? null,
+                     linking: settings?.getAttribute('data-linking') ?? null,
+                     path: window.tonk?.context?.path ?? null,
+                     search: window.tonk?.context?.search ?? null,
+                     shown: !!pane && !pane.hidden && style.display !== 'none',
+                     fixed: style?.position === 'fixed',
+                     ask: !!ask && !ask.hidden,
+                     device: pane?.querySelector('[data-link-name]')?.textContent ?? null,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let page = page.json();
+        anyhow::ensure!(
+            page["pane"] == "link"
+                && page["shown"] == true
+                && page["fixed"] == true
+                && page["ask"] == true
+                && page["device"] == "Work laptop",
+            "the device task page stays over the hub after a refused passkey: {page}"
+        );
+        assert!(
+            matches!(
+                delivered.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "a refused passkey must not deliver anything"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Declining tells the waiting process, rather than leaving it to time
     /// out on a decision the user already made.
     #[dialog_common::test]

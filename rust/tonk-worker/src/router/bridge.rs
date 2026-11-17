@@ -123,7 +123,27 @@ pub async fn handle_message(
                 Some("cancelled") => "cancelled",
                 _ => "the passkey did not finish",
             };
-            if let Some(
+            if ceremony == Some(tonk_schema::ceremony::AUTHORIZE_DEVICE) {
+                // The request's own row: cancelled is a refusal the task
+                // page words as the mock's cancel, anything else a failure.
+                let Some(authorization) = envelope
+                    .get("authorization")
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| {
+                        serde_json::from_str::<tonk_worker_api::DeviceAuthorization>(v).ok()
+                    })
+                else {
+                    log!("bridge: a device approval ended with no request to report it on");
+                    return;
+                };
+                let outcome = if detail == "cancelled" {
+                    tonk_schema::ceremony_state::REFUSED
+                } else {
+                    tonk_schema::ceremony_state::FAILED
+                };
+                let tonk = state.read().await;
+                super::ceremony::report_authorization(&tonk, &authorization, outcome, detail).await;
+            } else if let Some(
                 ceremony @ (tonk_schema::ceremony::ADD_PASSKEY
                 | tonk_schema::ceremony::DELETE_ACCOUNT),
             ) = ceremony
