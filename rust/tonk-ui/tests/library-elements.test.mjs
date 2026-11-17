@@ -239,3 +239,8 @@ test('the space menu steps out of sight under its delete dialog and closes with 
   assert.match(library, /\.space-menu\[data-behind\][^{]*\{[^}]*visibility:hidden/);
   assert.match(library, /\.space-menu\[data-behind\] tonk-dialog \{ visibility:visible; \}/);
 });
+
+test("the mobile nav's button rules stop at its own controls, not its dialog's", () => {
+  assert.doesNotMatch(library, /\.mobile-nav button\b/);
+  assert.match(library, /\.mobile-nav > a, \.mobile-nav \.mobile-create \{ display:flex; width:100%;/);
+});
