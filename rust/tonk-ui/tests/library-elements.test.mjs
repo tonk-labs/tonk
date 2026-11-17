@@ -258,3 +258,43 @@ test("the mobile nav's button rules stop at its own controls, not its dialog's",
   assert.doesNotMatch(library, /\.mobile-nav button\b/);
   assert.match(library, /\.mobile-nav > a, \.mobile-nav \.mobile-create \{ display:flex; width:100%;/);
 });
+
+test('the delete-account note names no spaces when the account owns none', () => {
+  const said = (owned, connections) => {
+    let text;
+    const self = {
+      querySelector: () => ({ value: 'Alice Tester' }),
+      querySelectorAll: () => ({ length: owned }),
+      agentConnections: Array(connections).fill({}),
+      text: (_, value) => { text = value; },
+    };
+    method('account-settings', 'scope')(self);
+    return text;
+  };
+  assert.equal(said(0, 0), 'Deletes Alice Tester.');
+  assert.equal(said(0, 1), 'Deletes Alice Tester and your connection’s access.');
+  assert.equal(said(2, 0), 'Deletes Alice Tester, the 2 spaces you own.');
+});
+
+test('rename and duplicate hold the menu under their dialog and give focus back to their item', () => {
+  const listeners = {};
+  const dialog = { shadowRoot: null, addEventListener: (type, run) => { listeners[type] = run; }, removeEventListener: (type) => { delete listeners[type]; } };
+  const attrs = new Map([['open', 'true']]);
+  const menu = { setAttribute: (k, v) => attrs.set(k, v), removeAttribute: (k) => attrs.delete(k), getAttribute: (k) => attrs.get(k) ?? null };
+  let focused = null;
+  const item = { focus: () => { focused = item; } };
+  const document = { activeElement: null, body: {} };
+  const holdMenu = Function('document', `return (${methodSource('space-actions', 'hold-menu')})`)(document);
+  holdMenu({ querySelector: () => menu, close: () => { throw new Error('the menu must stay open'); } }, dialog, item);
+  assert.equal(attrs.has('data-behind'), true);
+  listeners['fabb-close']();
+  assert.equal(attrs.has('data-behind'), false);
+  assert.equal(focused, item);
+  const connected = methodSource('space-actions', 'connected');
+  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-rename-dialog\]'\), rename\)/);
+  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-duplicate\] \[data-space-create-dialog\]'\), duplicate\)/);
+});
+
+test("a space's links take no list margin, so they and their note share one edge", () => {
+  assert.match(library, /space-links \.hub-link \{ margin:0; \}/);
+});

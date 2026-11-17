@@ -39,45 +39,13 @@ thread_local! {
 
 const CARD_ID: &str = "tonk-custody-consent";
 
+/// The card wears the hub's dialog look: its sheet, radius and soft
+/// shadow, the label face for the heading, a plain `not now` and a solid
+/// `use passkey`. The top page has no Tonk tokens, so the values are
+/// gooey's (`tonk-look.css`), written out. Floating, it is centred over the
+/// hub's backdrop; anchored, it sits under a guest dialog's column where
+/// [`position_card`] puts it, with no backdrop.
 const CARD_HTML: &str = r#"
-<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
-            display:flex;flex-direction:column;gap:7px;
-            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
-            color:var(--ink, #38182a);text-transform:none">
-  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
-              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
-              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
-              letter-spacing:.02em;text-transform:lowercase">passkey needed</div>
-  <p id="tonk-custody-text" style="box-sizing:border-box;min-height:36px;display:flex;align-items:center;
-            margin:0;padding:var(--custody-message-padding, 14px) 16px;background:var(--card, #fcfbfb);
-            box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font-weight:600">
-    Tonk is securing something to your account and needs your passkey to
-    unlock the account&rsquo;s custody key on this device.
-  </p>
-  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
-    <button id="tonk-custody-dismiss" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
-                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      not now</button>
-    <button id="tonk-custody-continue" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
-                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      use passkey</button>
-  </div>
-</div>
-"#;
-
-/// The floating card wears the hub's dialog look: its sheet, radius and
-/// soft shadow over the hub's backdrop, the label face for the heading,
-/// a plain `not now` and a solid `use passkey`. The top page has no Tonk
-/// tokens, so the values are gooey's (`tonk-look.css`), written out. The
-/// anchored rows keep [`CARD_HTML`]: they sit under a dialog's column.
-const FLOATING_CARD_HTML: &str = r#"
 <div class="tc-card" role="dialog" aria-modal="true" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
   <h2 id="tonk-custody-heading">passkey needed</h2>
   <p id="tonk-custody-text">Tonk is securing something to your account and needs your passkey to
@@ -118,6 +86,8 @@ const FLOATING_CARD_HTML: &str = r#"
 #tonk-custody-consent button.tc-main:is(:hover, :focus-visible) { background: color-mix(in oklab, var(--tc-main-text) 12%, var(--tc-text)); }
 #tonk-custody-consent button:active { scale: .96; }
 @media (pointer: coarse) { #tonk-custody-consent button { height: 44px; } }
+#tonk-custody-consent[data-anchored] .tc-backdrop { display: none; }
+#tonk-custody-consent[data-anchored] .tc-card { translate: none; }
 @media (prefers-reduced-motion: reduce) { #tonk-custody-consent button { transition: none; } }
 </style>
 "#;
@@ -275,14 +245,12 @@ fn mount_card(anchored: bool) -> Option<Element> {
     host.set_id(CARD_ID);
     if anchored {
         host.set_attribute("data-anchored", "").ok()?;
-        host.set_attribute("style", "--custody-message-padding:7px")
-            .ok()?;
     }
-    host.set_inner_html(if anchored {
-        CARD_HTML
-    } else {
-        FLOATING_CARD_HTML
-    });
+    host.set_inner_html(CARD_HTML);
+    if anchored && let Ok(Some(card)) = host.query_selector(".tc-card") {
+        // Under a dialog's column, not a modal of its own.
+        let _ = card.remove_attribute("aria-modal");
+    }
     body.append_child(&host).ok()?;
     position_card();
     if !anchored
@@ -998,6 +966,21 @@ mod tests {
         });
         assert_eq!(rows.get_bounding_client_rect().top(), 167.0);
         assert_eq!(rows.get_bounding_client_rect().width(), 576.0);
+        // Seated, it wears the hub's card too, with no backdrop of its own.
+        let window = web_sys::window().unwrap();
+        let style = window.get_computed_style(&rows).unwrap().unwrap();
+        assert_eq!(style.get_property_value("border-radius").unwrap(), "12px");
+        let backdrop = host.query_selector(".tc-backdrop").unwrap().unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&backdrop)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        assert!(!rows.has_attribute("aria-modal"));
         remove_card();
         // A subsequent unrelated custody request floats as the hub's
         // dialog does: centred, over a backdrop, its answer in focus.
