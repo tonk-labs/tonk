@@ -146,6 +146,49 @@ test('a reset that did not land takes the question, and its answer becomes try a
   assert.doesNotMatch(html, /raw/);
 });
 
+test('a reset asks the worker to list the new link in the place of the one it replaces', async () => {
+  const minted = [];
+  const calls = [];
+  const self = linksSelf({
+    hub: () => ({}),
+    _ask: { what: 'reset', target: 'bafy-a' },
+    mint: async (replaces) => { minted.push(replaces); return { copied: true }; },
+    api: async (path, body) => { calls.push([path, body]); return {}; },
+  });
+  await method('space-links', 'reset')(self, null, 'bafy-a');
+  assert.deepEqual(minted, ['bafy-a']);
+  assert.match(calls[0][0], /invites\/bafy-a\/revoke$/);
+
+  const posted = [];
+  const mintSelf = {
+    dataset: { space: 'did:key:space' },
+    made: () => new Map(),
+    api: async (path, body) => { posted.push([path, body]); return path.endsWith('/invite') ? { url: 'https://x/#k' } : []; },
+  };
+  const mint = method('space-links', 'mint', {
+    ClipboardItem: class {}, Blob: class {}, navigator: { clipboard: { write: async () => {} } },
+  });
+  await mint(mintSelf, 'bafy-a');
+  await mint(mintSelf);
+  const bodies = posted.filter(([path]) => path.endsWith('/invite')).map(([, body]) => body);
+  assert.deepEqual(bodies, [{ replaces: 'bafy-a' }, {}]);
+});
+
+test('the copy note shows only while no listed link can be copied', () => {
+  const note = (made) => {
+    const self = linksSelf({ made: () => made, _rows: [{ kind: 'open', target: 'bafy-a', default: true, used: [] }, { kind: 'open', target: 'bafy-b', used: [] }] });
+    self.esc = (text) => method('space-links', 'esc')(self, text);
+    self.names = (list) => method('space-links', 'names')(self, list);
+    self.shown = (url) => method('space-links', 'shown')(self, url);
+    self.askHtml = () => '';
+    self.querySelector = () => null;
+    method('space-links', 'render', { Intl })(self);
+    return /Only a link made in this tab can be copied/.test(self.innerHTML);
+  };
+  assert.equal(note(new Map()), true);
+  assert.equal(note(new Map([['bafy-b', 'https://tonk.example/space/x#key']])), false);
+});
+
 test('a passlink row shows its host and the start of its key, never the key', () => {
   const shown = method('space-links', 'shown')({}, 'https://tonk.example/space/did:key:z6Mk#abcdefSECRET');
   assert.equal(shown, 'tonk.example/…#abc•••');
