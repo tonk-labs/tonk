@@ -846,6 +846,10 @@ view!:
          open row has no address or note above them, so the first link
          takes no rule under the row line. */
       space-links { display:block; }
+      /* While a question about a link is open, `new space` steps back to a
+         plain button, so the question's answer is the one solid button. */
+      [data-spaces-sheet]:has(space-links .hub-ask) .hub-line .hub-btn--main[data-new-space] {
+        background:transparent; color:var(--tonk-text); }
       space-links .hub-links { margin:0; padding:0; }
       space-links .hub-link:first-child { border-top:0; padding-top:0; }
       /* an empty list is one quiet line in the sheet */
