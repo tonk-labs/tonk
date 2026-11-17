@@ -173,3 +173,16 @@ test('a waiting button takes no second press at once and says so only past 400ms
   assert.equal(attrs.has('aria-busy'), false);
   assert.equal(button.innerHTML, 'remove link');
 });
+
+test('a passkey date shows its year only when it is not this year', () => {
+  const now = new Date();
+  const thisYear = { textContent: String(Math.floor(new Date(now.getFullYear(), 0, 15).getTime() / 1000)) };
+  const lastYear = { textContent: String(Math.floor(new Date(now.getFullYear() - 1, 5, 3).getTime() / 1000)) };
+  const self = {
+    querySelectorAll: (selector) => selector === '[data-settings-passkey-created]' ? [thisYear, lastYear] : [{}, {}],
+    querySelector: () => null,
+  };
+  method('account-settings', 'passkey-dates')(self);
+  assert.doesNotMatch(thisYear.textContent, new RegExp(String(now.getFullYear())));
+  assert.match(lastYear.textContent, new RegExp(String(now.getFullYear() - 1)));
+});

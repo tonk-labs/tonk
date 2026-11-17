@@ -582,6 +582,16 @@ view!:
       .hub-page main > [data-settings-view]:has(account-settings[data-pane="account"]) { margin-bottom:16px; }
       .hub-page account-settings [data-account-sheet] tonk-display { display:contents; }
       .hub-page account-settings [data-account-sheet] [data-account-registered] { display:contents; }
+      /* The account sheet is a hub sheet: its type, its 16px gutter, a rule
+         between sections, and no gap above it. Each section renders
+         through its own display, so the rule goes on every section but
+         the first rather than on a sibling. */
+      .hub-page .settings:has(account-settings[data-pane="account"]) { margin-top:0; }
+      .hub-page account-settings [data-account-sheet] { color:var(--tonk-text); text-transform:none;
+        letter-spacing:normal; font:400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+      .hub-page [data-account-sheet] .hub-account .hub-sec { border-top:1px solid var(--tonk-rule-soft); }
+      .hub-page [data-account-sheet] .hub-account .hub-sec[aria-labelledby="sec-details"] { border-top:0; }
+      .hub-page [data-account-sheet] .hub-item-name { font-weight:600; }
       .hub-page account-settings { display:block; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
@@ -878,21 +888,22 @@ view!:
       }
 
       .mobile-nav { display:none; }
-      .account-email-notice { position:fixed; z-index:29; right:24px; bottom:24px;
-        display:none; align-items:center; gap:24px; max-width:calc(100% - 48px);
-        padding:16px 20px; background:var(--ink); color:var(--on-ink);
-        font:400 17px/1.45 var(--cond); }
+      .account-email-notice { display:none; flex-wrap:wrap; align-items:center; gap:4px 12px;
+        margin:0 0 16px; padding:6px 6px 6px 16px; border-radius:var(--tonk-radius-sheet);
+        background:var(--tonk-sheet); color:var(--tonk-text); box-shadow:var(--tonk-shadow);
+        font:400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
       .account-email-notice[data-account-status="case:registered"] { display:flex; }
       .hub-page:has(hub-bar[path="/account"]) .account-email-notice,
       .hub-page:has(hub-bar[path="/settings/link"]) .account-email-notice { display:none; }
-      .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
-        font:600 15px/1.15 var(--cond); text-decoration:underline;
-        text-underline-offset:3px; white-space:nowrap; }
+      .account-email-notice button { min-height:var(--tonk-height-control); padding:0 10px;
+        border-radius:var(--tonk-radius-control); color:inherit; letter-spacing:.02em;
+        font:600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); white-space:nowrap; }
+      .account-email-notice button:hover { background:var(--tonk-wash); }
       .account-email-notice button:disabled { opacity:.6; cursor:default; }
       .account-email-notice resend-activation { display:flex; flex-direction:column;
         align-items:flex-start; gap:2px; margin-left:auto; }
-      .account-email-notice .resend-status { max-width:32ch; padding:0 12px;
-        font:400 14px/1.35 var(--cond); }
+      .account-email-notice .resend-status { max-width:32ch; padding:0 10px; color:var(--tonk-text-soft);
+        font:400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
       .account-email-notice .resend-status:empty { display:none; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
@@ -3226,6 +3237,21 @@ element!: &hub-bar
             else cell.removeAttribute('aria-current');
           }
         }
+        // Your name opens the account sheet and, pressed again, closes it.
+        const open = String(path === '/settings');
+        for (const trigger of page.querySelectorAll('.hub-top [data-account-trigger]')) {
+          if (trigger.getAttribute('aria-expanded') !== open) trigger.setAttribute('aria-expanded', open);
+        }
+      }
+    # A second press on your name closes the account sheet.
+    toggle-account: |
+      (self, event) => {
+        const trigger = event.target?.closest?.('[data-account-trigger]');
+        if (!trigger || !self.contains(trigger) || event.altKey) return;
+        if (trigger.getAttribute('aria-expanded') !== 'true') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.tonk?.navigate?.('/');
       }
     # Option (Alt) on "add an account" signs in through another Tonk: for
     # that one click the link points at `/account?via`, and it is put back
@@ -3249,7 +3275,7 @@ element!: &hub-bar
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
         if (self._option) window.removeEventListener('click', self._option, true);
-        self._option = (event) => self.optionAccount(event);
+        self._option = (event) => { self.optionAccount(event); self.toggleAccount(event); };
         window.addEventListener('click', self._option, true);
       }
     disconnected: |
@@ -3319,13 +3345,17 @@ view!:
                whether THIS DEVICE holds the account here; the name renders
                through it. Directory mode (no `entity=`), where an absent row
                is `empty`. -->
-          <a class="hub-me account-trigger" href="/settings" data-account-trigger>
+          <a class="hub-me account-trigger" href="/settings" data-account-trigger role="button"
+            aria-expanded="false" aria-controls="account-sheet">
             <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
-              ><span slot="empty">add an account</span></tonk-display></span>
+              ><span slot="empty">add an account</span></tonk-display></span><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </a>
         </hub-bar>
         <main>
         <h1 class="hub-sr">your spaces and account</h1>
+        <!-- An account still to be activated says so in a line of its own
+             above your spaces, in the page: never a toast over the rows. -->
+        <tonk-display model="tonk:account/status" view="notice"></tonk-display>
         <hub-discover data-spaces-view collection="spaces">
           <!-- One page for `/` and `/settings`: the sheet and the panel
                are both here, and the bar's `path` picks the one that
@@ -3391,18 +3421,19 @@ view!:
                      and deleting the account apart, under them. What can't
                      be undone asks first, in place, under its row. -->
                 <div class="pane" data-pane="account">
-                  <section class="hub-sheet" data-account-sheet aria-label="account settings">
+                  <section class="hub-sheet" id="account-sheet" data-account-sheet aria-label="account settings">
                     <div class="hub-sr" role="status" aria-live="polite" data-account-live></div>
                     <div class="hub-line">
-                      <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-account-line>account settings</h2><span class="hub-receipt" tabindex="-1" data-account-receipt hidden></span></div>
+                      <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-account-line>account settings</h2><span class="hub-receipt" tabindex="-1" data-account-receipt hidden></span> <button class="hub-btn" type="button" data-account-retry hidden>try again</button></div>
                       <a class="hub-btn" href="/" data-return-spaces data-account-close>close</a>
                     </div>
+                    <div class="hub-account">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
                     <section class="hub-sec" aria-labelledby="sec-conn" data-agent-connections hidden>
-                      <div class="hub-sec-h"><h3 id="sec-conn">connections</h3><button class="hub-btn" type="button" data-connections-refresh>refresh</button></div>
-                      <p class="hub-note" data-connections-status role="status" aria-live="polite"></p>
+                      <div class="hub-sec-h"><h3 id="sec-conn">connections</h3></div>
+                      <p class="hub-note" data-connections-status role="status" aria-live="polite" hidden></p>
                       <ul class="hub-items" data-connections-list></ul>
-                      <p class="hub-note">An agent app connects from its own settings. Removing one here takes its access away at once.</p>
+                      <p class="hub-note" data-connections-note>An agent app connects from its own settings. Removing one here takes its access away at once.</p>
                     </section>
                     <section class="hub-sec" aria-labelledby="sec-device">
                       <div class="hub-sec-h"><h3 id="sec-device">this device</h3><button class="hub-btn" type="button" data-sign-out-open>sign out on this device</button></div>
@@ -3412,6 +3443,7 @@ view!:
                       </div>
                     </section>
                     <tonk-display model="tonk:account/registered" view="deletion"></tonk-display>
+                    </div>
                   </section>
                 </div>
                 <div class="pane" data-pane="link" hidden data-link-approval>
@@ -3519,7 +3551,6 @@ view!:
             </account-settings>
           </section>
         </main>
-        <tonk-display model="tonk:account/status" view="notice"></tonk-display>
         <nav class="mobile-nav" aria-label="main navigation">
           <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
           <space-create>
@@ -6402,19 +6433,19 @@ element!: &account-settings
         const list = self.querySelector('[data-connections-list]');
         if (list) list.textContent = '';
         self.agentConnections = [];
-        self.connectionsStatus('Loading connections…');
+        self.connectionsStatus('');
         self.api('/api/account/connections').then((groups) => {
           if (!current()) return;
           self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
           groups = (groups ?? []).filter((group) => !group.requestId && group.confirmed && !['revoked', 'expired'].includes(group.status));
-          self.connectionsStatus(groups.length ? '' : 'No active connections.');
+          self.connectionsStatus('');
           self.agentConnections = groups;
           self.connectionsRender(groups);
         }, (error) => {
           if (!current()) return;
           const section = self.querySelector('[data-agent-connections]');
           if (section) section.hidden = error.status === 404;
-          self.connectionsStatus('Connections could not be loaded. Refresh to try again.');
+          self.connectionsStatus('Your connections didn’t load. Close your account settings and open them again to try again.');
         });
       }
     # Each agent connection: its name with the `bot` tag, the app, the
@@ -6428,6 +6459,12 @@ element!: &account-settings
           if (group.requestId || !group.confirmed || ['revoked', 'expired'].includes(group.status)) continue;
           list.append(self.connectionRecord(group));
         }
+        // With none, the note says how one connects.
+        const note = self.querySelector('[data-connections-note]');
+        const text = list.children.length
+          ? 'An agent app connects from its own settings. Removing one here takes its access away at once.'
+          : 'No agent apps are connected. An agent app connects from its own settings: add Tonk in Claude or ChatGPT, then approve it with your passkey.';
+        if (note && note.textContent !== text) note.textContent = text;
       }
     connection-record: |
       (self, group) => {
@@ -6488,16 +6525,31 @@ element!: &account-settings
       }
     connections-revoke: |
       (self, button) => {
-        if (button.disabled) return;
+        if (button.disabled || button.getAttribute('aria-disabled') === 'true') return;
         const id = button.dataset.connectionRevoke ?? '';
         if (!/^[0-9a-f]{64}$/.test(id)) return;
-        button.disabled = true;
-        self.connectionsStatus('Removing access…');
+        self.hold(button, 'removing');
+        const record = (self.agentConnections ?? []).find((saved) => saved.id === id);
+        const apps = (record?.installations ?? []).map((installation) => installation.name).join(', ') || 'Name unavailable';
+        const row = button.closest('[data-connection-id]');
+        const next = row?.nextElementSibling?.dataset?.connectionId;
+        const failed = () => {
+          self.release(button);
+          const ask = row?.querySelector('[data-connection-ask-for]');
+          if (!ask) return;
+          const sentence = `Couldn’t remove ${apps} bot, so ${apps} still has its access.`;
+          ask.querySelector('p').textContent = sentence;
+          ask.setAttribute('aria-label', sentence);
+          button.textContent = 'try again';
+          button.dataset.idle = 'try again';
+          ask.hidden = false;
+          button.focus();
+        };
         const generation = self.getAttribute('data-connections-generation');
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         self.api(`/api/account/connections/${id}/revoke`, {}).then((group) => {
           if (!current()) return;
-          if (!group || group.id !== id) { self.connectionsStatus('This connection changed. Refresh before trying again.'); return; }
+          if (!group || group.id !== id) { failed(); return; }
           self.agentConnections = (self.agentConnections ?? []).map(saved => saved.id === id ? group : saved);
           self.connectionsRender(self.agentConnections);
           if (group.targets.every((target) => target.acknowledged)) {
@@ -6505,15 +6557,17 @@ element!: &account-settings
             self.receipt(['removed', apps || 'an agent', `bot from ${group.spaceName || 'a space'}`]);
           }
           const count = group.targets.filter((target) => target.acknowledged).length;
-          self.connectionsStatus(count === group.targets.length
-            ? 'Removal confirmed. Enforcement may take time; downloaded data remains.'
-            : `Removal incomplete: ${count} of ${group.targets.length} permissions. Retry to finish.`);
-          const status = self.querySelector('[data-connections-status]');
-          if (status) { status.tabIndex = -1; status.focus(); }
+          if (count !== group.targets.length) {
+            // Part of it went: the row says so, and its button tries again.
+            self.querySelector(`[data-connection-id="${id}"] [data-connection-ask]`)?.focus();
+            return;
+          }
+          // Focus goes to the next row, or to the section when none is left.
+          const after = next && self.querySelector(`[data-connection-id="${next}"] [data-connection-ask]`);
+          (after || self.querySelector('[data-sign-out-open]'))?.focus();
         }, () => {
           if (!current()) return;
-          button.disabled = false;
-          self.connectionsStatus('Removal could not be confirmed. Retry or refresh to check progress.');
+          failed();
         });
       }
     # A terminal asking to attach one local space to this account. The
@@ -7071,6 +7125,24 @@ element!: &account-settings
           ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
           : `Connecting the agent did not finish: ${detail}`);
       }
+    # Opening the account sheet puts focus on your name, once per opening,
+    # except on a touch screen, where a keyboard would cover the sheet.
+    # The name renders through its own display, so it may come a moment
+    # later.
+    focus-name: |
+      (self) => {
+        const open = self.context().path === '/settings';
+        const was = self._sheetOpen;
+        self._sheetOpen = open;
+        if (!open || was || window.matchMedia?.('(pointer: coarse)')?.matches) return;
+        let tries = 0;
+        const attempt = () => {
+          const name = self.querySelector('[data-account-sheet] [data-settings-name]');
+          if (name) { name.focus(); return; }
+          if (++tries < 20 && self._sheetOpen) setTimeout(attempt, 100);
+        };
+        requestAnimationFrame(attempt);
+      }
     pane: |
       (self, name) => {
         for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
@@ -7095,6 +7167,7 @@ element!: &account-settings
           self.pane('account');
           if (self.context().hash === '#delete-account') self.openDelete();
           self.connectionsRefresh();
+          self.focusName?.();
           return;
         }
         self.text('[data-link-heading]', 'connect to your Tonk account');
@@ -7190,8 +7263,50 @@ element!: &account-settings
         slot.replaceChildren(...parts, document.createTextNode(' · by you'));
         slot.hidden = false;
         sheet.querySelector('[data-account-line]')?.classList.add('hub-sr');
+        const retry = sheet.querySelector('[data-account-retry]');
+        if (retry) retry.hidden = true;
+        self._retry = null;
         const live = sheet.querySelector('[data-account-live]');
         if (live) live.textContent = slot.textContent;
+      }
+    # A change that didn't land, in the account sheet's line: what
+    # happened and what stayed, and `try again`, which focus goes to.
+    fail: |
+      (self, text, retry) => {
+        const sheet = self.querySelector('[data-account-sheet]');
+        const slot = sheet?.querySelector('[data-account-receipt]');
+        if (!slot) return;
+        slot.textContent = text;
+        slot.hidden = false;
+        sheet.querySelector('[data-account-line]')?.classList.add('hub-sr');
+        const button = sheet.querySelector('[data-account-retry]');
+        self._retry = retry;
+        if (button) { button.hidden = false; button.focus(); }
+        const live = sheet.querySelector('[data-account-live]');
+        if (live) live.textContent = text;
+      }
+    # A button that waits on the passkey: no second press from the start,
+    # its waiting word and aria-busy only past 400ms.
+    hold: |
+      (self, button, word) => {
+        if (!button || button.getAttribute('aria-disabled') === 'true') return;
+        button.dataset.idle ??= button.textContent;
+        button.setAttribute('aria-disabled', 'true');
+        clearTimeout(button._say);
+        button._say = setTimeout(() => {
+          button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+          button.textContent = word;
+          button.setAttribute('aria-busy', 'true');
+        }, 400);
+      }
+    release: |
+      (self, button) => {
+        if (!button) return;
+        clearTimeout(button._say);
+        if (button.dataset.idle) button.textContent = button.dataset.idle;
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('aria-disabled');
+        button.style.minWidth = '';
       }
     profiles: |
       (self) => {
@@ -7210,8 +7325,10 @@ element!: &account-settings
           if (!Number.isFinite(seconds) || seconds <= 0) continue;
           const created = new Date(seconds * 1000);
           if (Number.isNaN(created.getTime())) continue;
+          // The year only when it isn't this one.
+          const year = created.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' };
           date.textContent = new Intl.DateTimeFormat(undefined, {
-            month: 'short', day: 'numeric', year: 'numeric'
+            month: 'short', day: 'numeric', ...year
           }).format(created);
         }
         // Removing a passkey is not offered yet (BUG-323); the only
@@ -7336,6 +7453,38 @@ element!: &account-settings
         }
         // The agent dialog shows its own steps rather than the status line.
         if (which === 'authorize-agent') { self.agentCeremony(state, detail); self.status(''); return; }
+        // Adding a passkey answers on its button and in the line; deleting
+        // the account answers in its question. Each says so once.
+        const said = `${which}:${state}:${detail}:${row.dataset.ceremonyAt ?? ''}`;
+        if (which === 'add-passkey') {
+          self.status('');
+          if (self._said === said) return;
+          self._said = said;
+          const button = self.querySelector('[data-add-passkey]');
+          if (state === 'pending-ceremony' || state === 'working') { self.hold(button, 'adding'); return; }
+          self.release(button);
+          if (state === 'done') { self.receipt(['added a passkey']); return; }
+          self.fail(/cancel/i.test(detail) ? 'The passkey prompt was cancelled, so nothing was added.'
+            : 'Couldn’t add the passkey, so nothing was added.', () => button?.click());
+          return;
+        }
+        if (which === 'delete-account' && (state === 'refused' || state === 'failed')) {
+          self.status('');
+          if (self._said === said) return;
+          self._said = said;
+          const ask = self.querySelector('[data-delete-ask]');
+          const submit = self.querySelector('[data-delete-account-submit]');
+          self.release(submit);
+          if (ask) {
+            const sentence = 'Couldn’t delete your account, so nothing was deleted.';
+            ask.querySelector('p').textContent = sentence;
+            ask.setAttribute('aria-label', sentence);
+            const label = submit?.querySelector('[data-delete-submit-label]');
+            if (label) label.textContent = 'try again';
+            self.ask('delete', true);
+          }
+          return;
+        }
         self.status(text);
       }
     # Declining hands the requester a deny on its own callback. The same
@@ -7403,12 +7552,13 @@ element!: &account-settings
         const destination = linked === 'true' ? '/settings' : '/account';
         if (trigger && trigger.getAttribute('href') !== destination) trigger.setAttribute('href', destination);
         const path = self.context().path;
-        // Settings with no account here are the account page's business:
-        // it is where signing up happens, so a bare settings path goes
-        // there. A terminal's request page stays, and raises the ceremony
-        // itself, because the request rides its location.
+        // Settings with no account here (just signed out, say) go back to
+        // your spaces, where `add an account` is; they never raise the
+        // ceremony on their own. A terminal's request page stays, and
+        // raises the ceremony itself, because the request rides its
+        // location.
         if (path === '/settings' && self.unlinked()) {
-          window.tonk?.navigate?.('/account');
+          window.tonk?.navigate?.('/');
           return;
         }
         const account = path === '/account' || path.startsWith('/settings/');
@@ -7442,7 +7592,12 @@ element!: &account-settings
         self.addEventListener('submit', (event) => self.profileNameSubmit(event), true);
         self.addEventListener('click', (event) => {
           const hit = (selector) => event.target.closest(selector);
-          if (hit('[data-connections-refresh]')) {
+          if (hit('[data-account-retry]')) {
+            const retry = self._retry;
+            self._retry = null;
+            hit('[data-account-retry]').hidden = true;
+            retry?.();
+          } else if (hit('[data-connections-refresh]')) {
             self.connectionsRefresh();
           } else if (hit('[data-connection-revoke]')) {
             self.connectionsRevoke(hit('[data-connection-revoke]'));
@@ -7465,9 +7620,10 @@ element!: &account-settings
           } else if (hit('[data-sign-out-submit]')) {
             self.status('Signing out…');
           } else if (hit('[data-delete-account-submit]')) {
-            self.status('Waiting for passkey…');
+            self._said = null;
           } else if (hit('[data-add-passkey]')) {
-            self.status('Waiting for passkey…');
+            self._said = null;
+            self.hold(hit('[data-add-passkey]'), 'adding');
           } else if (hit('[data-link-approve]')) {
             self.setAttribute('data-passkey-requested', '');
             self.status('Waiting for passkey…');
@@ -7496,13 +7652,40 @@ element!: &account-settings
         self.addEventListener('change', (event) => {
           if (event.target.matches?.('[data-settings-name]')) event.target.form?.requestSubmit();
         });
-        // Escape answers an open question with its safe answer.
+        // The name's error clears as it is typed.
+        self.addEventListener('input', (event) => {
+          if (!event.target.matches?.('[data-settings-name]')) return;
+          event.target.removeAttribute('aria-invalid');
+          const error = event.target.form?.querySelector('[data-profile-rename-error]');
+          if (error?.textContent) error.textContent = '';
+        });
+        // Escape answers an open question with its safe answer; in the
+        // name it puts the saved name back; anywhere else in the sheet it
+        // closes the sheet.
         self.addEventListener('keydown', (event) => {
-          if (event.key !== 'Escape') return;
+          if (event.key !== 'Escape' || event.isComposing) return;
           const ask = event.target.closest?.('.hub-ask');
-          if (!ask || ask.hidden) return;
+          if (ask && !ask.hidden) {
+            event.stopPropagation();
+            ask.querySelector('[data-ask-keep]')?.click();
+            return;
+          }
+          const name = event.target.closest?.('[data-settings-name]');
+          if (name) {
+            event.stopPropagation();
+            event.preventDefault();
+            const saved = name.dataset.was ?? name.defaultValue;
+            if (name.value !== saved) {
+              name.value = saved;
+              name.removeAttribute('aria-invalid');
+              const error = name.form?.querySelector('[data-profile-rename-error]');
+              if (error) error.textContent = '';
+              return;
+            }
+          }
+          if (!event.target.closest?.('[data-account-sheet]')) return;
           event.stopPropagation();
-          ask.querySelector('[data-ask-keep]')?.click();
+          self.querySelector('[data-account-close]')?.click();
         });
         // The rows this words and counts arrive after connect and change
         // while the panel is up; one observer covers all three.

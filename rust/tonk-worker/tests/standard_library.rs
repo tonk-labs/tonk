@@ -1101,7 +1101,11 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // each with its action on the heading line. What can't be undone asks
     // first, in place.
     for contract in [
-        "<section class=\"hub-sheet\" data-account-sheet aria-label=\"account settings\">",
+        "<section class=\"hub-sheet\" id=\"account-sheet\" data-account-sheet aria-label=\"account settings\">",
+        // The sheet's sections sit in the hub's 16px gutter.
+        "<div class=\"hub-account\">",
+        // A change that didn't land says so in the line, with try again.
+        "<button class=\"hub-btn\" type=\"button\" data-account-retry hidden>try again</button>",
         "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-account-line>account settings</h2>",
         "<a class=\"hub-btn\" href=\"/\" data-return-spaces data-account-close>close</a>",
         "<h3 id=\"sec-conn\">connections</h3>",
@@ -1109,7 +1113,9 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         "<p>Sign out on this device? Your spaces stay in your account.</p>",
         "<button class=\"hub-btn\" type=\"button\" data-ask-keep>stay signed in</button><button class=\"hub-btn hub-btn--ring\" type=\"button\" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>",
         "data-agent-connections hidden",
-        "data-connections-refresh",
+        // Connections load on opening; there is no refresh button, and
+        // with none the note says how one connects.
+        "data-connections-note",
         r#"<tonk-display model="tonk:account/registered" view="deletion">"#,
     ] {
         assert!(
@@ -1118,6 +1124,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         );
     }
     assert!(!panel.contains("data-sign-out-dialog"));
+    assert!(!panel.contains("data-connections-refresh"));
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
