@@ -104,3 +104,72 @@ test('the default passlink offers reset, others remove, and reset carries the co
   assert.match(source, /data-link-ask="reset" data-ask="reset"/);
   assert.match(source, /data-link-ask="remove"/);
 });
+
+// Compile a method with its free names bound to stand-ins.
+const method = (element, name, scope = {}) =>
+  Function(...Object.keys(scope), `return (${methodSource(element, name)})`)(...Object.values(scope));
+
+const linksSelf = (overrides = {}) => {
+  const self = {
+    dataset: { space: 'did:key:space', name: 'Field notes' },
+    _rows: [{ kind: 'open', target: 'bafy-a', default: true }, { kind: 'open', target: 'bafy-b' }],
+    made: () => new Map(),
+    act: (button, word, run) => run(),
+    api: async () => { throw new Error('raw worker detail 500'); },
+    render: () => {},
+    load: async () => {},
+    ...overrides,
+  };
+  self.linkName = (row) => method('space-links', 'link-name')(self, row);
+  return self;
+};
+
+test('a link that could not be removed says so in the line, in the mock words, with try again', async () => {
+  const failed = [];
+  const self = linksSelf({ hub: () => ({ fail: (text, retry, wait) => failed.push({ text, retry, wait }) }), _ask: { what: 'remove' } });
+  await method('space-links', 'unlink')(self, null, 'bafy-b', 'open');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].text, 'Couldn’t remove the passlink, so it still works.');
+  assert.equal(failed[0].wait, 'removing');
+  assert.equal(typeof failed[0].retry, 'function');
+  assert.equal(self._ask, null);
+});
+
+test('a reset that did not land takes the question, and its answer becomes try again', async () => {
+  const self = linksSelf({ hub: () => ({}), _ask: { what: 'reset', target: 'bafy-a' }, mint: async () => { throw new Error('raw'); } });
+  await method('space-links', 'reset')(self, null, 'bafy-a');
+  assert.equal(self._ask.failed, 'Couldn’t reset the passlink, so the old one still works.');
+  self.esc = (text) => method('space-links', 'esc')(self, text);
+  const html = method('space-links', 'ask-html')(self, self._rows[0]);
+  assert.match(html, /Couldn’t reset the passlink, so the old one still works\./);
+  assert.match(html, />try again<\/button>/);
+  assert.doesNotMatch(html, /raw/);
+});
+
+test('a passlink row shows its host and the start of its key, never the key', () => {
+  const shown = method('space-links', 'shown')({}, 'https://tonk.example/space/did:key:z6Mk#abcdefSECRET');
+  assert.equal(shown, 'tonk.example/…#abc•••');
+});
+
+test('a waiting button takes no second press at once and says so only past 400ms', () => {
+  const timers = [];
+  const waiting = method('hub-discover', 'waiting', { setTimeout: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearTimeout: () => {} });
+  const attrs = new Map();
+  const button = {
+    innerHTML: 'remove link', textContent: 'remove link', style: {},
+    getBoundingClientRect: () => ({ width: 80 }),
+    setAttribute: (name, value) => attrs.set(name, value),
+    getAttribute: (name) => attrs.get(name),
+    removeAttribute: (name) => attrs.delete(name),
+  };
+  const done = waiting({}, button, 'removing');
+  assert.equal(attrs.get('aria-disabled'), 'true');
+  assert.equal(button.textContent, 'remove link');
+  assert.equal(timers[0].ms, 400);
+  timers[0].run();
+  assert.equal(button.textContent, 'removing');
+  assert.equal(attrs.get('aria-busy'), 'true');
+  done();
+  assert.equal(attrs.has('aria-busy'), false);
+  assert.equal(button.innerHTML, 'remove link');
+});
