@@ -767,7 +767,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
         ".space-unknown:has(.space-join .join-status) { padding:0; }",
-        ".space-unknown .space-join :is(tonk-display, .join-card-wrap, .join-status) { display:contents; }",
+        ".space-unknown .space-join :is(tonk-display, tonk-view, .join-card-wrap, .join-status) { display:contents; }",
     ] {
         assert!(PROFILE_LIBRARY.contains(contract), "missing `{contract}`");
     }

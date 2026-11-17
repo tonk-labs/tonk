@@ -4154,7 +4154,11 @@ view!:
         .space-unknown:has(.space-join .join-status) { padding:0; }
         .space-unknown .space-join { letter-spacing:normal; }
         .space-unknown .space-join :focus-visible { box-shadow:none; }
-        .space-unknown .space-join :is(tonk-display, .join-card-wrap, .join-status) { display:contents; }
+        /* Down to the sheet, every wrapper is a pass-through, so the sheet
+           is the page's own row and centres as the logotype does. That
+           includes each display's `tonk-view`: inline by default, it would
+           put the sheet in a full-width anonymous box at the left. */
+        .space-unknown .space-join :is(tonk-display, tonk-view, .join-card-wrap, .join-status) { display:contents; }
         .space-unknown .join-opening { position:fixed; inset:0; z-index:3;
           display:flex; align-items:center; justify-content:center;
           color:var(--edge-ink); background:var(--edge-page); }
