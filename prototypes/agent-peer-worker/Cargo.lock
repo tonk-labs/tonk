@@ -755,7 +755,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -780,7 +780,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "base58",
  "base64",
@@ -808,7 +808,7 @@ dependencies = [
 [[package]]
 name = "dialog-corpus"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -847,7 +847,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -873,7 +873,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -888,7 +888,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -944,7 +944,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -956,7 +956,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -973,7 +973,7 @@ dependencies = [
 [[package]]
 name = "dialog-number"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "zmij",
 ]
@@ -981,7 +981,7 @@ dependencies = [
 [[package]]
 name = "dialog-peer"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1022,7 +1022,7 @@ dependencies = [
 [[package]]
 name = "dialog-peer-iroh"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1046,7 +1046,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1114,7 +1114,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1131,7 +1131,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1190,7 +1190,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1220,7 +1220,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1264,7 +1264,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1297,7 +1297,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1330,7 +1330,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "async-trait",
  "base58",
@@ -1351,7 +1351,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "base64",
  "dialog-common",
@@ -1380,7 +1380,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "dialog-common",
  "ed25519-dalek 2.2.0",
@@ -2299,7 +2299,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "merkle-reference"
 version = "0.5.0-rc.6"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=b33093bcbcd63de49bc5dacea77cb78514371a20#b33093bcbcd63de49bc5dacea77cb78514371a20"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=26da80ad936aea0de1899331ea19e0832df0501b#26da80ad936aea0de1899331ea19e0832df0501b"
 dependencies = [
  "blake3",
 ]
