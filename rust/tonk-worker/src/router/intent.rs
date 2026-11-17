@@ -1733,3 +1733,159 @@ async fn it_replaces_an_askers_previous_answer() {
         "one answer per asker: {answers}"
     );
 }
+
+/// The tree inspector's state lives in the session: exploring the
+/// branch's root and opening it are commands whose rules write into the
+/// stack's `session:` layer, so the branch's revision does not move, and
+/// the concepts the console reads (the node, its spans, the parts of their
+/// separators) answer for the open node from dialog's resolvers.
+#[dialog_common::test]
+async fn it_keeps_a_tree_exploration_in_the_session() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/explore",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/tree-inspector.yaml")
+            .await
+            .expect("the inspector installs");
+    }
+
+    let variable = |name: &str| json!({ "?": { "name": name } });
+    let query = |with: Value, names: &[&str]| {
+        let mut terms = serde_json::Map::new();
+        terms.insert("this".into(), variable("this"));
+        for name in names {
+            terms.insert((*name).into(), variable(name));
+        }
+        json!({ "predicate": { "with": with }, "terms": terms }).to_string()
+    };
+    let rows = async |body: String| -> Vec<Value> {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            body,
+        )
+        .await;
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .clone()
+    };
+    let branch = rows(query(
+        json!({
+            "tree": { "the": "dialog.branch/tree", "as": "Entity", "cardinality": "one" },
+            "revision": { "the": "dialog.branch/revision", "as": "Entity", "cardinality": "one" }
+        }),
+        &["tree", "revision"],
+    ))
+    .await;
+    let root = branch[0]["fields"]["tree"]
+        .as_str()
+        .expect("a root")
+        .to_owned();
+    let revision = branch[0]["fields"]["revision"].clone();
+
+    for command in [
+        format!("tree-inspector/explore!:\n  root: {root}\n  time: 1\n"),
+        format!("tree-inspector/open!:\n  exploration: {root}\n  node: {root}\n  time: 2\n"),
+    ] {
+        send(
+            &app,
+            "POST",
+            &format!("{space}/evaluate"),
+            "application/yaml",
+            command,
+        )
+        .await;
+    }
+
+    let explorations = rows(query(
+        json!({ "started": { "the": "xyz.tonk.tree-inspector.exploration/started", "as": "Float", "cardinality": "one", "in": "session:" } }),
+        &["started"],
+    ))
+    .await;
+    assert_eq!(explorations.len(), 1, "one exploration: {explorations:?}");
+    assert_eq!(explorations[0]["this"], root, "named by its root");
+
+    let nodes = rows(query(
+        json!({
+            "kind": { "the": "xyz.tonk.tree-inspector.node/kind", "as": "Text", "cardinality": "one" },
+            "size": { "the": "xyz.tonk.tree-inspector.node/size", "as": "UnsignedInteger", "cardinality": "one" },
+            "count": { "the": "xyz.tonk.tree-inspector.node/count", "as": "UnsignedInteger", "cardinality": "one" },
+            "scale": { "the": "xyz.tonk.tree-inspector.node/scale", "as": "UnsignedInteger", "cardinality": "one" },
+            "novelty": { "the": "xyz.tonk.tree-inspector.node/novelty", "as": "UnsignedInteger", "cardinality": "one" }
+        }),
+        &["kind", "size", "count", "scale", "novelty"],
+    ))
+    .await;
+    assert_eq!(
+        nodes.len(),
+        1,
+        "the open root, and no other node: {nodes:?}"
+    );
+    assert_eq!(nodes[0]["this"], root);
+    let kind = nodes[0]["fields"]["kind"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+
+    let after = rows(query(
+        json!({ "revision": { "the": "dialog.branch/revision", "as": "Entity", "cardinality": "one" } }),
+        &["revision"],
+    ))
+    .await;
+    assert_eq!(
+        after[0]["fields"]["revision"], revision,
+        "nothing was committed"
+    );
+
+    if kind == "index" {
+        let spans = rows(query(
+            json!({
+                "parent": { "the": "xyz.tonk.tree-inspector.span/parent", "as": "Entity", "cardinality": "one" },
+                "at": { "the": "xyz.tonk.tree-inspector.span/at", "as": "UnsignedInteger", "cardinality": "one" },
+                "child": { "the": "xyz.tonk.tree-inspector.span/child", "as": "Entity", "cardinality": "one" },
+                "separator": { "the": "xyz.tonk.tree-inspector.span/separator", "as": "Entity", "cardinality": "one" },
+                "scale": { "the": "xyz.tonk.tree-inspector.span/scale", "as": "UnsignedInteger", "cardinality": "one" },
+                "novelty": { "the": "xyz.tonk.tree-inspector.span/novelty", "as": "UnsignedInteger", "cardinality": "one" }
+            }),
+            &["parent", "at", "child", "separator", "scale", "novelty"],
+        ))
+        .await;
+        assert!(!spans.is_empty(), "the open index's spans: {spans:?}");
+        assert!(spans.iter().all(|span| span["fields"]["parent"] == root));
+    }
+    let parts = rows(query(
+        json!({
+            "at": { "the": "xyz.tonk.tree-inspector.part/at", "as": "UnsignedInteger", "cardinality": "one" },
+            "kind": { "the": "xyz.tonk.tree-inspector.part/kind", "as": "Text", "cardinality": "one" },
+            "text": { "the": "xyz.tonk.tree-inspector.part/text", "as": "Text", "cardinality": "one" }
+        }),
+        &["at", "kind", "text"],
+    ))
+    .await;
+    assert!(!parts.is_empty(), "the open node's keys decode: {nodes:?}");
+    assert!(parts.iter().all(|part| {
+        part["this"]
+            .as_str()
+            .is_some_and(|this| this.starts_with("part:"))
+    }));
+}
