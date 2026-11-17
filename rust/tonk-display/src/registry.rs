@@ -2301,10 +2301,10 @@ mod tests {
         bar.remove();
     }
 
-    /// A bare settings page with no account here goes to the account
-    /// page, where signing up happens, instead of raising the ceremony.
+    /// A bare settings page with no account here (just signed out, say)
+    /// goes back to your spaces, and never raises the ceremony itself.
     #[dialog_common::test]
-    async fn it_sends_an_unlinked_settings_page_to_the_account_page() {
+    async fn it_sends_an_unlinked_settings_page_back_to_the_spaces() {
         install_fake_host();
         install();
         let registers = record_bridge_calls("register");
@@ -2330,10 +2330,7 @@ mod tests {
             .expect("the link display");
         let _ = registration.set_attribute("data-state", "empty");
         settle_until(|| navigations.length() > before).await;
-        assert_eq!(
-            navigations.get(before).as_string().as_deref(),
-            Some("/account")
-        );
+        assert_eq!(navigations.get(before).as_string().as_deref(), Some("/"));
         assert_eq!(
             registers.length(),
             registered,
@@ -2711,7 +2708,7 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span>"#,
+            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span><section data-account-sheet><h2 data-account-line>account settings</h2><span data-account-receipt hidden></span><button data-account-retry hidden>try again</button><button type="button" data-add-passkey>add a passkey</button></section>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
@@ -2733,12 +2730,12 @@ mod tests {
         assert_eq!(text_of(&host, "[data-ceremony-status]"), "");
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="sign-in-via" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
         );
         settle_until(|| !status.has_attribute("hidden")).await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey: waiting for passkey\u{2026}"
+            "Signing in: waiting for passkey\u{2026}"
         );
         assert_eq!(
             host.get_attribute("data-ceremony-state").as_deref(),
@@ -2746,12 +2743,12 @@ mod tests {
         );
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="sign-in-via" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
         );
         settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey did not finish: no passkey"
+            "Signing in did not finish: no passkey"
         );
 
         // The cluster closing clears a transient line, not a verdict.
@@ -2759,8 +2756,40 @@ mod tests {
         settle_briefly().await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey did not finish: no passkey",
+            "Signing in did not finish: no passkey",
             "a refusal stays on screen after the cluster closes"
+        );
+
+        // Adding a passkey waits on its own button and answers in the
+        // sheet's line, in the mock's words, with try again.
+        let add = host
+            .query_selector("[data-add-passkey]")
+            .expect("query")
+            .expect("the add button");
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_until(|| add.get_attribute("aria-disabled").as_deref() == Some("true")).await;
+        assert!(
+            status.has_attribute("hidden"),
+            "adding a passkey says nothing on the ground between the sheets"
+        );
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="failed" data-ceremony-detail="cancelled" hidden></span>"#,
+        );
+        settle_until(|| text_of(&host, "[data-account-receipt]").contains("cancelled")).await;
+        assert_eq!(
+            text_of(&host, "[data-account-receipt]"),
+            "The passkey prompt was cancelled, so nothing was added."
+        );
+        let retry = host
+            .query_selector("[data-account-retry]")
+            .expect("query")
+            .expect("try again");
+        assert!(!retry.has_attribute("hidden"), "try again is offered");
+        assert!(
+            add.get_attribute("aria-disabled").is_none(),
+            "the button answers again"
         );
     }
 

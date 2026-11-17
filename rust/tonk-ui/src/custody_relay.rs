@@ -437,7 +437,11 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     set_card_message("Confirm this account action with your passkey.");
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
-    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    let dismissed = intent.clone();
+    on_click(&host, "#tonk-custody-dismiss", move || {
+        report_cancelled(&dismissed);
+        remove_card();
+    });
 
     let method = command_method(&intent);
     let action = command_action(&intent);
@@ -445,15 +449,24 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
-            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-                if let Err(error) = mediation.finish().await {
-                    report(&error.message);
-                    set_card_text(&user_error::ceremony(action, &error));
-                    remove_card_after(4000);
-                } else {
-                    remove_card();
-                }
-            }),
+            Ok(mediation) => {
+                let asked = intent.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(error) = mediation.finish().await {
+                        report(&error.message);
+                        if matches!(
+                            error.refusal,
+                            Some(tonk_identity::passkey::CeremonyRefusal::NotAllowed)
+                        ) {
+                            report_cancelled(&asked);
+                        }
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(4000);
+                    } else {
+                        remove_card();
+                    }
+                })
+            }
             Err(error) => {
                 report(&error.message);
                 set_card_text(&user_error::ceremony(action, &error));
@@ -639,6 +652,26 @@ impl Mediation {
 
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
 /// the passkey is a decision, not a fault.
+/// Tell the worker a ceremony the account sheet follows was cancelled
+/// here, so its row says so instead of waiting for a passkey forever.
+/// Only the ceremonies that report their outcome on that row.
+fn report_cancelled(intent: &tonk_worker_api::CustodyIntent) {
+    let ceremony = match intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => "delete-account",
+        _ => return,
+    };
+    let Some(controller) =
+        web_sys::window().and_then(|window| window.navigator().service_worker().controller())
+    else {
+        return;
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"custody-cancelled".into());
+    let _ = js_sys::Reflect::set(&message, &"ceremony".into(), &ceremony.into());
+    let _ = controller.post_message(&message);
+}
+
 fn report(error: &str) {
     if error.starts_with("NotAllowedError") {
         // Debug level, but with the browser's own text: a refusal the
@@ -675,10 +708,18 @@ pub(crate) fn begin(
 /// the caller knows which passkey holds the account.
 pub(crate) fn begin_with(
     method: &'static str,
-    intent: tonk_worker_api::CustodyIntent,
+    mut intent: tonk_worker_api::CustodyIntent,
     credential_id: Option<String>,
 ) -> Result<Mediation, CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
+
+    // The passkey being added is made here, so this browser names it:
+    // the account's passkey list shows each one by that name.
+    if let tonk_worker_api::CustodyIntent::AddPasskey(addition) = &mut intent {
+        addition
+            .created_on
+            .get_or_insert_with(crate::device_name::current);
+    }
 
     let identity = web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())

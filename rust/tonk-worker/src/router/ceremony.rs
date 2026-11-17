@@ -199,6 +199,7 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
             tonk_worker_api::PasskeyAddition {
                 account_did: root.root_did.to_string(),
                 endpoint: format!("{}ucan/", origin),
+                created_on: None,
             }
         };
         ask_for_passkey(
