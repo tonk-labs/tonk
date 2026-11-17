@@ -89,6 +89,10 @@ pub(crate) struct PortalState {
     /// chord down to this guest (see [`relay_chord_down`]). Replaced on
     /// each handshake; dropping it removes the listener.
     chord: Option<ChordRelay>,
+    /// The page's `hashchange` listener, which relays a fragment-only move
+    /// to this guest (see [`relay_hash_change`]). Replaced on each
+    /// handshake; dropping it removes the listener.
+    hash: Option<HashRelay>,
     /// The portal's own routing context (its `with`). Relayed guest
     /// operations with no forwarded route are pinned to it explicitly;
     /// `allow`'s `self` entry resolves to it.
@@ -126,6 +130,7 @@ impl PortalState {
             port: None,
             _dispatcher: None,
             chord: None,
+            hash: None,
             with: None,
             allow: Allow::none(),
         }
@@ -1126,6 +1131,7 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
     }
 
     state.borrow_mut().chord = relay_chord_down(host, &port, state);
+    state.borrow_mut().hash = relay_hash_change(host, state);
 
     let ready = Object::new();
     set_v1(&ready, "ready");
@@ -1853,6 +1859,47 @@ impl Drop for ChordRelay {
             .document
             .remove_event_listener_with_callback("keydown", self.listener.as_ref().unchecked_ref());
     }
+}
+
+/// A window `hashchange` listener, removed when dropped.
+pub(crate) struct HashRelay {
+    window: web_sys::Window,
+    listener: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl Drop for HashRelay {
+    fn drop(&mut self) {
+        let _ = self.window.remove_event_listener_with_callback(
+            "hashchange",
+            self.listener.as_ref().unchecked_ref(),
+        );
+    }
+}
+
+/// Tell this portal's guest when the page's fragment moves.
+///
+/// A link that differs only in its fragment (a new passlink for the same
+/// space) does not reload the page or change its route, so nothing else
+/// re-sends the guest its location: a guest that reads it once (the
+/// join's `<page-mount>`) keeps the old one, and an earlier failure stays
+/// up until a reload.
+fn relay_hash_change(host: &Element, state: &Rc<RefCell<PortalState>>) -> Option<HashRelay> {
+    let window = window()?;
+    let host = host.clone();
+    let weak = Rc::downgrade(state);
+    let listener = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+        let Some(state) = weak.upgrade() else {
+            return;
+        };
+        if state.borrow().disposed {
+            return;
+        }
+        refresh_context(&host, &state);
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    window
+        .add_event_listener_with_callback("hashchange", listener.as_ref().unchecked_ref())
+        .ok()?;
+    Some(HashRelay { window, listener })
 }
 
 /// Whether `event` is the command palette's chord: Ctrl/Cmd+K or
@@ -3385,6 +3432,30 @@ mod tests {
             get_str(&context, "hash").as_deref(),
             Some("#delete-account")
         );
+    }
+
+    #[dialog_common::test]
+    async fn it_relays_a_fragment_only_move_to_the_guest() {
+        let host = FakeHost::install();
+        let consumer = relay_consumer(&host, None, None, None);
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let (listener, _port) = bind(&consumer, &state);
+        listener.wait_for("ready").await;
+        let win = window().unwrap();
+        let original = win.location().href().unwrap();
+        win.history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some("/space/did:key:zSpace#second"))
+            .unwrap();
+        let moved = web_sys::Event::new("hashchange").unwrap();
+        win.dispatch_event(&moved).unwrap();
+        let update = listener.wait_for("context").await;
+        let context = Reflect::get(&update, &"context".into()).unwrap();
+        win.history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original))
+            .unwrap();
+        assert_eq!(get_str(&context, "hash").as_deref(), Some("#second"));
     }
 
     /// When THIS portal is itself a nested guest, its host document is

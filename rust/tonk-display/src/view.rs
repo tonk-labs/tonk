@@ -377,7 +377,7 @@ mod tests {
         );
         assert!(host.query_selector(".join-closed").unwrap().is_some());
         assert!(
-            host.query_selector("tonk-message[heading=\"this share link expired\"]")
+            host.query_selector("tonk-message[heading=\"this passlink was turned off\"]")
                 .unwrap()
                 .is_some()
         );
