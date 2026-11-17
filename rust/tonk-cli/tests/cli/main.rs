@@ -12,6 +12,10 @@
 //!
 //! The fixtures the files share live in `common`.
 
+// These tests commit with the one-step publish, which fails on a lost
+// race: a test's branch has no other writer to lose one to.
+#![allow(deprecated)]
+
 mod common;
 
 #[cfg(feature = "integration-tests")]

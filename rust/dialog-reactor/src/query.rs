@@ -1,4 +1,5 @@
-//! [`Query`](QueryEffect) — one-shot read against a branch.
+//! [`Query`](QueryEffect) — one-shot read against a branch, through its
+//! stack.
 //!
 //! The non-streaming counterpart to [`Subscribe`](crate::Subscribe):
 //! acquire the (node-cache-warm) branch session, run the select once,
@@ -40,13 +41,15 @@ impl<'a> QueryEffect<'a> {
     {
         let session = self.branch.acquire(env).await?;
         let terms = self.query.terms.clone();
-        // The branch folds its own session overlay (ephemeral facts kept
-        // out of storage, e.g. an invite's private seed) into every read,
-        // so the query sees them alongside branch facts with no `.with(..)`
-        // here. Deductive `db.rule/*` rules resolve automatically — the
-        // branch query is a layer stack that resolves rules as well as facts.
+        // Read through the branch's stack: the primary with its session
+        // overlay (ephemeral facts kept out of storage, e.g. an invite's
+        // private seed) and every layer the stack holds, among them its
+        // own `session:`, where a provider's answer to a command lands.
+        // Deductive `db.rule/*` rules resolve automatically — the query
+        // is a layer stack that resolves rules as well as facts.
         let conclusions = session
-            .handle()
+            .state
+            .stack()
             .query()
             .select(tonk_schema::concept::QueryPlan::from(self.query))
             .perform(env)

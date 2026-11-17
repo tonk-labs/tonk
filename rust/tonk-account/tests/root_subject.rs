@@ -1,3 +1,7 @@
+// These tests commit with the one-step publish, which fails on a lost
+// race: a test's branch has no other writer to lose one to.
+#![allow(deprecated)]
+
 use dialog_credentials::{Credential, Ed25519Signer};
 use dialog_effects::storage::Location;
 use dialog_peer::helpers::test_session_with_peer;
