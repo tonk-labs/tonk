@@ -2447,6 +2447,12 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
+
+    /// When the invitation was minted, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct MintedAt(pub u64);
 }
 
 /// Attributes that live on [`Remote`] entities only.
