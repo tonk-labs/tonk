@@ -799,7 +799,9 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
         "<hub-bar class=\"hub-top\">",
         "<svg class=\"hub-logo\"",
-        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger>",
+        // Your name is a toggle: a chevron, and aria-expanded on the sheet.
+        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger role=\"button\"",
+        "aria-expanded=\"false\" aria-controls=\"account-sheet\">",
         "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
         "<div class=\"hub-line\">",
         "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-spaces-line>spaces <span class=\"hub-count\" data-space-count></span></h2>",
