@@ -1,111 +1,154 @@
-// The element's stylesheet. Colors come from the page's own text and
-// background, so it follows the theme; a key's components take a hue
-// per kind.
+// The element's stylesheet: the Bauhaus palette tonk's code surfaces use,
+// named by Kandinsky's pairing of color and shape. Entities take the
+// circle's blue, attributes the triangle's ochre, values the square's
+// brick; machinery stays in the closure's warm grey. Each color is read
+// through its `--tonk-*` variable with the literal as a fallback, since a
+// guest may not carry the sheet that defines them.
 (self) => `
 :host {
+  --circle: var(--tonk-circle, #3d6da8);
+  --triangle: var(--tonk-triangle, #c89a2b);
+  --square: var(--tonk-square, #b94a3d);
+  --closure: var(--tonk-closure, #7a7268);
+  --alarm: var(--tonk-alarm, #a8302a);
+  --text: var(--wa-color-text-normal, currentColor);
+  --quiet: var(--wa-color-text-quiet, color-mix(in oklab, currentColor 60%, transparent));
+  --rule: var(--wa-color-border-quiet, color-mix(in oklab, currentColor 18%, transparent));
+  --loud: var(--wa-color-border-loud, color-mix(in oklab, currentColor 55%, transparent));
+  --fill: var(--wa-color-neutral-fill-quiet, color-mix(in oklab, currentColor 9%, transparent));
   display: block;
-  color: inherit;
-  font: inherit;
-  --line: color-mix(in oklab, currentColor 14%, transparent);
-  --faint: color-mix(in oklab, currentColor 6%, transparent);
-  --muted: color-mix(in oklab, currentColor 62%, transparent);
-  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--text);
+  font-family: var(--wa-font-family-code, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
+  font-size: var(--wa-font-size-s, 13px);
 }
 * { box-sizing: border-box; }
 .shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem);
-  gap: 1rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  min-height: 0;
+  height: min(80vh, 100%);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 @media (max-width: 48rem) {
-  .shell { grid-template-columns: minmax(0, 1fr); }
+  .shell { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .detail { border-left: 0; border-top: 1px solid var(--rule); }
 }
-.outline {
-  border: 1px solid var(--line);
-  border-radius: 0.5rem;
-  overflow: auto;
-  max-height: 80vh;
-  font-size: 0.8125rem;
+.outline, .detail { overflow: auto; min-height: 0; padding: 12px; }
+.outline { font-size: var(--wa-font-size-xs, 11px); }
+
+/* Column header: the same widths as the rows, so labels sit over values. */
+.head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 0 4px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--quiet); text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 0.85em;
 }
+.head .label { flex: 1 1 auto; padding-left: 1.5em; }
+
 .row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 1.75rem;
-  padding: 0.125rem 0.625rem 0.125rem calc(0.5rem + var(--depth, 0) * 1.125rem);
-  border-bottom: 1px solid var(--faint);
-  cursor: default;
-  white-space: nowrap;
+  display: flex; align-items: center; gap: 8px;
+  height: 2em; white-space: nowrap; cursor: default;
 }
-.row:last-child { border-bottom: 0; }
-.row:hover { background: var(--faint); }
-.row[aria-selected='true'] { background: color-mix(in oklab, currentColor 10%, transparent); }
-.row:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
+.row:hover { background: var(--fill); }
+.row[aria-selected='true'] { box-shadow: inset 2px 0 0 var(--circle); background: var(--fill); }
+.row:focus { outline: none; }
+.row:focus-visible { background: color-mix(in oklab, var(--text) 10%, transparent); }
 .row[data-node], .row[data-more] { cursor: pointer; }
-.twist { width: 1rem; flex: none; text-align: center; color: var(--muted); }
-.at { width: 2.5rem; flex: none; text-align: right; color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.name { font-weight: 600; }
-.meta { margin-left: auto; display: flex; gap: 0.75rem; align-items: center; color: var(--muted); font-variant-numeric: tabular-nums; padding-left: 1rem; }
-.hash, code { font-family: var(--mono); font-size: 0.75rem; }
-.pending { color: oklch(0.62 0.15 70); }
-.badge {
-  flex: none;
-  font-size: 0.6875rem;
-  line-height: 1;
-  padding: 0.1875rem 0.375rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  color: var(--muted);
+
+/* D3-style indented-tree connectors. Each ancestor level is a gutter that
+   carries the spine on while that ancestor has siblings below; the row's
+   own gutter forks an elbow off the spine to the node's dot, and the last
+   child stops the spine at its dot. */
+.indent { display: flex; align-self: stretch; flex: none; }
+.gutter { position: relative; width: 1.5em; flex: none; }
+.gutter.on::before, .elbow::before, .elbow::after { content: ''; position: absolute; border-color: var(--loud); }
+.gutter.on::before { left: 50%; top: 0; bottom: 0; border-left: 1px solid; }
+.elbow::before { left: 50%; top: 0; bottom: 0; border-left: 1px solid; }
+.elbow.last::before { bottom: 50%; }
+.elbow::after { left: 50%; right: -4px; top: 50%; border-top: 1px solid; }
+
+/* A node's dot: filled once it is read, hollow until then. A spinning arc
+   takes its place while it is read. */
+.dot {
+  position: relative; z-index: 1; flex: none;
+  width: 8px; height: 8px; border-radius: 50%;
+  border: 1.5px solid var(--loud); background: transparent;
 }
-.badge--index { color: oklch(0.6 0.14 255); border-color: currentColor; }
-.badge--segment { color: oklch(0.6 0.13 155); border-color: currentColor; }
-.badge--removed { color: oklch(0.6 0.19 25); border-color: currentColor; }
-.badge--spill { color: oklch(0.62 0.15 70); border-color: currentColor; }
-.key { display: inline-flex; gap: 0.25rem; min-width: 0; overflow: hidden; font-family: var(--mono); font-size: 0.75rem; }
-.part {
-  padding: 0.0625rem 0.3125rem;
-  border-radius: 0.25rem;
-  background: color-mix(in oklab, currentColor 12%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 22rem;
-  flex: 0 1 auto;
+.dot.read { background: var(--loud); }
+.dot.leaf { width: 5px; height: 5px; border-width: 1px; background: var(--loud); }
+.dot.loading { border-color: transparent; }
+.dot.loading::after {
+  content: ''; position: absolute; inset: -1.5px; border-radius: 50%;
+  border: 1.5px solid var(--quiet); border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
 }
-.part--index, .part--min, .part--opaque, .part--pending, .part--prefix { color: var(--muted); }
-.part--index, .part--vtype { flex: none; }
-.part--entity { color: oklch(0.6 0.14 255); }
-.part--attribute { color: oklch(0.6 0.13 155); }
-.part--vtype { color: oklch(0.6 0.12 300); }
-.part--value { color: oklch(0.62 0.15 70); }
-.part--spill, .part--blob { color: oklch(0.6 0.16 345); }
-.part--origin, .part--edition { color: oklch(0.6 0.08 200); }
-.note { margin: 0; padding: 0.5rem 0.75rem; color: var(--muted); white-space: normal; }
-.note--error { color: oklch(0.6 0.19 25); }
-.link { text-decoration: underline; }
-.detail {
-  border: 1px solid var(--line);
-  border-radius: 0.5rem;
-  padding: 0.875rem 1rem;
-  font-size: 0.8125rem;
-  position: sticky;
-  top: 1rem;
-  max-height: 80vh;
-  overflow: auto;
+@keyframes spin { to { rotate: 360deg; } }
+
+.name { font-weight: var(--wa-font-weight-semibold, 600); }
+.at { color: var(--quiet); min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* A key in the outline: its parts as colored text, a thin dot between. */
+.key { display: inline-flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.part { font-weight: var(--wa-font-weight-semibold, 600); overflow: hidden; text-overflow: ellipsis; max-width: 24em; }
+.key .part + .part::before { content: '\\2009\\00B7\\2009'; color: var(--quiet); font-weight: 400; }
+.part--entity, .part--blob, .part--spill { color: var(--circle); }
+.part--attribute { color: var(--triangle); }
+.part--value { color: var(--square); }
+.part--vtype { color: var(--square); opacity: 0.7; font-weight: var(--wa-font-weight-normal, 400); }
+.part--index { color: var(--text); }
+.part--origin, .part--edition, .part--opaque, .part--prefix, .part--min, .part--pending { color: var(--closure); font-weight: var(--wa-font-weight-normal, 400); }
+
+/* Value columns, right-packed so they line up at every depth. */
+.col { flex: none; color: var(--quiet); text-align: right; font-variant-numeric: tabular-nums; }
+.col.size { width: 120px; margin-left: 24px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.col.count { width: 48px; }
+.col.buffered { width: 84px; overflow: hidden; display: inline-flex; justify-content: flex-end; }
+.bar { height: 7px; min-width: 2px; background: var(--closure); }
+.num { width: 48px; }
+.chip { font-size: 0.85em; padding: 0 4px; line-height: 1.5; background: var(--fill); }
+.chip--pending { color: var(--triangle); }
+.chip--removed { color: var(--alarm); }
+.chip--spill { color: var(--circle); }
+
+.note { margin: 0; padding: 4px 0; color: var(--quiet); font-style: italic; white-space: normal; }
+.note--error { color: var(--alarm); }
+.link { color: var(--circle); text-decoration: underline; }
+
+/* The detail pane. */
+.detail { border-left: 1px solid var(--rule); }
+.detail h2, .detail h3 {
+  margin: 0 0 8px; font-size: var(--wa-font-size-xs, 12px); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
 }
-.detail h2 { margin: 0 0 0.25rem; font-size: 1rem; }
-.detail h3 { margin: 1rem 0 0.375rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-.detail .note { padding: 0; }
-.entity { display: block; overflow-wrap: anywhere; color: var(--muted); }
-.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.75rem; margin: 0.75rem 0 0; }
-.facts dt { color: var(--muted); }
+.detail h2 { color: var(--circle); }
+.detail h3 { margin-top: 16px; color: var(--quiet); }
+.entity { display: block; margin-bottom: 8px; color: var(--circle); text-decoration: underline; overflow-wrap: anywhere; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 8px; margin: 0; }
+.facts dt { color: var(--quiet); min-width: 64px; }
 .facts dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.wrap { overflow-wrap: anywhere; }
-.parts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
-.parts li { display: flex; gap: 0.5rem; align-items: baseline; min-width: 0; }
-.parts .part { flex: none; font-family: var(--mono); font-size: 0.6875rem; }
-.parts code { overflow-wrap: anywhere; min-width: 0; }
-.value { margin: 0.5rem 0 0; padding: 0.5rem; border-radius: 0.375rem; background: var(--faint); font-family: var(--mono); font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; }
-.button { margin-top: 0.5rem; font: inherit; color: inherit; background: var(--faint); border: 1px solid var(--line); border-radius: 0.375rem; padding: 0.25rem 0.625rem; cursor: pointer; }
-.button:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+/* A key in the pane: its parts as solid chips that wrap as text. */
+.chips { margin: 4px 0 6px; line-height: 2; }
+.chips .part {
+  display: inline; white-space: normal; word-break: break-all; max-width: none;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  padding: 1px 4px; margin-right: 3px; font-weight: 600;
+  color: light-dark(#000, #fff); background: var(--closure);
+}
+.chips .part::before { content: none; }
+.chips .part--entity, .chips .part--blob, .chips .part--spill { background: var(--circle); }
+.chips .part--attribute { background: var(--triangle); }
+.chips .part--value { background: var(--square); }
+.chips .part--vtype { background: var(--square); opacity: 0.7; }
+.chips .part--index { background: light-dark(#000, #fff); color: light-dark(#fff, #000); opacity: 1; }
+.value {
+  margin: 8px 0 0; padding: 8px; background: var(--fill);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto;
+}
+.button {
+  margin-top: 8px; font: inherit; color: var(--text); background: var(--fill);
+  border: 1px solid var(--loud); border-radius: 0; padding: 2px 10px; cursor: pointer;
+}
+.button:hover { background: color-mix(in oklab, var(--text) 14%, transparent); }
 `

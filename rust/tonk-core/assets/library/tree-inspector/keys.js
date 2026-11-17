@@ -4,7 +4,7 @@
   const state = self.__tree;
   const row = event.target.closest?.('.row');
   if (!row) return;
-  const rows = [...state.shell.querySelectorAll('.outline > .row')];
+  const rows = [...state.shell.querySelectorAll('.outline .row')];
   const at = rows.indexOf(row);
   const move = (next) => {
     if (!next) return;

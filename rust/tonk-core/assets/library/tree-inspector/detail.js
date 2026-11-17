@@ -25,14 +25,13 @@
   };
   const parts = (formula, bytes) => {
     const decoded = self.label(formula, bytes) ?? [];
-    const list = element('ol', 'parts');
+    const box = element('div', 'chips');
     for (const part of decoded) {
-      const item = element('li');
-      item.append(element('span', `part part--${part.kind}`, part.kind));
-      item.append(element('code', '', part.text));
-      list.append(item);
+      const piece = element('span', `part part--${part.kind}`, part.text || part.kind);
+      piece.title = part.kind;
+      box.append(piece);
     }
-    return list;
+    return box;
   };
 
   const selected = state.selected;
@@ -44,7 +43,7 @@
   const known = state.nodes.get(selected);
   if (known) {
     pane.append(element('h2', '', known.info?.kind === 'segment' ? 'Segment' : known.info?.kind === 'index' ? 'Index' : 'Node'));
-    pane.append(element('code', 'entity', selected));
+    pane.append(element('span', 'entity', selected));
     const info = known.info ?? {};
     pane.append(table([
       ['kind', info.kind],
@@ -85,7 +84,7 @@
     return pane;
   }
   pane.append(element('h2', '', 'Entry'));
-  pane.append(element('code', 'entity', selected));
+  pane.append(element('span', 'entity', selected));
   pane.append(element('h3', '', 'Key'));
   pane.append(parts('dialog/key-part', entry.key));
   pane.append(table([
@@ -105,7 +104,7 @@
   ]));
   if (entry.spill) {
     pane.append(element('h3', '', 'Spilled value'));
-    pane.append(element('code', 'entity', String(entry.spill)));
+    pane.append(element('span', 'entity', String(entry.spill)));
     const value = entry.value;
     if (!value) {
       const read = element('button', 'button', 'Read value');
