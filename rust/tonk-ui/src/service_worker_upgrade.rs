@@ -870,6 +870,9 @@ pub(crate) mod tests {
                                 name: link.textContent.trim(),
                             })),
                             createEnabled: !!document.querySelector("[data-spaces-sheet] button[data-new-space]:not(:disabled)"),
+                            // The Hub shows once its stylesheets load; until
+                            // then its text is hidden from innerText.
+                            styled: !document.querySelector(".hub-page[data-styling]"),
                         };
                         "#,
                         vec![],
@@ -882,6 +885,7 @@ pub(crate) mod tests {
                     .as_array()
                     .is_some_and(|spaces| !spaces.is_empty())
                     && last["createEnabled"] == true
+                    && last["styled"] == true
                 {
                     return Ok(last);
                 }
