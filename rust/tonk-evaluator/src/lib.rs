@@ -1,4 +1,7 @@
 #![warn(missing_docs)]
+// Tests commit with the one-step publish, which fails on a lost race:
+// a test's branch has no other writer to lose one to.
+#![cfg_attr(test, allow(deprecated))]
 //! Evaluation of analyzed Tonk notation documents.
 //!
 //! This crate sits at the top of the dependency graph:
