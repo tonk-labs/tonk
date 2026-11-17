@@ -858,6 +858,10 @@ view!:
         background:transparent; color:var(--tonk-text); }
       space-links .hub-links { margin:0; padding:0; }
       space-links .hub-link:first-child { border-top:0; padding-top:0; }
+      /* hub.css holds the copy column open on a row with one button by
+         a hidden word after it; ours is `remove` or `reset`, so the word
+         goes before it and the button stays under the other removes. */
+      space-links .hub-link-acts:has(> [data-link-ask]:only-child)::after { order:-1; }
       /* Until the list has answered, the line says `spaces loading` and
          offers no `new space`; a list that didn't load shows no count. */
       [data-spaces-sheet]:not([data-list="ready"]) .hub-line [data-new-space] { display:none; }
@@ -5793,7 +5797,7 @@ element!: &space-links
         const note = self._failed ? 'This space’s links didn’t load. Close and open it to try again.'
           : !self._rows ? ''
           : !rows.length ? 'No links yet. Make one to bring someone in.'
-          : rows.some((row) => row.kind !== 'agent' && !made.has(row.target)) ? 'Only a link made in this tab can be copied. Reset the default passlink, or make a new link, to get one to copy.'
+          : !rows.some((row) => made.has(row.target)) ? 'Only a link made in this tab can be copied. Reset the default passlink, or make a new link, to get one to copy.'
           : '';
         self.innerHTML = `${items ? `<ul class="hub-links">${items}</ul>` : ''}`
           + (note ? `<p class="hub-note">${note}</p>` : '')
@@ -5823,9 +5827,9 @@ element!: &space-links
       }
     # Mint an open link and put it on the clipboard. The clipboard write
     # opens on the press, while it still counts as one, and settles when
-    # the worker answers.
+    # the worker answers. A link that `replaces` another lists in its place.
     mint: |
-      async (self) => {
+      async (self, replaces) => {
         const subject = self.dataset.space;
         const base = `/api/repository/${encodeURIComponent(subject)}`;
         let settle;
@@ -5838,7 +5842,7 @@ element!: &space-links
         } catch (_) { copied = Promise.resolve(false); }
         try {
           const before = new Set(((await self.api(`${base}/invites`)) ?? []).map((row) => row.targetCid));
-          const minted = await self.api(`${base}/invite`, {});
+          const minted = await self.api(`${base}/invite`, replaces ? { replaces } : {});
           const after = (await self.api(`${base}/invites`)) ?? [];
           const fresh = after.map((row) => row.targetCid).filter((cid) => !before.has(cid));
           if (fresh.length === 1) self.made().set(fresh[0], minted.url);
@@ -5911,7 +5915,7 @@ element!: &space-links
         self._replaced ??= new Set();
         try {
           if (!self._replaced.has(target)) {
-            const made = await self.mint();
+            const made = await self.mint(target);
             self._replaced.add(target);
             self._copiedReset = made.copied;
           }
