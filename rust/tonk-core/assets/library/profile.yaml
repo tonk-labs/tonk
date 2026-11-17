@@ -778,6 +778,44 @@ view!:
         cursor:pointer; white-space:nowrap; }
       /* brightness on near-black reads as nothing — wash it instead */
       .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+      /* Inside the hub, its dialogs wear the hub's look: sentence type,
+         its fields and its buttons (a quiet text button, a rounded main). */
+      .tonk-hub tonk-dialog[appearance="hub"] :is(.space-create-form, .remove-form) {
+        gap:16px; color:var(--tonk-text);
+        font:400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field { gap:6px; }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field span {
+        color:var(--tonk-text); text-transform:none;
+        font:600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field small {
+        color:var(--tonk-text-soft); font-weight:400; }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field :is(input, textarea) {
+        max-width:none; height:var(--tonk-height-field); min-height:0; padding:0 12px;
+        border:1px solid var(--tonk-control-edge); border-radius:var(--tonk-radius-control);
+        background:var(--tonk-field); color:var(--tonk-text);
+        font:400 var(--tonk-size-field)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field textarea {
+        height:auto; min-height:84px; padding:10px 12px; }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-field :is(input, textarea):focus-visible {
+        outline:none; border-color:var(--tonk-control-edge); box-shadow:none;
+        background:linear-gradient(var(--tonk-wash-strong),var(--tonk-wash-strong)), var(--tonk-field); }
+      .tonk-hub tonk-dialog[appearance="hub"] :is(.space-create-help, .space-create-error) {
+        color:var(--tonk-text-soft);
+        font:400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+      .tonk-hub tonk-dialog[appearance="hub"] .space-create-error {
+        color:var(--tonk-text); font:600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+      .tonk-hub tonk-dialog[appearance="hub"] :is(.m-cancel, .m-go) {
+        display:inline-flex; align-items:center; justify-content:center;
+        min-width:0; height:var(--tonk-height-control); min-height:0; padding:0 12px;
+        border:0; border-radius:var(--tonk-radius-control); box-shadow:none;
+        font:600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+        letter-spacing:.02em; transition:background-color var(--tonk-change); }
+      .tonk-hub tonk-dialog[appearance="hub"] .m-cancel { background:transparent; color:var(--tonk-text); }
+      .tonk-hub tonk-dialog[appearance="hub"] .m-cancel:hover { background:var(--tonk-wash); }
+      .tonk-hub tonk-dialog[appearance="hub"] .m-cancel:focus-visible { outline:none; background:var(--tonk-wash-strong); }
+      .tonk-hub tonk-dialog[appearance="hub"] .m-go { background:var(--tonk-main); color:var(--tonk-main-text); }
+      .tonk-hub tonk-dialog[appearance="hub"] .m-go:is(:hover, :focus-visible) { outline:none; background:var(--tonk-main-hover); }
+      .tonk-hub tonk-dialog[appearance="hub"] :is(.m-cancel, .m-go):active { scale:.96; }
 
       @media (prefers-reduced-motion: reduce) {
         .verbs, .account-menu__row { transition:none; }
