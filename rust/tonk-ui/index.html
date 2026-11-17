@@ -245,10 +245,29 @@
                 outline: none;
             }
             #tonk-boot .tonk-boot-status[data-failed] {
+                position: relative;
                 width: auto;
-                padding: 16px;
+                padding: 16px 16px 16px 44px;
                 color: #38182a;
                 text-align: start;
+                outline: none;
+            }
+            /* The error mark of an error message (fabb.js draws
+               tonk-message's from Lucide's circle-alert). Focus goes to the
+               reason so it is read out; a wall's focus is never drawn. */
+            #tonk-boot .tonk-boot-status[data-failed]::before {
+                content: "";
+                position: absolute;
+                left: 16px;
+                top: calc(16px + (1.5em - 16px) / 2);
+                width: 16px;
+                height: 16px;
+                background: currentColor;
+                -webkit-mask: var(--tonk-boot-alert) center / contain no-repeat;
+                mask: var(--tonk-boot-alert) center / contain no-repeat;
+            }
+            #tonk-boot {
+                --tonk-boot-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cline x1='12' x2='12' y1='8' y2='12'/%3E%3Cline x1='12' x2='12.01' y1='16' y2='16'/%3E%3C/svg%3E");
             }
             #tonk-boot:has([data-failed]):not(:has([data-boot-stuck]))
                 .tonk-boot-actions {
@@ -290,6 +309,10 @@
                 }
                 .tonk-boot-actions button:focus-visible {
                     outline: 2px solid Highlight;
+                }
+                #tonk-boot .tonk-boot-status[data-failed]::before {
+                    forced-color-adjust: none;
+                    background: CanvasText;
                 }
             }
             @keyframes tonk-pulse {

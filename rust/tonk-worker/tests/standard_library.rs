@@ -642,9 +642,11 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must say where an invite link comes from"
     );
     assert_eq!(
-        directory_probe.matches("<space-login>").count(),
+        directory_probe
+            .matches("<space-login data-signed-out-only>")
+            .count(),
         2,
-        "both absence states must offer sign-in recovery"
+        "both absence states must offer sign-in recovery while signed out"
     );
     assert!(
         !directory_probe.contains("you don't have access"),
@@ -700,7 +702,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         // What a visit to a space that keeps no public ticket ends on.
         "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<space-login><button type=\"button\"",
+        "<space-login data-signed-out-only><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -728,11 +730,45 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     );
     assert_eq!(
         PROFILE_LIBRARY
-            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login><button type=\"button\">sign in</button></space-login></div>")
+            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login data-signed-out-only><button type=\"button\">sign in</button></space-login></div>")
             .count(),
         2,
         "both absence walls must offer your spaces and sign in"
     );
+    // Signed in, a wall does not ask to sign in: each reads the hub's
+    // own account-link marker, and the sign-in sentence and button go.
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<tonk-display with=\"{profile-branch}@profile:tonk\" model=\"state:account-link\" view=\"label\" hidden>")
+            .count(),
+        2,
+        "both absence walls must know whether this device holds the account"
+    );
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<p data-signed-out-only>Already use this space? Sign in with your account.")
+            .count(),
+        2
+    );
+    assert!(PROFILE_LIBRARY.contains(
+        ".space-unknown .space-private:has([data-account-linked]) [data-signed-out-only] { display:none; }"
+    ));
+    // A ticket link's join runs on a task page too: its failure wall sits
+    // under the logotype on the page's ground, not bare in the panel.
+    let join_page = PROFILE_LIBRARY
+        .split("<div class=\"fabb-page space-join\">")
+        .nth(1)
+        .and_then(|tail| tail.split("</div>").next())
+        .expect("the space route's join sits in a task page");
+    assert!(join_page.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
+    assert!(join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">"));
+    for contract in [
+        ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
+        ".space-unknown:has(.space-join .join-status) { padding:0; }",
+        ".space-unknown .space-join :is(tonk-display, .join-card-wrap, .join-status) { display:contents; }",
+    ] {
+        assert!(PROFILE_LIBRARY.contains(contract), "missing `{contract}`");
+    }
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
         "the absent-space panel must consult the directory row before accusing the link"
@@ -1306,8 +1342,11 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this share link expired"));
-    assert!(failure.contains("Ask the person who shared this space to send you a new link."));
+    // The mock's #link-off: a revoked link reads as turned off, not
+    // expired (nothing records an expiry).
+    assert!(failure.contains("heading=\"this passlink was turned off\""));
+    assert!(failure.contains("so it can’t be used to join. Ask them for a new one."));
+    assert!(!failure.contains("link expired"));
     // A wall is never a dead end for someone signed in (PAGES.md).
     assert!(failure.contains("<a href=\"/\">your spaces</a>"));
     assert!(!failure.contains("edge-field edge-field--settled"));
@@ -1348,6 +1387,13 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(route.contains("<main class=\"join-view fabb-page\""));
     assert!(route.contains("<section class=\"fabb-task join-paste-task\""));
     assert!(!route.contains("--edge-"), "no tokens of the view's own");
+    // The top is the logotype alone: a task page has no navigation
+    // (PAGES.md), so the mark is not a link home.
+    assert!(route.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
+    assert!(
+        !PROFILE_LIBRARY.contains("<header class=\"fabb-top\"><a"),
+        "no task page's logotype is a link",
+    );
     assert!(
         route.contains(".join-status:has(.join-closed) .join-opening { display:none; }"),
         "retained failure content must suppress the opening row even while its display reconnects",
@@ -2344,6 +2390,21 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     assert!(pane.contains(">connect a device</h1>"));
     assert!(pane.contains("<dt>device</dt><dd data-link-name></dd>"));
     assert!(pane.contains("<dt>your account</dt>"));
+    // the account reads by its name (the mock's "Alex"), the email only
+    // while no name row has arrived
+    assert!(pane.contains(
+        "<dd data-link-account-cell>\n                          <tonk-display model=\"state:account-link\" view=\"label\">"
+    ));
+    assert!(PROFILE_LIBRARY.contains(
+        "account-settings [data-link-account-cell]:has([data-account-name]) [data-link-account-email] { display:none; }"
+    ));
+    // the connected step names the device it connected
+    assert!(pane.contains(
+        "<span data-link-connected-name>The device</span> can now use your account. You can close this page."
+    ));
+    assert!(PROFILE_LIBRARY.contains(
+        "self.text('[data-link-connected-name]', request.name || 'The device');"
+    ));
     assert!(
         pane.contains("BUG-246"),
         "a slot for the code the device shows"
@@ -2366,6 +2427,15 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
     // a cancelled or failed passkey is the same step, the reason in the form
     assert!(PROFILE_LIBRARY.contains(
         "if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');"
+    ));
+    // a failure says what stayed, in the mock's words, without the
+    // worker's detail
+    assert!(PROFILE_LIBRARY.contains(
+        "self.linkError('Tonk couldn’t reach the device, so nothing was connected. Check that it’s still waiting, then try again.');"
+    ));
+    // except a handoff for another account, whose detail names both
+    assert!(PROFILE_LIBRARY.contains(
+        "else if (state === 'failed' && /requires account/.test(detail)) self.linkError(`Tonk couldn’t finish, so nothing was connected."
     ));
     // the other two panes keep their copy on the same parts
     assert!(PROFILE_LIBRARY.contains(">attach a local space to this account</h1>"));
