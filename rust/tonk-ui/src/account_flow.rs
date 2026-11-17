@@ -2736,7 +2736,7 @@ pub(crate) mod tests {
             let viewport = layout["viewport"].as_f64().unwrap_or_default();
             let sheet = layout["sheet"]["centre"].as_f64().unwrap_or_default();
             let top = layout["top"]["centre"].as_f64().unwrap_or_default();
-            ensure!(
+            anyhow::ensure!(
                 (sheet - viewport / 2.0).abs() < 2.0 && (sheet - top).abs() < 2.0,
                 "at {width}px the failure sheet is centred under the logotype: {layout}"
             );
