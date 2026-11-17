@@ -1,0 +1,17 @@
+<tree-inspector
+  html:branch={branch}
+  html:selected={entity}
+  on:tree-explore=tree-inspector/explore
+  on:tree-open=tree-inspector/open
+  on:tree-close=tree-inspector/close
+>
+  <div class="ti-data" hidden>
+    <tonk-display with="{branch}@{repo}" model=db/branch view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/exploration view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/opened view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/node view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/span view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/entry view=ti-row></tonk-display>
+    <tonk-display with="{branch}@{repo}" model=tree-inspector/part view=ti-row></tonk-display>
+  </div>
+</tree-inspector>

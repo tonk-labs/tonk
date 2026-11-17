@@ -1,10 +1,8 @@
 (self) => {
   const state = self.__tree;
   if (!state) return;
+  state.observer?.disconnect();
+  state.observer = null;
   if (state.frame) cancelAnimationFrame(state.frame);
   state.frame = 0;
-  const watch = state.watch;
-  state.watch = null;
-  try { watch?.cancel?.(); } catch {}
-  watch?.consumer.remove();
 }

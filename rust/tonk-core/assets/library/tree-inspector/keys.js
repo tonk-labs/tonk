@@ -19,12 +19,12 @@
   else if (key === 'Home') move(rows[0]);
   else if (key === 'End') move(rows[rows.length - 1]);
   else if (key === 'ArrowRight') {
-    if (row.getAttribute('aria-expanded') === 'false') self.open(row.dataset.node);
+    if (row.getAttribute('aria-expanded') === 'false') row.click();
     else if (row.getAttribute('aria-expanded') === 'true') move(rows[at + 1]);
   } else if (key === 'ArrowLeft') {
     if (row.getAttribute('aria-expanded') === 'true') {
-      state.nodes.get(row.dataset.node).open = false;
-      self.schedule();
+      self.__tree.selected = row.dataset.node;
+      row.querySelector('.dot')?.click();
     } else {
       move(rows.slice(0, at).reverse().find((other) => level(other) < level(row)));
     }

@@ -1,9 +1,12 @@
-// Draw the outline and the detail pane from what is known. The whole
-// outline is rebuilt: it holds only what has been opened, and focus and
-// scroll are put back after.
+// Draw the page from the rows: with no exploration selected, the
+// branch's current tree and the explorations of this session; with one,
+// its outline and the selected item's detail.
 (self) => {
   const state = self.__tree;
-  const { shell, shadow } = state;
+  const model = self.read();
+  const base = (self.getAttribute('base') || '/console/tree').replace(/\/$/, '');
+  const branchName = self.getAttribute('branch') || 'main';
+  const wanted = self.getAttribute('selected') || '';
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -16,40 +19,67 @@
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   };
-  // A key or a separator as its parts, each in its kind's color.
-  const key = (formula, bytes, empty) => {
+  const short = (entity) => {
+    const id = String(entity).replace(/^[a-z]+:/, '');
+    return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+  };
+  // The roots this branch names now, one per replica that has it.
+  const current = [...new Set(model.branches.filter((row) => row.name === branchName).map((row) => row.tree))];
+  // A key's parts as colored text, or its size while they are read.
+  const key = (part, empty) => {
     const box = element('span', 'key');
-    if (!bytes.length) {
-      box.append(element('span', 'part part--min', empty));
-      return box;
-    }
-    const parts = self.label(formula, bytes);
-    if (!parts) box.append(element('span', 'part part--pending', `${bytes.length} bytes`));
-    else if (!parts.length) box.append(element('span', 'part part--opaque', `${bytes.length} bytes`));
+    const parts = part ? model.partsOf(part) : null;
+    if (!part) box.append(element('span', 'part part--min', empty));
+    else if (!parts) box.append(element('span', 'part part--pending', '…'));
     else {
-      for (const part of parts) {
-        const piece = element('span', `part part--${part.kind}`, part.text || part.kind);
-        piece.title = part.kind;
-        box.append(piece);
+      for (const piece of parts) {
+        const span = element('span', `part part--${piece.kind}`, piece.text || piece.kind);
+        span.title = piece.kind;
+        box.append(span);
       }
     }
     return box;
   };
+  const explore = (root, label) => {
+    const link = element('a', 'button', label);
+    link.href = `${base}/${root}`;
+    link.dataset.explore = root;
+    return link;
+  };
 
-  const focused = shadow.activeElement?.dataset?.id ?? null;
-  const previous = shell.querySelector('.outline');
+  const focused = state.shadow.activeElement?.dataset?.id ?? null;
+  const previous = state.shell.querySelector('.outline');
   const scroll = previous ? previous.scrollTop : 0;
+
+  const exploration = model.explorations.get(wanted);
+  if (!wanted) {
+    state.shell.replaceChildren(self.overview(model, current, base, explore, short));
+    return;
+  }
+  // A root named in the path with no exploration yet: start one.
+  if (!exploration && !state.asked.has(wanted)) {
+    state.asked.add(wanted);
+    self.send('tree-explore', { root: wanted });
+  }
 
   const list = element('div', 'outline');
   list.setAttribute('role', 'tree');
   list.setAttribute('aria-label', 'Search tree');
+  const top = element('div', 'bar');
+  const back = element('a', 'link', '← explorations');
+  back.href = base;
+  top.append(back);
+  if (current.length && !current.includes(wanted)) {
+    top.append(element('span', 'chip chip--pending', `${branchName} has moved`));
+    for (const root of current) top.append(explore(root, `explore ${short(root)}`));
+  }
+  list.append(top);
   const head = element('div', 'head');
   head.setAttribute('aria-hidden', 'true');
   head.append(element('span', 'label', 'key'), element('span', 'col size', 'size'), element('span', 'col count', 'count'), element('span', 'col buffered', 'buffered'));
   list.append(head);
 
-  // One row. `guides` says, for each ancestor level, whether its spine
-  // runs on past this row; `last` whether this row ends its own.
+  const open = exploration?.open ?? new Set();
   let first = true;
   const row = (id, guides, last, expanded) => {
     const item = element('div', 'row');
@@ -63,7 +93,6 @@
     const indent = element('span', 'indent');
     indent.setAttribute('aria-hidden', 'true');
     guides.forEach((on, level) => {
-      // The deepest level is this row's own elbow; the rest carry spines.
       if (level === guides.length - 1) indent.append(element('span', `gutter elbow${last ? ' last' : ''}`));
       else indent.append(element('span', `gutter${on ? ' on' : ''}`));
     });
@@ -83,58 +112,57 @@
     item.append(cell, element('span', 'col count', count === undefined ? '' : String(count)), buffer);
   };
 
-  const draw = (node, guides, last, span, root, widest) => {
-    const known = state.nodes.get(node);
-    const open = !!known?.open;
-    const item = row(node, guides, last, open);
+  const draw = (node, guides, last, span, widest) => {
+    const info = model.nodes.get(node);
+    const isOpen = open.has(node);
+    // Asked and not answered yet: the session has not taken the command.
+    const waiting = state.pending.get(node);
+    const loading = (waiting === 'open' && !isOpen) || (isOpen && !info);
+    if (waiting === 'open' && isOpen) state.pending.delete(node);
+    if (waiting === 'close' && !isOpen) state.pending.delete(node);
+    const item = row(node, guides, last, isOpen);
     item.dataset.node = node;
-    const dot = element('span', `dot${known?.info ? ' read' : ''}${known?.loading ? ' loading' : ''}`);
+    const dot = element('span', `dot${info ? ' read' : ''}${loading ? ' loading' : ''}`);
     dot.setAttribute('aria-hidden', 'true');
     item.append(dot);
-    if (root) item.append(element('span', 'name', root.name || 'branch'));
-    else item.append(key('dialog/separator-part', span.separator, 'start'));
-    item.title = `${known?.info?.kind ?? 'node'} ${node}`;
-    columns(item, known?.info?.size, widest, known?.info?.count, Number(span?.novelty ?? known?.info?.novelty ?? 0));
-    if (!open) return;
+    if (!span) item.append(element('span', 'name', short(node)));
+    else item.append(key(span.separator, 'start'));
+    item.title = `${info?.kind ?? 'node'} ${node}`;
+    columns(item, info?.size, widest, info?.count, Number(span?.novelty ?? info?.novelty ?? 0));
+    if (!isOpen) return;
 
     const below = [...guides, !last];
-    if (known.error) {
-      row(`${node}/error`, [...below, false], true, null).append(element('span', 'note note--error', known.error));
-    }
-    const spans = known.spans ?? [];
-    const sizes = spans.map((child) => Number(state.nodes.get(child.node)?.info?.size ?? 0));
+    const children = model.spans.get(node) ?? [];
+    const sizes = children.map((child) => Number(model.nodes.get(child.child)?.size ?? 0));
     const widestChild = Math.max(1, ...sizes);
-    const entries = (known.entries ?? []).slice(0, known.shown);
-    const more = (known.entries?.length ?? 0) > known.shown;
-    spans.forEach((child, at) => draw(child.node, below, at === spans.length - 1, child, null, widestChild));
-    entries.forEach((entry, at) => {
-      const id = String(entry.entry ?? `${node}/${entry.at}`);
-      const line = row(id, [...below, false], at === entries.length - 1 && !more, null);
-      line.dataset.entry = id;
+    children.forEach((child, at) => draw(child.child, below, at === children.length - 1, child, widestChild));
+    const entries = model.entries.get(node) ?? [];
+    const shown = state.shown?.get(node) ?? 100;
+    const visible = entries.slice(0, shown);
+    const more = entries.length > shown;
+    visible.forEach((entry, at) => {
+      const line = row(entry.entry, [...below, false], at === visible.length - 1 && !more, null);
+      line.dataset.entry = entry.entry;
       line.append(element('span', 'dot leaf'));
       line.append(element('span', 'at', String(entry.at)));
-      line.append(key('dialog/key-part', entry.key, 'empty key'));
+      line.append(key(entry.key, 'empty key'));
       const cell = element('span', 'col buffered');
       if (entry.state === 'removed') cell.append(element('span', 'chip chip--removed', 'removed'));
-      else if (entry.retraction === true) cell.append(element('span', 'chip chip--removed', 'retracts'));
-      else if (entry.spill || entry.blob) cell.append(element('span', 'chip chip--spill', entry.blob ? size(entry['blob-size']) : 'spilled'));
-      // An entry has no size or count of its own: its key takes the room.
       line.append(cell);
     });
     if (more) {
-      const rest = known.entries.length - known.shown;
+      const rest = entries.length - shown;
       const line = row(`${node}/more`, [...below, false], true, null);
       line.dataset.more = node;
       line.append(element('span', 'link', `show ${Math.min(100, rest)} more of ${rest}`));
     }
   };
 
-  if (state.error) list.append(element('p', 'note note--error', state.error));
-  else if (!state.roots.length) list.append(element('p', 'note', 'This branch has no tree yet. The first write to the space makes one.'));
-  const widest = Math.max(1, ...state.roots.map((root) => Number(state.nodes.get(root.node)?.info?.size ?? 0)));
-  state.roots.forEach((root, at) => draw(root.node, [], at === state.roots.length - 1, null, root, widest));
+  if (!exploration) list.append(element('p', 'note', 'Starting the exploration…'));
+  else draw(wanted, [], true, null, Math.max(1, model.nodes.get(wanted)?.size ?? 1));
 
-  shell.replaceChildren(list, self.detail());
+  state.model = model;
+  state.shell.replaceChildren(list, self.detail(model));
   list.scrollTop = scroll;
   if (focused) {
     for (const item of list.querySelectorAll('.row')) {

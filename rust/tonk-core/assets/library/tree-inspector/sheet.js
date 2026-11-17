@@ -121,6 +121,14 @@
 .chip--removed { color: var(--alarm); }
 .chip--spill { color: var(--circle); }
 
+.bar { display: flex; align-items: center; gap: 12px; padding: 0 0 8px; }
+.overview { padding: 12px; grid-column: 1 / -1; }
+.overview h2 { margin: 16px 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--circle); }
+.overview h2:first-child { margin-top: 0; }
+.line { display: flex; align-items: center; gap: 8px; min-height: 2em; border-bottom: 1px solid var(--rule); }
+.line .entity { margin: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line .meta { display: flex; gap: 12px; color: var(--quiet); }
+a.button { text-decoration: none; display: inline-block; margin-top: 0; }
 .note { margin: 0; padding: 4px 0; color: var(--quiet); font-style: italic; white-space: normal; }
 .note--error { color: var(--alarm); }
 .link { color: var(--circle); text-decoration: underline; }
