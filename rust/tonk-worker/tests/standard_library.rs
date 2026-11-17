@@ -642,9 +642,11 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must say where an invite link comes from"
     );
     assert_eq!(
-        directory_probe.matches("<space-login>").count(),
+        directory_probe
+            .matches("<space-login data-signed-out-only>")
+            .count(),
         2,
-        "both absence states must offer sign-in recovery"
+        "both absence states must offer sign-in recovery while signed out"
     );
     assert!(
         !directory_probe.contains("you don't have access"),
@@ -700,7 +702,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         // What a visit to a space that keeps no public ticket ends on.
         "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<space-login><button type=\"button\"",
+        "<space-login data-signed-out-only><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -728,11 +730,45 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     );
     assert_eq!(
         PROFILE_LIBRARY
-            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login><button type=\"button\">sign in</button></space-login></div>")
+            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login data-signed-out-only><button type=\"button\">sign in</button></space-login></div>")
             .count(),
         2,
         "both absence walls must offer your spaces and sign in"
     );
+    // Signed in, a wall does not ask to sign in: each reads the hub's
+    // own account-link marker, and the sign-in sentence and button go.
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<tonk-display with=\"{profile-branch}@profile:tonk\" model=\"state:account-link\" view=\"label\" hidden>")
+            .count(),
+        2,
+        "both absence walls must know whether this device holds the account"
+    );
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<p data-signed-out-only>Already use this space? Sign in with your account.")
+            .count(),
+        2
+    );
+    assert!(PROFILE_LIBRARY.contains(
+        ".space-unknown .space-private:has([data-account-linked]) [data-signed-out-only] { display:none; }"
+    ));
+    // A ticket link's join runs on a task page too: its failure wall sits
+    // under the logotype on the page's ground, not bare in the panel.
+    let join_page = PROFILE_LIBRARY
+        .split("<div class=\"fabb-page space-join\">")
+        .nth(1)
+        .and_then(|tail| tail.split("</div>").next())
+        .expect("the space route's join sits in a task page");
+    assert!(join_page.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
+    assert!(join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">"));
+    for contract in [
+        ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
+        ".space-unknown:has(.space-join .join-status) { padding:0; }",
+        ".space-unknown .space-join :is(tonk-display, .join-card-wrap, .join-status) { display:contents; }",
+    ] {
+        assert!(PROFILE_LIBRARY.contains(contract), "missing `{contract}`");
+    }
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
         "the absent-space panel must consult the directory row before accusing the link"
