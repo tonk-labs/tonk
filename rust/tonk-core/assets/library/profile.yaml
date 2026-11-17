@@ -7269,7 +7269,9 @@ element!: &account-settings
         const connections = (self.agentConnections ?? []).length;
         const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
         const access = connections === 0 ? '' : connections === 1 ? ' and your connection’s access' : ` and your ${connections} connections’ access`;
-        self.text('[data-delete-scope]', `Deletes ${name}, the ${plural(spaces, 'space')} you own${access}.`);
+        // With no spaces there are none to name: the account and access only.
+        self.text('[data-delete-scope]', spaces === 0 ? `Deletes ${name}${access}.`
+          : `Deletes ${name}, the ${plural(spaces, 'space')} you own${access}.`);
       }
     # The answer fires the command, so it waits for the address.
     arm: |

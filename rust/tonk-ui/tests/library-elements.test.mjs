@@ -258,3 +258,20 @@ test("the mobile nav's button rules stop at its own controls, not its dialog's",
   assert.doesNotMatch(library, /\.mobile-nav button\b/);
   assert.match(library, /\.mobile-nav > a, \.mobile-nav \.mobile-create \{ display:flex; width:100%;/);
 });
+
+test('the delete-account note names no spaces when the account owns none', () => {
+  const said = (owned, connections) => {
+    let text;
+    const self = {
+      querySelector: () => ({ value: 'Alice Tester' }),
+      querySelectorAll: () => ({ length: owned }),
+      agentConnections: Array(connections).fill({}),
+      text: (_, value) => { text = value; },
+    };
+    method('account-settings', 'scope')(self);
+    return text;
+  };
+  assert.equal(said(0, 0), 'Deletes Alice Tester.');
+  assert.equal(said(0, 1), 'Deletes Alice Tester and your connection’s access.');
+  assert.equal(said(2, 0), 'Deletes Alice Tester, the 2 spaces you own.');
+});
