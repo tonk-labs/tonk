@@ -11,15 +11,15 @@
   --square: var(--tonk-square, #b94a3d);
   --closure: var(--tonk-closure, #7a7268);
   --alarm: var(--tonk-alarm, #a8302a);
-  --text: var(--wa-color-text-normal, currentColor);
-  --quiet: var(--wa-color-text-quiet, color-mix(in oklab, currentColor 60%, transparent));
-  --rule: var(--wa-color-border-quiet, color-mix(in oklab, currentColor 18%, transparent));
-  --loud: var(--wa-color-border-loud, color-mix(in oklab, currentColor 55%, transparent));
-  --fill: var(--wa-color-neutral-fill-quiet, color-mix(in oklab, currentColor 9%, transparent));
+  --text: currentColor;
+  --quiet: color-mix(in oklab, currentColor 60%, transparent);
+  --rule: color-mix(in oklab, currentColor 18%, transparent);
+  --loud: color-mix(in oklab, currentColor 55%, transparent);
+  --fill: color-mix(in oklab, currentColor 9%, transparent);
   display: block;
   color: var(--text);
-  font-family: var(--wa-font-family-code, ui-monospace, 'SF Mono', Menlo, Consolas, monospace);
-  font-size: var(--wa-font-size-s, 13px);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13px;
 }
 * { box-sizing: border-box; }
 .shell {
@@ -35,7 +35,7 @@
   .detail { border-left: 0; border-top: 1px solid var(--rule); }
 }
 .outline, .detail { overflow: auto; min-height: 0; padding: 12px; }
-.outline { font-size: var(--wa-font-size-xs, 11px); }
+.outline { font-size: 11px; }
 
 /* Column header: the same widths as the rows, so labels sit over values. */
 .head {
@@ -86,13 +86,13 @@
 }
 @keyframes spin { to { rotate: 360deg; } }
 
-.name { font-weight: var(--wa-font-weight-semibold, 600); }
+.name { font-weight: 600; }
 .at { color: var(--quiet); min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* A key in the outline: its parts as colored text, a thin dot between. */
 .key { display: inline-flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .part {
-  font-weight: var(--wa-font-weight-semibold, 600);
+  font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   flex: 0 1 auto; min-width: 3ch; max-width: 32em;
 }
@@ -105,9 +105,9 @@
 .part--entity, .part--blob, .part--spill { color: var(--circle); }
 .part--attribute { color: var(--triangle); }
 .part--value { color: var(--square); }
-.part--vtype { color: var(--square); opacity: 0.7; font-weight: var(--wa-font-weight-normal, 400); }
+.part--vtype { color: var(--square); opacity: 0.7; font-weight: 400; }
 .part--index { color: var(--text); }
-.part--origin, .part--edition, .part--opaque, .part--prefix, .part--min, .part--pending { color: var(--closure); font-weight: var(--wa-font-weight-normal, 400); }
+.part--origin, .part--edition, .part--opaque, .part--prefix, .part--min, .part--pending { color: var(--closure); font-weight: 400; }
 
 /* Value columns, right-packed so they line up at every depth. */
 .col { flex: none; color: var(--quiet); text-align: right; font-variant-numeric: tabular-nums; }
@@ -128,7 +128,7 @@
 /* The detail pane. */
 .detail { border-left: 1px solid var(--rule); }
 .detail h2, .detail h3 {
-  margin: 0 0 8px; font-size: var(--wa-font-size-xs, 12px); font-weight: 600;
+  margin: 0 0 8px; font-size: 12px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .detail h2 { color: var(--circle); }

@@ -1115,6 +1115,20 @@ async fn it_evaluates_many_rows() {
 /// install under the component's source.
 #[dialog_common::test]
 async fn it_installs_a_component_from_the_palette() {
+    installs_from_the_palette("install note", "notebook").await;
+}
+
+/// The search-tree inspector installs from the palette like any
+/// component: "install tree" completes to it.
+#[dialog_common::test]
+async fn it_installs_the_tree_inspector_from_the_palette() {
+    installs_from_the_palette("install tree", "tree-inspector").await;
+}
+
+/// Type `typed` in a fresh space's palette, check the top reading is
+/// `install [<component>]`, run it, and wait for the space to record the
+/// component's install.
+async fn installs_from_the_palette(typed: &str, component: &str) {
     let (app, _state, _lsp) = api_router_with_state(test_state().await);
     let created = send(
         &app,
@@ -1138,12 +1152,16 @@ async fn it_installs_a_component_from_the_palette() {
 
     let page = "site:6f0d2c8e-4b1a-4c3d-9e2f-1a2b3c4d5e6f";
     let expression = "intent:test-install";
-    interpreted(&app, &space, expression, "install note", page, 1.0).await;
+    interpreted(&app, &space, expression, typed, page, 1.0).await;
     let rows = readings(&app, &space, expression, &subject).await;
     let top = rows
         .first()
         .unwrap_or_else(|| panic!("install is suggested: {rows:?}"));
-    assert_eq!(field(top, "text"), "install [notebook]", "{rows:?}");
+    assert_eq!(
+        field(top, "text"),
+        &json!(format!("install [{component}]")),
+        "{rows:?}"
+    );
     let claim = field(top, "claim")
         .as_str()
         .unwrap_or_else(|| panic!("the reading runs as it is: {top:?}"))
@@ -1179,13 +1197,13 @@ async fn it_installs_a_component_from_the_palette() {
         .await;
         if sources.as_array().is_some_and(|rows| {
             rows.iter()
-                .any(|row| row["fields"]["source"] == "/library/notebook.yaml")
+                .any(|row| row["fields"]["source"] == format!("/library/{component}.yaml"))
         }) {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("the notebook component was never installed: {sources}");
+    panic!("the {component} component was never installed: {sources}");
 }
 
 /// `<code-editor>` finds a language by any of its words, whichever
