@@ -7458,11 +7458,15 @@ element!: &account-settings
         const said = `${which}:${state}:${detail}:${row.dataset.ceremonyAt ?? ''}`;
         if (which === 'add-passkey') {
           self.status('');
+          // Only after a press on this page: the row outlives a reload,
+          // and an add the page was left in the middle of is over.
+          if (!self._adding) return;
           if (self._said === said) return;
           self._said = said;
           const button = self.querySelector('[data-add-passkey]');
           if (state === 'pending-ceremony' || state === 'working') { self.hold(button, 'adding'); return; }
           self.release(button);
+          self._adding = false;
           if (state === 'done') { self.receipt(['added a passkey']); return; }
           self.fail(/cancel/i.test(detail) ? 'The passkey prompt was cancelled, so nothing was added.'
             : 'Couldn’t add the passkey, so nothing was added.', () => button?.click());
@@ -7623,6 +7627,7 @@ element!: &account-settings
             self._said = null;
           } else if (hit('[data-add-passkey]')) {
             self._said = null;
+            self._adding = true;
             self.hold(hit('[data-add-passkey]'), 'adding');
           } else if (hit('[data-link-approve]')) {
             self.setAttribute('data-passkey-requested', '');
