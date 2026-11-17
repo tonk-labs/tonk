@@ -761,7 +761,9 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         .and_then(|tail| tail.split("</div>").next())
         .expect("the space route's join sits in a task page");
     assert!(join_page.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
-    assert!(join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">"));
+    assert!(
+        join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">")
+    );
     for contract in [
         ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
         ".space-unknown:has(.space-join .join-status) { padding:0; }",
