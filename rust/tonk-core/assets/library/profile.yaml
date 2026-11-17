@@ -876,7 +876,10 @@ view!:
          plain button, so the question's answer is the one solid button. */
       [data-spaces-sheet]:has(space-links .hub-ask) .hub-line .hub-btn--main[data-new-space] {
         background:transparent; color:var(--tonk-text); }
+      /* A list rule in the guest gives each <li> a start margin (1.125em);
+         the links sit on the body's edge, as the note under them does. */
       space-links .hub-links { margin:0; padding:0; }
+      space-links .hub-link { margin:0; }
       space-links .hub-link:first-child { border-top:0; padding-top:0; }
       /* hub.css holds the copy column open on a row with one button by
          a hidden word after it; ours is `remove` or `reset`, so the word
@@ -5620,6 +5623,27 @@ element!: &space-actions
           if (submit) submit.disabled = false;
         }
       }
+    # A dialog opened from the menu: the menu stays open under it, unseen,
+    # and shows again when it closes, with focus back on the item that
+    # opened it (as `space-remove` does for delete).
+    hold-menu: |
+      (self, dialog, item) => {
+        const menu = self.querySelector('hub-menu');
+        if (!dialog || !menu) { self.close(false); return; }
+        menu.setAttribute('data-behind', '');
+        const native = dialog.shadowRoot?.querySelector('dialog');
+        const done = () => {
+          dialog.removeEventListener('fabb-close', done);
+          native?.removeEventListener('close', done);
+          menu.removeAttribute('data-behind');
+          const active = document.activeElement;
+          if (menu.getAttribute('open') === 'true' && (!active || active === document.body)) {
+            item?.focus({ preventScroll: true });
+          }
+        };
+        dialog.addEventListener('fabb-close', done);
+        native?.addEventListener('close', done);
+      }
     connected: |
       (self) => {
         if (self.__wired) return;
@@ -5635,13 +5659,15 @@ element!: &space-actions
           }
           const copy = event.target?.closest?.('[data-space-copy-link]');
           if (copy) { self.copyLink(copy); return; }
-          if (event.target?.closest?.('[data-space-duplicate-open]')) {
-            self.close(false);
+          const duplicate = event.target?.closest?.('[data-space-duplicate-open]');
+          if (duplicate) {
             self.querySelector('[data-space-duplicate]')?.open?.();
+            self.holdMenu(self.querySelector('[data-space-duplicate] [data-space-create-dialog]'), duplicate);
             return;
           }
-          if (event.target?.closest?.('[data-space-rename-open]')) {
-            self.close(false);
+          const rename = event.target?.closest?.('[data-space-rename-open]');
+          if (rename) {
+            self.holdMenu(self.querySelector('[data-space-rename-dialog]'), rename);
             self.removeAttribute('busy');
             const submit = self.querySelector('[data-space-rename-submit]');
             if (submit) submit.disabled = false;
@@ -7275,7 +7301,9 @@ element!: &account-settings
         const connections = (self.agentConnections ?? []).length;
         const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
         const access = connections === 0 ? '' : connections === 1 ? ' and your connection’s access' : ` and your ${connections} connections’ access`;
-        self.text('[data-delete-scope]', `Deletes ${name}, the ${plural(spaces, 'space')} you own${access}.`);
+        // With no spaces there are none to name: the account and access only.
+        self.text('[data-delete-scope]', spaces === 0 ? `Deletes ${name}${access}.`
+          : `Deletes ${name}, the ${plural(spaces, 'space')} you own${access}.`);
       }
     # The answer fires the command, so it waits for the address.
     arm: |
