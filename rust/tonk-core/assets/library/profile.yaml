@@ -806,6 +806,8 @@ view!:
         cursor:pointer; white-space:nowrap; }
       /* brightness on near-black reads as nothing — wash it instead */
       .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+      /* an empty list is one quiet line in the sheet */
+      .hub-empty:not(.hub-failed) p { color:var(--tonk-text-soft); }
 
       @media (prefers-reduced-motion: reduce) {
         .verbs, .account-menu__row { transition:none; }
@@ -3063,7 +3065,7 @@ view!:
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
               </ul>
-              <div slot="empty" class="hub-empty"><p>You don’t have any spaces yet. A space keeps your data at a link you can send to people and agents.</p></div>
+              <div slot="empty" class="hub-empty"><p>No spaces yet.</p></div>
               <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
             </tonk-display>
           </section>

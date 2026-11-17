@@ -834,17 +834,15 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the responsive Hub collection must reject `{rejected}`",
     );
-    // An empty list says so inside the sheet, in the mock's words, so the
-    // sheet does not end at its line (Jack's call: a list still arriving
+    // An empty list says so inside the sheet in one short, quiet line, so
+    // the sheet does not end at its line (Jack's call: a list still arriving
     // after sign-in shows it for a moment). It is the display's `empty`
     // slot, so it shows only once the list has answered.
     assert!(
-        PROFILE_LIBRARY.contains(
-            "<div slot=\"empty\" class=\"hub-empty\"><p>You don’t have any spaces yet. A space keeps your data at a link you can send to people and agents.</p></div>"
-        ),
+        PROFILE_LIBRARY
+            .contains("<div slot=\"empty\" class=\"hub-empty\"><p>No spaces yet.</p></div>"),
         "the empty Hub must say it has no spaces, in the sheet",
     );
-    assert_eq!(PROFILE_LIBRARY.matches("no spaces yet").count(), 0);
     for rejected in ["signed out", "no spaces available"] {
         assert!(
             !PROFILE_LIBRARY.to_lowercase().contains(rejected),
