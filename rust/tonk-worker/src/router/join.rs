@@ -3377,7 +3377,7 @@ pub(crate) mod tests {
     async fn own_membership(
         state: &crate::router::AppState,
         key: &str,
-    ) -> dialog_artifacts::Entity {
+    ) -> dialog_corpus::Entity {
         let member_entity = member_entity(state).await;
         content_memberships(state, key)
             .await
