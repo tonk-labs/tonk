@@ -23,3 +23,26 @@ test('every element method in the profile library compiles', () => {
   assert.ok(methods > 0, 'the elements have methods');
   assert.deepEqual(broken, []);
 });
+
+// The element runtime refuses a method whose camelCased name an HTMLElement
+// already has, so a call to it reaches the DOM's own member instead: a
+// `remove` method left `self.remove(...)` detaching the element. Node has no
+// DOM, so these are the members a method name is likely to reach for.
+const DOM_MEMBERS = new Set([
+  'after', 'animate', 'append', 'attachShadow', 'before', 'blur', 'click', 'closest',
+  'contains', 'dir', 'focus', 'hidden', 'id', 'inert', 'lang', 'matches', 'normalize',
+  'prepend', 'remove', 'replaceChildren', 'replaceWith', 'scroll', 'slot', 'style',
+  'title', 'toggleAttribute', 'translate',
+]);
+
+test('no element method in the profile library shadows a DOM member', () => {
+  const camel = (key) => key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  const shadowing = [];
+  for (const [, name, body] of library.matchAll(/^element!: &([a-z-]+)\n([\s\S]*?)(?=\n[a-z][a-z/-]*!:|$(?![\s\S]))/gm)) {
+    const methods = body.split(/\n  method:\n/)[1]?.split(/\n  [a-z]/)[0] ?? '';
+    for (const [, key] of methods.matchAll(/\n    ([a-z-]+): /g)) {
+      if (DOM_MEMBERS.has(camel(key))) shadowing.push(`${name}.${key}`);
+    }
+  }
+  assert.deepEqual(shadowing, []);
+});
