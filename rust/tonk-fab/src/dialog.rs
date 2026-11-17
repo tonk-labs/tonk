@@ -45,36 +45,47 @@ dialog::backdrop{ background:var(--fabb-dim, rgba(56,24,42,.32)); }
   max-height:min(60vh, 420px); overflow:auto; }
 .frow{ display:none; gap:0; justify-content:flex-end; margin-right:43px; }
 .w.has-acts .frow{ display:flex; }
-/* The Hub's create and space-action dialogs use the page's compact modal
-   grammar. Keep the default cluster for in-space FABB requests. */
-:host([appearance="hub"]) dialog{ max-width:470px; max-height:calc(100dvh - 32px); }
-:host([appearance="hub"]) dialog::backdrop{ backdrop-filter:blur(3px); }
-:host([appearance="hub"]) .w{ position:relative; border:1px solid var(--_ink);
-  background:var(--card, var(--_panel)); box-shadow:none; }
-:host([appearance="hub"]) .w::before{ content:""; position:absolute; pointer-events:none;
-  top:-1px; right:-7px; bottom:-7px; left:-1px;
-  background:linear-gradient(var(--_ink),var(--_ink)) right top/6px 100% no-repeat,
-    linear-gradient(var(--_ink),var(--_ink)) left bottom/66.667% 6px no-repeat;
-  z-index:-1; }
+/* The Hub's create and space-action dialogs wear the hub's look: its
+   sheet, radius and soft shadow, the label face for the heading, and the
+   hub's quiet close. The `--tonk-*` names come from the hub page; each
+   falls back to the cluster's own value where a page does not set them.
+   Keep the default cluster for in-space FABB requests. */
+:host([appearance="hub"]) dialog{ max-width:440px; max-height:calc(100dvh - 32px); }
+:host([appearance="hub"]) dialog::backdrop{ background:var(--tonk-backdrop, var(--fabb-dim, rgba(56,24,42,.32))); }
+:host([appearance="hub"]) .w{ position:relative; overflow:hidden;
+  border-radius:var(--tonk-radius-sheet, 12px);
+  background:var(--tonk-sheet, var(--_panel)); color:var(--tonk-text, var(--_ink));
+  box-shadow:var(--tonk-shadow, 0 8px 24px -12px rgba(56,24,42,.12)); }
 :host([appearance="hub"]) .stack{ gap:0; }
 :host([appearance="hub"]) .hrow{ gap:0; }
-:host([appearance="hub"]) .t{ min-height:72px; height:auto; align-items:center;
-  justify-content:flex-start; padding:16px 64px 12px 24px;
-  background:transparent; box-shadow:none; color:var(--_ink);
-  font:300 36px/1.1 Gestalte,Georgia,serif; text-transform:none; }
-:host([appearance="hub"]) .x{ position:absolute; top:12px; right:12px;
-  width:44px; height:44px; border-radius:0; background:transparent;
-  box-shadow:none; font-size:24px; }
+:host([appearance="hub"]) .t{ min-height:0; height:auto; align-items:center;
+  justify-content:flex-start; padding:18px 60px 4px 20px;
+  background:transparent; box-shadow:none; color:var(--tonk-text, var(--_ink));
+  font:600 var(--tonk-size-heading, 16px)/var(--tonk-leading-label, 1.3)
+    var(--tonk-font-label, "IBM Plex Sans Condensed", sans-serif);
+  letter-spacing:.02em; text-transform:none; }
+:host([appearance="hub"]) .x{ position:absolute; top:10px; right:10px;
+  width:36px; height:36px; border-radius:var(--tonk-radius-control, 6px);
+  background:transparent; box-shadow:none; font-size:18px;
+  color:var(--tonk-text-soft, var(--_soft)); }
+:host([appearance="hub"]) .x:hover{ background:var(--tonk-wash, rgba(56,24,42,.06)); }
+:host([appearance="hub"]) .x:active,
+:host([appearance="hub"]) .x:focus-visible{ outline:none;
+  background:var(--tonk-wash-strong, rgba(56,24,42,.12)); }
 :host([appearance="hub"]) .main{ display:block; margin:0; }
-:host([appearance="hub"]) .body{ max-height:calc(100dvh - 190px);
-  padding:12px 24px 24px; background:transparent; box-shadow:none; }
-:host([appearance="hub"]) .frow{ margin:0; padding:0 24px 24px; gap:8px; }
+:host([appearance="hub"]) .body{ max-height:calc(100dvh - 160px);
+  padding:12px 20px 20px; background:transparent; box-shadow:none;
+  color:var(--tonk-text, var(--_ink));
+  font:400 var(--tonk-size-sentence, 16px)/var(--tonk-leading-sentence, 1.5)
+    var(--tonk-font-sentence, "IBM Plex Sans", system-ui, sans-serif); }
+:host([appearance="hub"]) .frow{ margin:0; padding:0 20px 20px; gap:8px; }
 @media(max-width:519px){
   .t,.x{ height:44px; }
   .x{ width:44px; border-radius:0 22px 22px 0; }
   ::slotted([slot=actions]){ min-height:44px !important; }
-  :host([appearance="hub"]) .t{ min-height:64px; font-size:32px; }
-  :host([appearance="hub"]) .x{ border-radius:0; }
+  :host([appearance="hub"]) .t{ height:auto; }
+  :host([appearance="hub"]) .x{ top:6px; right:6px; width:44px; height:44px;
+    border-radius:var(--tonk-radius-control, 6px); }
 }
 "#;
 
