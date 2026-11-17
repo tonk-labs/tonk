@@ -294,3 +294,7 @@ test('rename and duplicate hold the menu under their dialog and give focus back 
   assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-rename-dialog\]'\), rename\)/);
   assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-duplicate\] \[data-space-create-dialog\]'\), duplicate\)/);
 });
+
+test("a space's links take no list margin, so they and their note share one edge", () => {
+  assert.match(library, /space-links \.hub-link \{ margin:0; \}/);
+});

@@ -876,7 +876,10 @@ view!:
          plain button, so the question's answer is the one solid button. */
       [data-spaces-sheet]:has(space-links .hub-ask) .hub-line .hub-btn--main[data-new-space] {
         background:transparent; color:var(--tonk-text); }
+      /* A list rule in the guest gives each <li> a start margin (1.125em);
+         the links sit on the body's edge, as the note under them does. */
       space-links .hub-links { margin:0; padding:0; }
+      space-links .hub-link { margin:0; }
       space-links .hub-link:first-child { border-top:0; padding-top:0; }
       /* hub.css holds the copy column open on a row with one button by
          a hidden word after it; ours is `remove` or `reset`, so the word
