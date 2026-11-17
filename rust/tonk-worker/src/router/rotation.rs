@@ -1387,7 +1387,7 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        let initial = subscription.receiver.recv().await.unwrap();
+        let initial = subscription.recv().await.unwrap();
         assert!(String::from_utf8_lossy(&initial).contains(&old.member.0.to_string()));
         assert!(
             super::super::profile_name::project_member_name(&tonk, &key, &root, "jack")
@@ -1397,7 +1397,6 @@ mod tests {
         );
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         let update = subscription
-            .receiver
             .try_recv()
             .expect("live roster receives repair");
         let update = String::from_utf8_lossy(&update);

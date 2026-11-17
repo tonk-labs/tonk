@@ -9,7 +9,7 @@ use dialog_effects::archive::Load;
 use dialog_repository::{Branch, Download, PullError, Revision};
 
 use super::BranchReference;
-use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
+use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider, SettleProvider};
 use super::error::ReactorError;
 
 /// Pull-from-upstream effect.
@@ -71,7 +71,7 @@ impl<'a> Pull<'a> {
     /// on a sync's network round trip.
     pub async fn perform<Env>(self, env: &Env) -> Result<Option<Revision>, ReactorError>
     where
-        Env: LoadProvider + BranchOpenProvider + PullProvider + SelectProvider,
+        Env: LoadProvider + BranchOpenProvider + PullProvider + SelectProvider + SettleProvider,
     {
         // The profile's own repository holds the delegations that authorize
         // this device's reads, so whoever pulls it, the pull downloads what

@@ -1,4 +1,7 @@
 #![warn(missing_docs)]
+// Tests commit with the one-step publish, which fails on a lost race:
+// a test's branch has no other writer to lose one to.
+#![cfg_attr(test, allow(deprecated))]
 //! Typed schema for facts stored on a repository's meta branch.
 //!
 //! Each Tonk repository has a `meta` branch alongside its content branches.
