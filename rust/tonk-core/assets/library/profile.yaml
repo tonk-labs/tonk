@@ -5693,7 +5693,7 @@ element!: &space-links
         self._focus = '[data-link-ask="reset"]';
         await self.load();
       })
-    remove: |
+    unlink: |
       (self, target, kind) => self.act('remove', async () => {
         const subject = self.dataset.space;
         try {
@@ -5763,7 +5763,7 @@ element!: &space-links
           }
           if (target?.closest?.('[data-link-do]') && self._ask) {
             const { what, target: cid, kind } = self._ask;
-            const run = what === 'reset' ? self.reset(cid) : self.remove(cid, kind);
+            const run = what === 'reset' ? self.reset(cid) : self.unlink(cid, kind);
             self.render();
             return run;
           }
