@@ -3199,7 +3199,7 @@ view!:
               <form class="hub-new" data-space-create-form novalidate hidden>
                 <label for="new-space-name">name</label>
                 <div><input id="new-space-name" name="name" type="text" maxlength="100" autocomplete="off" spellcheck="false"
-                  placeholder="Lisbon notes" aria-describedby="new-space-error"><p class="hub-err" id="new-space-error" data-space-create-error role="alert"></p></div>
+                  placeholder="space name" aria-describedby="new-space-error"><p class="hub-err" id="new-space-error" data-space-create-error role="alert"></p></div>
                 <input type="hidden" name="open" value="false">
                 <div class="hub-new-acts"><button class="hub-btn" type="button" data-space-create-cancel>not now</button><button class="hub-btn hub-btn--main" type="submit" data-space-create-submit data-wait="making">make space</button></div>
               </form>
