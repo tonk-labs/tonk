@@ -2698,6 +2698,54 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A ticket link to a space this device does not have fails on the
+    /// space route as a task page: the failure sheet sits under the
+    /// logotype, centred with it, at desktop and at phone width.
+    #[dialog_common::test]
+    async fn it_centres_a_failed_join_on_the_space_route(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        let seed = bs58::encode([7u8; 32]).into_string();
+        let link = env.tonk_web.join(&format!(
+            "space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
+        ))?;
+
+        for (width, height) in [(1280, 900), (390, 844)] {
+            driver.enter_default_frame().await?;
+            driver.set_window_rect(0, 0, width, height).await?;
+            goto(&driver, link.as_str()).await?;
+            enter_guest(&driver).await?;
+            element(&driver, ".space-join .join-closed").await?;
+            let layout = driver
+                .execute(
+                    r#"
+                    const box = (selector) => {
+                      const rect = document.querySelector(selector).getBoundingClientRect();
+                      return { left: rect.left, centre: rect.left + rect.width / 2, width: rect.width };
+                    };
+                    return {
+                      viewport: document.documentElement.clientWidth,
+                      sheet: box('.space-join .join-closed'),
+                      top: box('.space-join .fabb-top'),
+                    };
+                    "#,
+                    vec![],
+                )
+                .await?;
+            let layout = layout.json();
+            let viewport = layout["viewport"].as_f64().unwrap_or_default();
+            let sheet = layout["sheet"]["centre"].as_f64().unwrap_or_default();
+            let top = layout["top"]["centre"].as_f64().unwrap_or_default();
+            ensure!(
+                (sheet - viewport / 2.0).abs() < 2.0 && (sheet - top).abs() < 2.0,
+                "at {width}px the failure sheet is centred under the logotype: {layout}"
+            );
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_signs_back_into_the_same_account_after_signing_out(
         env: TestEnvironment,
