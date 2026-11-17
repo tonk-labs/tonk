@@ -139,6 +139,17 @@ pub(crate) async fn withdraw(
         tonk.sync_queue
             .mark_dirty(agent.repo_key(), super::super::sync::now_millis());
     }
+    // With no grant left to the space, the agent is no longer a member.
+    if outcome.unresolved.is_empty() {
+        let left = grants(tonk, &agent)
+            .await
+            .map_err(said)?
+            .into_iter()
+            .any(|(chain, _, _)| chain.subject() == Some(space));
+        if !left {
+            super::leave_roster(tonk, &agent, space).await;
+        }
+    }
     tonk_common::log!(
         "agent {agent}: {} link grant(s) to {space} revoked, {} not",
         outcome.revoked.len(),

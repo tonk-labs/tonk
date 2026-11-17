@@ -212,6 +212,13 @@ pub(crate) async fn expel_member(
         ));
     }
 
+    // An agent this profile approved holds its grants in its own space,
+    // where the space's chains cannot reach them: revoke those instead.
+    if super::agents::held_agent(tonk, member).await? {
+        let receipt = super::agents::revoke_space(tonk, member, &subject).await?;
+        tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
+        return Ok(receipt);
+    }
     let (path, target) = resolve_member_target(tonk, session.handle(), &subject, member).await?;
     let receipt =
         publish_revocation(tonk, repo, &repository, session.handle(), &path, &target).await?;
