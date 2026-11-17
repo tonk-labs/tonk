@@ -118,7 +118,8 @@
       if (entry.state === 'removed') cell.append(element('span', 'chip chip--removed', 'removed'));
       else if (entry.retraction === true) cell.append(element('span', 'chip chip--removed', 'retracts'));
       else if (entry.spill || entry.blob) cell.append(element('span', 'chip chip--spill', entry.blob ? size(entry['blob-size']) : 'spilled'));
-      line.append(element('span', 'col size'), element('span', 'col count'), cell);
+      // An entry has no size or count of its own: its key takes the room.
+      line.append(cell);
     });
     if (more) {
       const rest = known.entries.length - known.shown;

@@ -91,7 +91,16 @@
 
 /* A key in the outline: its parts as colored text, a thin dot between. */
 .key { display: inline-flex; align-items: center; min-width: 0; flex: 1 1 auto; overflow: hidden; }
-.part { font-weight: var(--wa-font-weight-semibold, 600); overflow: hidden; text-overflow: ellipsis; max-width: 24em; }
+.part {
+  font-weight: var(--wa-font-weight-semibold, 600);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 3ch; max-width: 32em;
+}
+/* Long parts give way first: an entity before a value before an
+   attribute. The ordering and the value's type never shrink. */
+.key .part--entity { flex-shrink: 4; }
+.key .part--value { flex-shrink: 2; }
+.key .part--index, .key .part--vtype { flex: none; }
 .key .part + .part::before { content: '\\2009\\00B7\\2009'; color: var(--quiet); font-weight: 400; }
 .part--entity, .part--blob, .part--spill { color: var(--circle); }
 .part--attribute { color: var(--triangle); }
