@@ -5212,7 +5212,7 @@ mod tests {
     /// The same, through the real mount: `mount_view_slide` parses the
     /// markup into a `<template>` and forwards over it in one place, so a
     /// consumer in a mounted view must come out stamped. This is the path
-    /// `/inspector` and `/diagnose` take, and the one that lost its
+    /// `/inspector` takes, and the one that lost its
     /// context when the parse moved into a template.
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]

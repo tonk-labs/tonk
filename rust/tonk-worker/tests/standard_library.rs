@@ -1233,7 +1233,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
     for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
@@ -1274,7 +1274,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
     assert!(
@@ -1326,7 +1326,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
     let join_view = css_rule(route, ".join-view {");
     let fallback = join_view
