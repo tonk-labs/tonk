@@ -1275,8 +1275,11 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this share link expired"));
-    assert!(failure.contains("Ask the person who shared this space to send you a new link."));
+    // The mock's #link-off: a revoked link reads as turned off, not
+    // expired (nothing records an expiry).
+    assert!(failure.contains("heading=\"this passlink was turned off\""));
+    assert!(failure.contains("so it can’t be used to join. Ask them for a new one."));
+    assert!(!failure.contains("link expired"));
     // A wall is never a dead end for someone signed in (PAGES.md).
     assert!(failure.contains("<a href=\"/\">your spaces</a>"));
     assert!(!failure.contains("edge-field edge-field--settled"));
@@ -1317,6 +1320,13 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(route.contains("<main class=\"join-view fabb-page\""));
     assert!(route.contains("<section class=\"fabb-task join-paste-task\""));
     assert!(!route.contains("--edge-"), "no tokens of the view's own");
+    // The top is the logotype alone: a task page has no navigation
+    // (PAGES.md), so the mark is not a link home.
+    assert!(route.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
+    assert!(
+        !PROFILE_LIBRARY.contains("<header class=\"fabb-top\"><a"),
+        "no task page's logotype is a link",
+    );
     assert!(
         route.contains(".join-status:has(.join-closed) .join-opening { display:none; }"),
         "retained failure content must suppress the opening row even while its display reconnects",
