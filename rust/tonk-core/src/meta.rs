@@ -12,7 +12,7 @@
 // comments; suppress the crate-level `missing_docs` lint here.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::{Attribute, Concept};
 
 /// Newtype for the attribute backing the [`Name`] concept's

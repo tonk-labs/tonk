@@ -40,6 +40,8 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 use crate::bridge::PortalState;
 use crate::shared::{connect_portal, install_method_shims};
 
+mod boot;
+
 /// Shared cell holding the portal state once the iframe is up. An `Rc` so the
 /// async site-registration task can hold it across the await and hand it to
 /// `connect_portal`.
@@ -74,6 +76,8 @@ enum Trigger {
     Remount,
     /// `path`, `with` or `allow` changed on a connected element.
     Navigation,
+    /// The person asked a site that failed to load to try again.
+    Retry,
 }
 
 impl Trigger {
@@ -83,6 +87,7 @@ impl Trigger {
             Trigger::Mount => names::SITE_GUEST_BOOT_MOUNT,
             Trigger::Remount => names::SITE_GUEST_BOOT_REMOUNT,
             Trigger::Navigation => names::SITE_GUEST_BOOT_NAVIGATION,
+            Trigger::Retry => names::SITE_GUEST_BOOT_RETRY,
         }
     }
 }
@@ -379,16 +384,35 @@ fn resolve_and_render(this: &HtmlElement, cell: StateCell, trigger: Trigger) {
     if !reuse {
         tonk_common::diagnostics::count(trigger.guest_boot());
         render_in_iframe(&host, &cell, &site, with, allow);
+        boot::begin(&host, &cell);
     } else if let Some(state) = cell.borrow().as_ref() {
         tonk_common::diagnostics::count(tonk_common::diagnostics::names::SITE_REROUTE);
         crate::bridge::refresh_context(&host, state);
     }
     spawn_local(async move {
-        if let Err(error) = tonk_host::consumer::claim(&host.clone().into(), &request).await {
-            tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
+        // A claim the worker could not take once (a restarting worker, a
+        // dropped port) gets one more try a second later. A second failure
+        // is shown: without the stamp the guest would wait forever.
+        let target: Element = host.clone().into();
+        let Err(error) = tonk_host::consumer::claim(&target, &request).await else {
+            return;
+        };
+        tonk_common::log!("tonk-site: load claim failed for {path}: {error:?}");
+        boot::sleep(CLAIM_RETRY_MS).await;
+        if !host.is_connected() {
+            return;
+        }
+        if let Err(error) = tonk_host::consumer::claim(&target, &request).await {
+            tonk_common::log!("tonk-site: load claim failed again for {path}: {error:?}");
+            if host.is_connected() {
+                boot::fail(&host, &cell, boot::DID_NOT_LOAD);
+            }
         }
     });
 }
+
+/// How long a failed `tonk:load` claim waits before its one retry.
+const CLAIM_RETRY_MS: i32 = 1_000;
 
 /// Install the self-heal subscription: watch this site's own `tonk:site`
 /// stamp (the `path` field on the site entity) and, whenever a frame comes
@@ -630,6 +654,7 @@ pub fn register() {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     tonk_common::diagnostics::install_global();
     crate::bridge::install_message_listener();
+    boot::install_ready_listener();
     if let Some(win) = window()
         && win.custom_elements().get("tonk-site").is_undefined()
     {
@@ -670,6 +695,8 @@ mod tests {
         container: Element,
         sub_tag: Rc<RefCell<Option<String>>>,
         claim_body: Rc<RefCell<Option<String>>>,
+        /// When set, every `tonk-claim` is answered with a rejection.
+        refuse_claims: Rc<Cell<bool>>,
         _listeners: Vec<Closure<dyn FnMut(CustomEvent)>>,
     }
 
@@ -683,6 +710,7 @@ mod tests {
                 .expect("attach");
             let sub_tag = Rc::new(RefCell::new(None));
             let claim_body = Rc::new(RefCell::new(None));
+            let refuse_claims = Rc::new(Cell::new(false));
             let mut listeners = Vec::new();
             {
                 let sub_tag = sub_tag.clone();
@@ -708,6 +736,7 @@ mod tests {
             }
             {
                 let claim_body = claim_body.clone();
+                let refuse_claims = refuse_claims.clone();
                 let cb: Closure<dyn FnMut(CustomEvent)> =
                     Closure::wrap(Box::new(move |ev: CustomEvent| {
                         ev.prevent_default();
@@ -715,11 +744,12 @@ mod tests {
                         let request = Reflect::get(&detail, &"request".into()).unwrap();
                         *claim_body.borrow_mut() =
                             js_sys::JSON::stringify(&request).ok().map(String::from);
-                        let _ = Reflect::set(
-                            &detail,
-                            &"result".into(),
-                            &Promise::resolve(&JsValue::from_str("ok")),
-                        );
+                        let result = if refuse_claims.get() {
+                            Promise::reject(&JsValue::from_str("worker unreachable"))
+                        } else {
+                            Promise::resolve(&JsValue::from_str("ok"))
+                        };
+                        let _ = Reflect::set(&detail, &"result".into(), &result);
                     }) as Box<dyn FnMut(CustomEvent)>);
                 let _ = container
                     .add_event_listener_with_callback("tonk-claim", cb.as_ref().unchecked_ref());
@@ -729,6 +759,7 @@ mod tests {
                 container,
                 sub_tag,
                 claim_body,
+                refuse_claims,
                 _listeners: listeners,
             }
         }
@@ -854,6 +885,106 @@ mod tests {
         let _ = host.set_attribute("path", "/");
         flush().await;
         assert_eq!(builds(&counter), 2.0, "a path change re-routes in place");
+
+        host.remove();
+        fake.container.remove();
+    }
+
+    fn site(with: &str) -> HtmlElement {
+        let host: HtmlElement = document()
+            .create_element("tonk-site")
+            .expect("site")
+            .dyn_into()
+            .expect("html element");
+        let _ = host.set_attribute("with", with);
+        let _ = host.set_attribute("allow", with);
+        host
+    }
+
+    /// From the moment a guest frame is built until the guest answers the
+    /// handshake, the site says it is starting; the answer ends that.
+    #[dialog_common::test]
+    async fn it_says_its_guest_is_starting_until_the_guest_answers() {
+        register();
+        let fake = FakeHost::install();
+        let host = site("main@did:key:zBooting");
+        fake.container.append_child(&host).expect("attach site");
+        flush().await;
+        assert_eq!(
+            host.get_attribute(boot::SITE_STATE).as_deref(),
+            Some("booting")
+        );
+        assert_eq!(host.get_attribute("aria-busy").as_deref(), Some("true"));
+
+        let init = web_sys::CustomEventInit::new();
+        init.set_bubbles(true);
+        let ready = CustomEvent::new_with_event_init_dict("tonk:guest-ready", &init).unwrap();
+        host.dispatch_event(&ready).unwrap();
+        assert_eq!(
+            host.get_attribute(boot::SITE_STATE).as_deref(),
+            Some("ready")
+        );
+        assert!(host.get_attribute("aria-busy").is_none());
+
+        host.remove();
+        fake.container.remove();
+    }
+
+    /// A `tonk:load` claim the worker refuses twice is shown, not left as
+    /// a pulse that never ends, and the notice builds the guest again.
+    #[dialog_common::test]
+    async fn it_says_when_its_page_could_not_load_and_tries_again() {
+        register();
+        let fake = FakeHost::install();
+        fake.refuse_claims.set(true);
+        let host = site("main@did:key:zRefused");
+        let counter = count_iframe_builds(&host);
+        fake.container.append_child(&host).expect("attach site");
+        flush().await;
+        assert_eq!(builds(&counter), 1.0);
+
+        // The first refusal is retried once, a second later.
+        let mut notice = None;
+        for _ in 0..40 {
+            boot::sleep(100).await;
+            notice = host.query_selector(":scope > [role=alert]").unwrap();
+            if notice.is_some() {
+                break;
+            }
+        }
+        let notice = notice.expect("a refused load is shown");
+        assert_eq!(
+            host.get_attribute(boot::SITE_STATE).as_deref(),
+            Some("failed")
+        );
+        assert_eq!(
+            notice
+                .text_content()
+                .as_deref()
+                .map(|t| t.contains(boot::DID_NOT_LOAD)),
+            Some(true)
+        );
+        assert!(host.get_attribute("aria-busy").is_none());
+
+        fake.refuse_claims.set(false);
+        let button: HtmlElement = notice
+            .query_selector("button")
+            .unwrap()
+            .expect("a way to try again")
+            .dyn_into()
+            .unwrap();
+        button.click();
+        flush().await;
+        assert_eq!(builds(&counter), 2.0, "trying again builds the guest again");
+        assert!(
+            host.query_selector(":scope > [role=alert]")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            host.get_attribute(boot::SITE_STATE).as_deref(),
+            Some("booting")
+        );
 
         host.remove();
         fake.container.remove();

@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result, anyhow};
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::{
     AttributeQuery, Cardinality, ConceptDescriptor, Output as _, Term, Type, attribute,
 };
@@ -378,7 +378,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: dialog_artifacts::Relation = "db.name/referent"
+    let name_attr: dialog_corpus::Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
     let the_term: attribute::Relation = name_attr.into();
@@ -403,7 +403,7 @@ async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String
         let Some(name) = claim.of.to_string().strip_prefix("id:").map(str::to_owned) else {
             continue;
         };
-        if let dialog_artifacts::Value::Entity(target) = claim.is {
+        if let dialog_corpus::Value::Entity(target) = claim.is {
             out.insert(target, name);
         }
     }
@@ -471,7 +471,7 @@ async fn enumerate_concepts(site: &TonkSite) -> Result<Vec<ConceptInfo>> {
 /// Read optional descriptions once rather than adding a required description
 /// join (which would hide undescribed concepts) or a per-concept query.
 async fn descriptions_by_entity(site: &TonkSite) -> Result<HashMap<String, String>> {
-    let attribute: dialog_artifacts::Relation = "db.meta/description".parse()?;
+    let attribute: dialog_corpus::Relation = "db.meta/description".parse()?;
     let session = site.branch().await?;
     let claims: Vec<dialog_query::Claim> = session
         .handle()
@@ -618,10 +618,10 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
 
 /// A listed value as the notation writes it: an entity as its URI, text
 /// quoted, anything else as dialog spells it.
-fn value_to_notation(value: &dialog_artifacts::Value) -> String {
+fn value_to_notation(value: &dialog_corpus::Value) -> String {
     match value {
-        dialog_artifacts::Value::Entity(entity) => entity.to_string(),
-        dialog_artifacts::Value::String(text) => quote_string(text),
+        dialog_corpus::Value::Entity(entity) => entity.to_string(),
+        dialog_corpus::Value::String(text) => quote_string(text),
         other => serde_json::to_string(&other.untagged()).unwrap_or_default(),
     }
 }

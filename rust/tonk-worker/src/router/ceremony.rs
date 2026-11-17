@@ -19,7 +19,7 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
 }
 
 async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, detail: &str) {
-    let Ok(this) = entity.parse::<dialog_artifacts::Entity>() else {
+    let Ok(this) = entity.parse::<dialog_corpus::Entity>() else {
         return;
     };
     // The successful authorization detail is a callback carrying a grant.
@@ -171,8 +171,7 @@ pub(crate) async fn ask_for_passkey(
 }
 
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::AddPasskey) {
         let addition = {
@@ -214,13 +213,10 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
 /// Decode optional account constraints without accepting malformed constraints.
 pub(crate) struct AuthorizeDeviceRequest(tonk_worker_api::DeviceAuthorization);
 impl crate::reactor::Decode for AuthorizeDeviceRequest {
-    fn trigger_attributes() -> Vec<String> {
-        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::trigger_attributes()
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
+        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::concepts()
     }
-    fn decode(
-        _entity: dialog_artifacts::Entity,
-        facts: &crate::reactor::EntityFacts,
-    ) -> Option<Self> {
+    fn decode(_entity: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         decode_authorization(facts).map(Self)
     }
 }
@@ -230,7 +226,7 @@ impl dialog_capability::Command for AuthorizeDeviceRequest {
 }
 
 fn decode_authorization(
-    facts: &crate::reactor::EntityFacts,
+    facts: &[dialog_corpus::Fact],
 ) -> Option<tonk_worker_api::DeviceAuthorization> {
     use crate::reactor::Decode as _;
     let entity = facts.first()?.of.clone();
@@ -266,8 +262,7 @@ fn decode_authorization(
 /// Run `tonk:authorize-device`: delegate the account to a waiting
 /// process. Unparseable audience/callback/name skip with a log; an
 /// undeliverable callback is refused before anyone touches a passkey.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::CommandEnv {
     async fn execute(&self, command: AuthorizeDeviceRequest) {
         let authorization = command.0;
@@ -432,7 +427,7 @@ async fn authorize_device_inner(
 #[cfg(test)]
 mod authorization_tests {
     use super::decode_authorization;
-    use dialog_artifacts::{Artifact, Value};
+    use dialog_corpus::{Fact, Value};
 
     // WEB-10: progress from the custody message path must reach the page
     // without a later HTTP request, sync heartbeat, or visibility event.
@@ -457,7 +452,7 @@ mod authorization_tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         for state in [
             ceremony_state::PENDING_CEREMONY,
             ceremony_state::WORKING,
@@ -466,7 +461,6 @@ mod authorization_tests {
         ] {
             super::report_authorization(&tonk, &request, state, "").await;
             let frame = subscription
-                .receiver
                 .try_recv()
                 .expect("a ceremony report must broadcast before returning");
             let frame = String::from_utf8_lossy(&frame);
@@ -505,13 +499,12 @@ mod authorization_tests {
                 .await
                 .unwrap()
         };
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         {
             let tonk = state.read().await;
             super::report_working(&state, &tonk, &request).await;
         }
         let frame = subscription
-            .receiver
             .recv()
             .await
             .expect("the detached refresh broadcasts the progress");
@@ -537,7 +530,7 @@ mod authorization_tests {
             entity,
             "urn:tonk:approval:q5ieDH7i7UxzSkRNRGzuyDmYp5EvkdFMK3Xbzs7kzj2N354oyxRSb5xCqx2pBRNmmPRTa3UCjAE5Byv"
         );
-        assert!(entity.parse::<dialog_artifacts::Entity>().is_ok());
+        assert!(entity.parse::<dialog_corpus::Entity>().is_ok());
         request.callback.push('2');
         assert_ne!(entity, super::authorization_entity(&request));
         request.callback.pop();
@@ -557,7 +550,7 @@ mod authorization_tests {
             ("name", Value::String("terminal".into())),
         ]
         .into_iter()
-        .map(|(field, value)| Artifact {
+        .map(|(field, value)| Fact {
             the: format!("xyz.tonk.authorize-device/{field}")
                 .parse()
                 .unwrap(),
@@ -567,7 +560,7 @@ mod authorization_tests {
         })
         .collect::<Vec<_>>();
         assert_eq!(decode_authorization(&facts).unwrap().expected_account, None);
-        facts.push(Artifact {
+        facts.push(Fact {
             the: "xyz.tonk.authorize-device/expected-account"
                 .parse()
                 .unwrap(),

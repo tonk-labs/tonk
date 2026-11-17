@@ -4,7 +4,7 @@
 // comments; suppress `missing_docs` like the sibling concept modules.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 use dialog_ucan_core::DelegationChain;
 use serde::Serialize;

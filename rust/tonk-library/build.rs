@@ -7,8 +7,14 @@
 //! exist (a shipped CLI, a test archive). Every library document is
 //! parsed with the notation's own parser and each include is resolved
 //! exactly as seeding resolves it, so the set embedded here is the set
-//! seeding asks for. Only included files are embedded; the library's own
-//! documents (and the megabytes of media beside them) are not.
+//! seeding asks for. Only included files are embedded, and the documents
+//! in the library's subdirectories (`language/<id>.yaml`): a component
+//! there is installed by its path, and hosts embed the top-level
+//! documents themselves. The megabytes of media beside them are not.
+//!
+//! Includes resolve against the library directory, whichever document
+//! they are written in, because that is where seeding parses every
+//! library document (see `tonk-worker`'s `router/library.rs`).
 //!
 //! The output is `bundled.rs`: `(path, bytes)` pairs keyed by the path
 //! relative to the library directory, read by `src/lib.rs`.
@@ -30,22 +36,37 @@ fn main() {
     println!("cargo:rerun-if-changed={}", directory.display());
     let root = Url::from_directory_path(&directory).expect("an absolute path");
 
-    let mut documents: Vec<PathBuf> = std::fs::read_dir(&directory)
-        .expect("the library directory is readable")
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "yaml")
-        })
-        .collect();
-    documents.sort();
+    let mut documents = yaml_in(&directory);
+    let mut nested = Vec::new();
+    for entry in std::fs::read_dir(&directory).expect("the library directory is readable") {
+        let path = entry.expect("a readable entry").path();
+        if path.is_dir() {
+            println!("cargo:rerun-if-changed={}", path.display());
+            nested.extend(yaml_in(&path));
+        }
+    }
+    nested.sort();
+    documents.extend(nested.iter().cloned());
 
     let mut bundled: Vec<(String, PathBuf)> = Vec::new();
+    for document in &nested {
+        let relative = Url::from_file_path(document)
+            .expect("an absolute path")
+            .as_str()
+            .strip_prefix(root.as_str())
+            .expect("inside the library directory")
+            .to_owned();
+        bundled.push((relative, document.clone()));
+    }
     for document in documents {
         println!("cargo:rerun-if-changed={}", document.display());
         let text = std::fs::read_to_string(&document).expect("a library document is readable");
-        let location = Url::from_file_path(&document).expect("an absolute path");
-        let name = document.file_name().unwrap().to_string_lossy().into_owned();
+        let location = root.clone();
+        let name = document
+            .strip_prefix(&directory)
+            .unwrap_or(&document)
+            .to_string_lossy()
+            .into_owned();
         let Some(syntax) = parse_at(location.clone(), &text).syntax else {
             continue;
         };
@@ -86,6 +107,20 @@ fn main() {
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("set by cargo"));
     write(&out.join("bundled.rs"), &format!("&[\n{entries}]\n"));
+}
+
+/// The `.yaml` documents directly in `directory`, sorted.
+fn yaml_in(directory: &Path) -> Vec<PathBuf> {
+    let mut documents: Vec<PathBuf> = std::fs::read_dir(directory)
+        .expect("a library directory is readable")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "yaml")
+        })
+        .collect();
+    documents.sort();
+    documents
 }
 
 /// Every `!include` reference under `fields`, in document order.

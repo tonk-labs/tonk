@@ -79,7 +79,7 @@ impl OrdinaryState {
         };
         let state: Self =
             serde_json::from_slice(&bytes).context("ordinary join state is malformed")?;
-        let _: dialog_artifacts::Entity = state
+        let _: dialog_corpus::Entity = state
             .invitation
             .parse()
             .context("ordinary join identity is malformed")?;
