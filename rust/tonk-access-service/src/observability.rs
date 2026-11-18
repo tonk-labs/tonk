@@ -44,6 +44,10 @@ pub enum AccessFailureKind {
     Invalid,
     /// Authentication or authorization refusal.
     AccessDenied,
+    /// Authorization refused because a grant the chain proves through was
+    /// revoked: what an agent or member meets after its access is taken
+    /// away, told apart from other refusals.
+    Revoked,
     /// Requested record was absent.
     NotFound,
     /// State conflict.
@@ -56,6 +60,24 @@ pub enum AccessFailureKind {
     NotProvisioned,
     /// Unexpected internal failure.
     Internal,
+}
+
+impl AccessFailureKind {
+    /// The family of a refused UCAN authorization.
+    pub(crate) fn of_authorization(refusal: &crate::error::Refusal) -> Self {
+        if let crate::error::Refusal::Authorization(
+            dialog_capability::access::AuthorizeError::Revoked { .. },
+        ) = refusal
+        {
+            return Self::Revoked;
+        }
+        match refusal.status() {
+            401 | 403 => Self::AccessDenied,
+            503 => Self::Unavailable,
+            500..=599 => Self::Internal,
+            _ => Self::Invalid,
+        }
+    }
 }
 
 /// Static source location for otherwise unknown internal failures.
@@ -174,6 +196,41 @@ mod tests {
         );
         assert_eq!(value["operation"], "lookup");
         assert_eq!(value["status_class"], "5xx");
+    }
+
+    #[test]
+    fn a_revoked_grant_is_its_own_failure_kind() {
+        use crate::error::Refusal;
+        use dialog_capability::access::AuthorizeError;
+
+        let subject = dialog_capability::did!("key:zSubject");
+        let revoked = Refusal::Authorization(AuthorizeError::Revoked {
+            subject: subject.clone(),
+            certificate: None,
+            revocation: None,
+        });
+        let json = AccessFailureLog::new(
+            AccessOperation::Authorization,
+            AccessOutcome::Refused,
+            AccessFailureKind::of_authorization(&revoked),
+            revoked.status(),
+            false,
+            AccessSite::Ucan,
+        )
+        .to_json();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["failure_kind"], "revoked");
+        assert_eq!(value["status_class"], "4xx");
+
+        // Another refusal of the same status stays a plain denial.
+        let unproven = Refusal::Authorization(AuthorizeError::UnprovenSubject {
+            claimed: subject.clone(),
+            authorized: subject,
+        });
+        assert!(matches!(
+            AccessFailureKind::of_authorization(&unproven),
+            AccessFailureKind::AccessDenied
+        ));
     }
 
     #[test]

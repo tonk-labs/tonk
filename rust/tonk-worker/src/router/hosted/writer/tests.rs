@@ -94,6 +94,46 @@ fn only_routes_that_cannot_commit_are_reads() {
 }
 
 #[dialog_common::test]
+async fn a_revoked_sync_is_answered_as_a_refusal() {
+    let revoked = SyncFailure::answered(
+        "pull",
+        StatusCode::FORBIDDEN,
+        br#"{"error":{"kind":"upstream","code":"CREDENTIAL_REVOKED","message":"remote access has been revoked"}}"#,
+    );
+    assert!(revoked.revoked());
+    let answer = revoked.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], CREDENTIAL_REVOKED);
+    assert!(matches!(
+        revoked.into_worker_error(),
+        TonkWorkerError::Upstream { status: 403, .. }
+    ));
+
+    // No chain left, as after the revoked one is dropped: also refused.
+    let denied = SyncFailure::answered(
+        "pull",
+        StatusCode::FORBIDDEN,
+        br#"{"error":{"kind":"upstream","code":"ACCESS_DENIED","message":"no access to this space"}}"#,
+    );
+    let answer = denied.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], ACCESS_DENIED);
+
+    // Any other failed sync is still a failed sync.
+    let failed = SyncFailure::answered("pull", StatusCode::SERVICE_UNAVAILABLE, b"down");
+    assert!(!failed.revoked());
+    let answer = failed.answer("PULL_FAILED");
+    assert_eq!(answer.status(), StatusCode::BAD_GATEWAY);
+    let body: serde_json::Value =
+        serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], "PULL_FAILED");
+}
+
+#[dialog_common::test]
 fn a_page_is_taken_off_the_route() {
     let take = |uri: &str| caps::Page::take(&uri.parse::<Uri>().unwrap());
     let (page, uri) = take("/evaluate?transact=false&limit=3&cursor=6.abc").unwrap();
@@ -525,14 +565,14 @@ concept!: &writer-note
     }
 
     /// dialog-db/dialog-db#705, as the design meets it: two peers signing
-    /// as one DID that commit on the same head both mint the same version,
-    /// both pushes succeed, and one write is gone. One writer per MCP
-    /// session, with its own DID, is what keeps this from happening.
-    ///
-    /// When dialog detects the duplicate version, the second push fails
-    /// instead and this test should be turned around to assert that.
+    /// as one DID that commit on the same head both mint the same version
+    /// over different trees. Since dialog-db/dialog-db#707 the second push
+    /// meets its rival on the upstream and is refused as such, writing
+    /// nothing, so the first write stands and the second never lands. One
+    /// writer per MCP session, with its own DID, is what keeps this from
+    /// happening at all.
     #[dialog_common::test]
-    async fn writers_sharing_a_did_lose_a_write() {
+    async fn writers_sharing_a_did_are_refused_the_rival_push() {
         let fixture = Fixture::start().await;
         let session = session(&fixture.space, "mcp-shared", &fixture.remote).await;
         let key = WriterKey::derive(&session).await.unwrap();
@@ -588,7 +628,15 @@ concept!: &writer-note
         assert!(status.is_success(), "{status}: {b}");
         let (status, body) =
             json(call(&second, format!("{base}/sync/push"), String::new()).await).await;
-        assert!(status.is_success(), "second push: {status}: {body}");
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "second push: {status}: {body}"
+        );
+        assert_eq!(
+            body["error"]["code"], "SYNC_RIVAL_WRITER",
+            "the rival head is named as such: {body}"
+        );
 
         assert_eq!(
             a["revision_after"]["issuer"], b["revision_after"]["issuer"],
@@ -599,7 +647,11 @@ concept!: &writer-note
             "one version, minted twice"
         );
         let landed = fixture.notes().await;
-        assert_eq!(landed.len(), 1, "one of the two writes is lost: {landed:?}");
+        assert_eq!(
+            landed.len(),
+            1,
+            "the first write stands and the refused one never lands: {landed:?}"
+        );
         first.close().await;
         second.close().await;
         fixture.stop().await;
@@ -720,9 +772,10 @@ concept!: &writer-note
             SpaceWriter::open(&scratch_root(), &session, &ungranted.did(), &fixture.remote)
                 .await
                 .unwrap();
+        // No chain reaches the space: refused, not a failed sync.
         let (status, body) = evaluate(&refused, fixture.note("refused")).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
-        assert_eq!(body["code"], "PULL_FAILED", "{body}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], ACCESS_DENIED, "{body}");
         // Its owner sees nothing published.
         let owner = super::session(&ungranted, "owner", &fixture.remote).await;
         let owner = SpaceWriter::open(&scratch_root(), &owner, &ungranted.did(), &fixture.remote)
@@ -1550,6 +1603,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link: link.clone(),
                     access: None,
+                    origin: None,
                 })
                 .await
                 .unwrap();
@@ -1567,6 +1621,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link,
                     access: Some(access.into()),
+                    origin: None,
                 })
                 .await
                 .unwrap();

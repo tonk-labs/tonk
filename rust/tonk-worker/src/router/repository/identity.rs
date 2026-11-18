@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dialog_artifacts::{Artifact, ArtifactSelector, Entity, Pick, Relation, Value};
+use dialog_corpus::{Entity, Fact, Pick, Relation, Selector, Value};
 use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use futures_util::StreamExt as _;
@@ -45,7 +45,7 @@ pub(super) async fn moves(
 ) -> Result<Vec<(Entity, Entity)>, String> {
     let mut facts: Facts = HashMap::new();
     for entity in entities {
-        let claims = select(tonk, batch, ArtifactSelector::new().of(entity.clone())).await?;
+        let claims = select(tonk, batch, Selector::new().of(entity.clone())).await?;
         facts.insert(
             entity.clone(),
             claims.into_iter().map(|c| (c.the, c.is)).collect(),
@@ -65,7 +65,7 @@ pub(super) async fn moves(
         .filter(|attribute| !facts.contains_key(attribute))
         .collect();
     for attribute in referenced {
-        let claims = select(tonk, batch, ArtifactSelector::new().of(attribute.clone())).await?;
+        let claims = select(tonk, batch, Selector::new().of(attribute.clone())).await?;
         facts.insert(
             attribute,
             claims.into_iter().map(|c| (c.the, c.is)).collect(),
@@ -175,7 +175,7 @@ pub(super) async fn rekey(
         let naming = select(
             tonk,
             batch,
-            ArtifactSelector::new().is(Value::Entity(earlier.clone())),
+            Selector::new().is(Value::Entity(earlier.clone())),
         )
         .await?;
         for claim in naming {
@@ -187,8 +187,8 @@ pub(super) async fn rekey(
             assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Pick::All));
         }
 
-        let about = select(tonk, batch, ArtifactSelector::new().of(earlier.clone())).await?;
-        let mut by_relation: BTreeMap<String, Vec<Artifact>> = BTreeMap::new();
+        let about = select(tonk, batch, Selector::new().of(earlier.clone())).await?;
+        let mut by_relation: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
         for claim in about {
             if is_definition(&claim.the) {
                 continue;
@@ -274,8 +274,8 @@ fn raw(the: &Relation, of: &Entity, is: &Value, policy: Pick) -> RawClaim {
 async fn select(
     tonk: &TonkState,
     batch: &dialog_repository::TransactionBatch,
-    selector: ArtifactSelector<dialog_artifacts::selector::Constrained>,
-) -> Result<Vec<Artifact>, String> {
+    selector: Selector<dialog_corpus::selector::Constrained>,
+) -> Result<Vec<Fact>, String> {
     let stream = batch
         .claims()
         .select(selector)

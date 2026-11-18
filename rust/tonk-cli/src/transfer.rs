@@ -26,7 +26,7 @@ pub enum TransferError {
 
     /// The dialog export stream failed.
     #[error("export failed: {0}")]
-    Export(dialog_artifacts::DialogArtifactsError),
+    Export(dialog_corpus::DialogCorpusError),
 
     /// The dialog import / commit failed.
     #[error("import failed: {0}")]

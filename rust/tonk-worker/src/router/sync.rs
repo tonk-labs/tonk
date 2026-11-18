@@ -19,8 +19,9 @@ use serde::Deserialize;
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
-use tonk_schema::{SyncState, classify};
+use tonk_schema::SyncState;
 use tonk_worker_api::SyncDisposition;
+use tonk_worker_api::compare_heads;
 pub use tonk_worker_api::{SyncResponse, SyncStatusResponse};
 
 use super::{AppState, BranchConfiguration};
@@ -284,7 +285,7 @@ async fn publish_settled_status(
         },
     };
 
-    let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let state = SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), tonk).await);
     // Re-check pause: it could have landed during the (awaiting) fetch.
     if is_sync_enabled(tonk, repo, branch).await {
         publish_sync_status(tonk, repo, branch, state).await;
@@ -409,7 +410,7 @@ macro_rules! chain_reason {
         pub(crate) fn $name<'a>(
             error: &'a (dyn std::error::Error + 'static),
         ) -> Option<&'a $reason> {
-            use dialog_artifacts::DialogArtifactsError;
+            use dialog_corpus::DialogCorpusError;
             use dialog_effects::archive::ArchiveError;
             use dialog_effects::blob::BlobError;
             use dialog_effects::memory::MemoryError;
@@ -434,8 +435,8 @@ macro_rules! chain_reason {
                 if let Some(BlobError::$variant(reason)) = node.downcast_ref::<BlobError>() {
                     return Some(reason);
                 }
-                if let Some(DialogArtifactsError::$variant(reason)) =
-                    node.downcast_ref::<DialogArtifactsError>()
+                if let Some(DialogCorpusError::$variant(reason)) =
+                    node.downcast_ref::<DialogCorpusError>()
                 {
                     return Some(reason);
                 }
@@ -484,6 +485,14 @@ fn classified_service_failure(
                     message: "the service no longer serves this space".to_string(),
                 },
             },
+            // No chain this peer holds reaches the space: an access
+            // decision, as a revoked grant is once its holder has dropped
+            // the revoked chain, not a failure of the service.
+            AuthorizeError::UnprovenSubject { .. } => TonkWorkerError::Upstream {
+                status: 403,
+                code: Some("ACCESS_DENIED".to_string()),
+                message: "no access to this space".to_string(),
+            },
             _ => TonkWorkerError::Upstream {
                 status: 502,
                 code: Some("UPSTREAM_ERROR".to_string()),
@@ -507,7 +516,49 @@ fn classified_service_failure(
     })
 }
 
+/// [`compare_heads`] for a status: a head whose context cannot be read
+/// (its tree unreachable, its ancestry not local) is reported as
+/// `Diverged`, the classifier's own answer for a head it cannot order,
+/// rather than failing the status.
+async fn compare(
+    branch: &dialog_repository::Branch,
+    local: Option<&Revision>,
+    remote: Option<&Revision>,
+    tonk: &crate::worker::TonkState,
+) -> tonk_worker_api::Comparison {
+    match compare_heads(branch, local, remote, &tonk.operator).await {
+        Ok(comparison) => comparison,
+        Err(e) => {
+            log!("sync status: cannot resolve a head's context, reporting diverged: {e}");
+            tonk_worker_api::Comparison::Diverged
+        }
+    }
+}
+
+/// Whether `error` is a pull or push refused because the upstream holds a
+/// rival head: another replica writing with this branch's key built on
+/// the same head and minted the same version over another tree
+/// (dialog-db/dialog-db#705). Neither side can merge the other without
+/// dropping a write, and dialog wrote nothing, so no pull-and-retry
+/// recovers it: one key's writers must write one at a time.
+fn is_rival_writer(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(dialog_repository::PushError::WriterRacedItself { .. })
+            | crate::reactor::ReactorError::Pull(PullError::WriterRacedItself { .. })
+    )
+}
+
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
+    if is_rival_writer(error) {
+        return TonkWorkerError::Upstream {
+            status: 409,
+            code: Some("SYNC_RIVAL_WRITER".to_string()),
+            message: "another replica writing as this one minted the same version over \
+                      another tree; one key must not write from two replicas at once"
+                .to_string(),
+        };
+    }
     if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
@@ -891,7 +942,7 @@ async fn pull_now(
         .reactor
         .repository(&params.repo)
         .branch(&params.branch)
-        .pull()
+        .pull(dialog_repository::Download::MinimalRanges)
         .perform(&tonk_state.operator)
         .await;
     match pulled {
@@ -1206,7 +1257,8 @@ pub async fn sync_status(
         }
     };
 
-    let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    let sync_state =
+        SyncState::from(compare(handle, local.as_ref(), remote.as_ref(), &tonk_state).await);
     // Publish the live status to the replica's `tonk/sync` overlay so the
     // chip's subscription reflects it — the same path the HTTP response
     // carries, now also a fact the UI can subscribe to.
@@ -1518,20 +1570,29 @@ async fn pull_through_moved_head(
 ) -> Result<Option<Revision>, TonkWorkerError> {
     let hydrate = super::account_state::is_account_key(tonk_state, repo).await;
     for attempt in 0..SYNC_RETRY_LIMIT {
-        let pull = tonk_state.reactor.repository(repo).branch(branch).pull();
+        // What the pull brings local before the head moves. The account
+        // is read by authorization walks that cannot wait on the network,
+        // so it takes its operational regions whole. A space takes the
+        // ranges this device holds of it: what a page read or an edit
+        // wrote from the device's own store, it reads and writes from it
+        // after the pull too, and nothing the device never looked at is
+        // paid for.
+        let download = if hydrate {
+            dialog_repository::Download::Operational
+        } else {
+            dialog_repository::Download::QueriedRanges
+        };
+        let pull = tonk_state
+            .reactor
+            .repository(repo)
+            .branch(branch)
+            .pull(download);
         let pull = if assume_upstream {
             pull.assuming_upstream()
         } else {
             pull
         };
-        let pulled = if hydrate {
-            pull.download()
-                .operational()
-                .perform(&tonk_state.operator)
-                .await
-        } else {
-            pull.perform(&tonk_state.operator).await
-        };
+        let pulled = pull.perform(&tonk_state.operator).await;
         match pulled {
             Ok(after) => {
                 log!("Pull succeeded: {branch}@{repo}");
@@ -2495,6 +2556,23 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_classifies_no_chain_as_a_refusal_not_a_failure() {
+        let subject = dialog_capability::did!("key:zSubject");
+        let error = sync_failure(&authorization_failure(AuthorizeError::UnprovenSubject {
+            claimed: dialog_capability::did!("key:zHolder"),
+            authorized: subject,
+        }));
+        assert!(matches!(
+            error,
+            TonkWorkerError::Upstream {
+                status: 403,
+                code: Some(ref code),
+                ..
+            } if code == "ACCESS_DENIED"
+        ));
+    }
+
+    #[dialog_common::test]
     fn it_maps_revocation_registry_outages_to_sync_unavailable() {
         let error = sync_failure(&authorization_failure(AuthorizeError::Unavailable {
             detail: "revocation registry offline".to_string(),
@@ -2638,8 +2716,7 @@ mod overlay_tests {
             .await
             .unwrap();
 
-        let entity: dialog_artifacts::Entity =
-            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let entity: dialog_corpus::Entity = tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
@@ -2959,7 +3036,7 @@ mod push_conflict_tests {
             .await
             .unwrap();
         session.handle().refresh(&tonk.operator).await.unwrap();
-        let selector = dialog_artifacts::ArtifactSelector::new()
+        let selector = dialog_corpus::Selector::new()
             .of(format!("test:{marker}").parse().unwrap())
             .the("test/value".parse().unwrap());
         let facts = session
@@ -2995,5 +3072,181 @@ mod push_conflict_tests {
         assert!(holds(&state, &repo, "upstream", "ours").await);
         assert!(holds(&state, &repo, "upstream", "theirs").await);
         assert!(holds(&state, &repo, "main", "theirs").await);
+    }
+}
+
+/// What a member's replica reads from its own store once a sync pulled a
+/// head another device moved.
+///
+/// Native only: the two replicas and the access service they sync through
+/// are built from the native test states, and the remote reads are counted
+/// at that service. The pull is the worker's sync on both targets, and
+/// what it asks of dialog is covered on wasm by dialog-repository's
+/// `it_reads_what_it_held_after_adopting_a_head_another_device_moved`.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod held_sync_tests {
+    use axum::extract::{Path, State};
+    use axum::{Extension, Json};
+
+    use crate::router::AppState;
+    use crate::router::evaluate::evaluate_body;
+
+    const NOTE: &str = "concept!: &note\n  description: A note\n  with:\n    title:\n      description: The title of the note\n      the: xyz.tonk.test/note-title\n      as: text\n";
+
+    /// Assert notes `from..to` on `state`'s replica of `key`.
+    async fn write_notes(state: &AppState, key: &str, from: usize, to: usize, declare: bool) {
+        let mut document = if declare {
+            format!("{NOTE}\n")
+        } else {
+            String::new()
+        };
+        for index in from..to {
+            document.push_str(&format!(
+                "note!: &note-{index}\n  title: \"Note {index}\"\n\n"
+            ));
+        }
+        let tonk = state.read().await;
+        evaluate_body(&tonk, key, "main", document, true)
+            .await
+            .unwrap_or_else(|error| panic!("the notes are written: {error}"));
+    }
+
+    /// How many notes `state`'s replica of `key` reads.
+    async fn notes(state: &AppState, key: &str) -> usize {
+        let tonk = state.read().await;
+        evaluate_body(
+            &tonk,
+            key,
+            "main",
+            "note:\n  title: ?title\n".to_owned(),
+            false,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the notes are read: {error}"))
+        .matches_after
+        .first()
+        .map(|block| block.results.len())
+        .unwrap_or(0)
+    }
+
+    /// How many requests the access service has authorized so far. A
+    /// block a replica fetches from the remote is one: its permit.
+    async fn authorized(service: &str) -> u64 {
+        let ingest: serde_json::Value = reqwest::get(format!("{service}/_test/ingest"))
+            .await
+            .expect("the service answers")
+            .json()
+            .await
+            .expect("the count parses");
+        ingest["invocations"].as_u64().expect("a count")
+    }
+
+    /// B-10: a member that read a space, and then synced a head the founder
+    /// moved, reads the space again without asking the service for a
+    /// block.
+    ///
+    /// A space's sync pulled by reference, so the head moved and every
+    /// leaf the founder had changed stayed on the service: the member's
+    /// next load of a page it had just shown waited on the network for
+    /// them, and failed offline (`BUG-213`). The sync now pulls a space with
+    /// `Download::QueriedRanges`, which fetches what the member holds of
+    /// the space before the head moves.
+    #[dialog_common::test]
+    async fn it_reads_a_synced_space_without_the_service() {
+        let (tonk, service, root, remote) =
+            crate::router::account_state::tests::ready_account_state(None).await;
+        let endpoint = service
+            .address
+            .access_service_url
+            .trim_end_matches('/')
+            .to_owned();
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await
+                .expect("the device grant mints");
+        crate::router::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "held-sync-test".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().expect("the grant serializes")),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .expect("the root persists");
+        let founder: AppState = std::sync::Arc::new(crate::StateLock::new(tonk));
+        let key = crate::router::repository::create_space_inner(&founder, "Held", None)
+            .await
+            .expect("the space creates");
+        crate::router::repository::enable_sync_inner(&founder, &key, &remote)
+            .await
+            .expect("the remote attaches");
+        write_notes(&founder, &key, 0, 400, true).await;
+
+        let origin = crate::axum::RequestOrigin::parse("https://local.example/")
+            .unwrap_or_else(|_| panic!("the origin parses"));
+        let Json(invited) = crate::router::create_invite::create_invite(
+            State(founder.clone()),
+            Path(key.clone()),
+            Extension(origin),
+            axum::body::Bytes::new(),
+        )
+        .await
+        .expect("the founder mints an invite");
+        super::sync_repository(&founder, &key)
+            .await
+            .expect("the founder syncs");
+
+        let member = crate::router::command::tests::native::test_state().await;
+        {
+            let member = member.read().await;
+            crate::router::join::join_invite(&member, invited.url().as_str())
+                .await
+                .expect("the member joins");
+        }
+        super::sync_repository(&member, &key)
+            .await
+            .expect("the member syncs");
+        assert_eq!(
+            notes(&member, &key).await,
+            400,
+            "the member reads the notes"
+        );
+        let before = authorized(&endpoint).await;
+        assert_eq!(notes(&member, &key).await, 400);
+        assert_eq!(
+            authorized(&endpoint).await,
+            before,
+            "the member holds what it read"
+        );
+
+        // The founder takes the member's join, adds notes on top of it and
+        // syncs, and the member syncs the head that results.
+        super::sync_repository(&founder, &key)
+            .await
+            .expect("the founder syncs");
+        write_notes(&founder, &key, 400, 900, false).await;
+        super::sync_repository(&founder, &key)
+            .await
+            .expect("the founder syncs");
+        super::sync_repository(&member, &key)
+            .await
+            .expect("the member syncs");
+
+        let before = authorized(&endpoint).await;
+        assert_eq!(
+            notes(&member, &key).await,
+            900,
+            "the member reads the head it synced"
+        );
+        assert_eq!(
+            authorized(&endpoint).await,
+            before,
+            "what the member read from its own store before the sync, it \
+             reads from it after"
+        );
+
+        service.stop().await.expect("the service stops");
     }
 }

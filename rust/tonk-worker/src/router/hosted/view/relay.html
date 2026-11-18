@@ -393,6 +393,11 @@
       const SLOW_MS = 400,
         QUIET_MS = 3000;
       let slowTimer, quietTimer, heard;
+      // Whether the view has drawn: it has reported its size and nothing
+      // failed since. A framed page sends it with each size, because its
+      // own layout changes (before the view draws, or to show an error)
+      // must not settle the relay's well.
+      let drawn = false;
       const heightKey = () =>
         'tonk-view-height:' + route.subject + (route.view ? JSON.stringify(route.view) : route.path);
       function remembered() {
@@ -437,6 +442,7 @@
       // stays below, with the details for a bug report.
       function fail(message) {
         if (message) showError(message);
+        drawn = false;
         if (framed) {
           parent.postMessage({ tonkFrame: 'error', message: String(message || '') }, '*');
           return;
@@ -1304,9 +1310,9 @@
       // The space's page reports its height; the frame takes it, and the
       // host is told the view's (a framed page tells the relay instead).
       function resize(height) {
-        if (!Number.isFinite(height)) return;
-        const fitted = Math.min(Math.max(Math.ceil(height), 40), 4000);
-        frame.style.height = fitted + 'px';
+        const fitted = fit(height);
+        if (!fitted) return;
+        drawn = true;
         if (route) remember(fitted);
         // The view has drawn: tell it the theme again, in case its runtime
         // set its own after it mounted.
@@ -1315,13 +1321,22 @@
         clearFailed();
         tellSize();
       }
+      // Only the frame's height: for a framed page whose view has not
+      // drawn, so its own note or error stays in sight.
+      function fit(height) {
+        if (!Number.isFinite(height)) return 0;
+        const fitted = Math.min(Math.max(Math.ceil(height), 40), 4000);
+        frame.style.height = fitted + 'px';
+        tellSize();
+        return fitted;
+      }
       // The host sizes the view from what it is told, so an error shown
       // before the page reports its height is still in sight.
       function tellSize() {
         const view = Math.ceil(
           [card, strip, handoff].reduce((height, each) => height + (each.hidden ? 0 : each.getBoundingClientRect().height), 0),
         );
-        if (framed) parent.postMessage({ tonkFrame: 'size', height: view }, '*');
+        if (framed) parent.postMessage({ tonkFrame: 'size', height: view, drawn }, '*');
         else
           parent.postMessage(
             { jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: view } },
@@ -1411,7 +1426,15 @@
         }
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
-          if (m?.tonkFrame === 'size') resize(m.height);
+          if (m?.tonkFrame === 'size') {
+            // The provider's page shows, or shows its own error: either
+            // way the relay is no longer waiting on a stage of its own.
+            reached('');
+            // Only a view that has drawn settles the well. A size before
+            // that, or with the page's own error, only fits the frame.
+            if (m.drawn) resize(m.height);
+            else fit(m.height);
+          }
           // How far the framed page has got, so this relay's note names
           // the stage it waits on, and clears once its view has drawn.
           else if (m?.tonkFrame === 'stage') reached(String(m.stage ?? '').slice(0, 120));
@@ -1511,6 +1534,8 @@
           if (!response.ok) throw Error('Could not load Tonk runtime.');
           pack = await response.json();
         })().catch(() => {
+          // Forget the failure, so try again asks for the runtime anew.
+          packLoading = undefined;
           throw Error('Could not load the Tonk runtime from ' + origin + '.');
         });
         return packLoading;
@@ -1525,7 +1550,11 @@
             if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
               expand.click();
             if (hostFrames(result)) reached('framing the provider\'s page');
-            if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
+            if (hostFrames(result) && (await tryFrame())) {
+              note('framed');
+              reached("waiting for the provider's page");
+              return offer();
+            }
             if (viewFrame !== undefined) restoreSandbox();
             // A host that runs no worker cannot run a view's peer: a link.
             if (typeof Worker !== 'function') return note('no Worker here'), linkOnly('strip');

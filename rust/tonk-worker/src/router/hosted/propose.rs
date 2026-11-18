@@ -159,14 +159,29 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": APPLY,
+            "title": "Apply a confirmed change",
             "description": "Apply a change the person confirmed. Called by the card.",
             "inputSchema": arguments,
+            // It writes the held change, which may change or remove data,
+            // as tonk_evaluate does.
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false,
+                "openWorldHint": false,
+            },
             "_meta": app_only,
         }),
         json!({
             "name": DISMISS,
+            "title": "Drop a declined change",
             "description": "Drop a change the person declined. Called by the card.",
             "inputSchema": arguments,
+            // It forgets the held change and writes nothing to the space.
+            "annotations": {
+                "readOnlyHint": true,
+                "openWorldHint": false,
+            },
             "_meta": app_only,
         }),
     ]
