@@ -375,7 +375,7 @@ async fn stamp_site_on(
 ) {
     use tonk_schema::Site;
 
-    let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
+    let Ok(entity): Result<dialog_corpus::Entity, _> = site.parse() else {
         return;
     };
 
@@ -663,7 +663,7 @@ pub(super) async fn branch_missing(
 pub(super) async fn clear_missing_branch(
     tonk: &crate::worker::TonkState,
     profile_branch: &str,
-    site: &dialog_artifacts::Entity,
+    site: &dialog_corpus::Entity,
 ) {
     let Some(claim) = site_param_claim(site, SPACE_BRANCH_STATE, MISSING_BRANCH) else {
         return;
@@ -692,11 +692,11 @@ pub(super) fn space_target(path: &str) -> Option<(String, String)> {
 }
 
 fn site_param_claim(
-    site: &dialog_artifacts::Entity,
+    site: &dialog_corpus::Entity,
     name: &str,
     value: &str,
 ) -> Option<crate::router::claim::RawClaim> {
-    use dialog_artifacts::{Entity, Value};
+    use dialog_corpus::{Entity, Value};
 
     let attribute = format!("xyz.tonk.site/{name}").parse().ok()?;
     let is = match name {
@@ -711,7 +711,7 @@ fn site_param_claim(
         the: attribute,
         of: site.clone(),
         is,
-        policy: dialog_artifacts::Pick::Last,
+        policy: dialog_corpus::Pick::Last,
     })
 }
 
@@ -727,8 +727,7 @@ fn site_param_claim(
 /// table and stamping the `tonk:site` (+ captured params) onto `this` in the
 /// branch overlay. A profile-branch commit carries an empty `origin.repo` (see
 /// `transact_profile`), which is exactly the `profile` flag `stamp_site_on` wants.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Load) {
         // `this` is the site entity to stamp, `path` the route-relative
@@ -794,7 +793,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
 pub(super) async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
-) -> Option<dialog_artifacts::Entity> {
+) -> Option<dialog_corpus::Entity> {
     use dialog_query::{Output as _, Query, Term};
     use dialog_repository::schema::replica::{Peer, Subject};
     use dialog_repository::schema::{DidExt as _, Replica};
@@ -822,9 +821,9 @@ pub(super) async fn origin_entity(
 /// params captured from the path (`{model}`, `{entity}`, `{view}`, …).
 struct MatchedRoute {
     /// The route-table entry's entity.
-    route: dialog_artifacts::Entity,
+    route: dialog_corpus::Entity,
     /// The route model to mount.
-    concept: dialog_artifacts::Entity,
+    concept: dialog_corpus::Entity,
     /// The captured path params, by name.
     params: tonk_router::Params,
 }
@@ -929,7 +928,7 @@ pub(super) async fn matched_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
     rest: &str,
-) -> Option<dialog_artifacts::Entity> {
+) -> Option<dialog_corpus::Entity> {
     match_route(tonk, state, rest)
         .await
         .map(|matched| matched.route)
@@ -1018,8 +1017,8 @@ mod route_order_tests {
     /// A route row at `uri` matching `path`. The concept is irrelevant to
     /// ordering, so every row shares one.
     fn route(uri: &str, path: &str) -> Route {
-        let entity: dialog_artifacts::Entity = uri.parse().expect("route uri parses");
-        let concept: dialog_artifacts::Entity = "tonk:model".parse().expect("concept uri parses");
+        let entity: dialog_corpus::Entity = uri.parse().expect("route uri parses");
+        let concept: dialog_corpus::Entity = "tonk:model".parse().expect("concept uri parses");
         Route {
             this: entity,
             path: RouteTablePath(path.to_string()),

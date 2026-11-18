@@ -19,7 +19,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 async-trait = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-corpus = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-effects = { workspace = true }

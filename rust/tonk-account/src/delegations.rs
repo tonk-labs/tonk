@@ -59,6 +59,9 @@ where
         + Provider<BlobWrite>
         + Provider<BlobImport>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Fork<RemoteSite, Get>>
@@ -155,6 +158,9 @@ where
         + Provider<BlobWrite>
         + Provider<BlobImport>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + dialog_common::Holds
         + Provider<Fork<RemoteSite, Get>>
@@ -227,7 +233,10 @@ where
     // keeps the store complete for the next boot. Operational only:
     // authorization reads the data orderings, while history grows with
     // every edit the account ever made and can hydrate on demand.
-    Ok(access.pull().download().operational().perform(env).await?)
+    Ok(access
+        .pull(dialog_repository::Download::Operational)
+        .perform(env)
+        .await?)
 }
 
 /// Why adopting the account as an access-branch upstream failed.

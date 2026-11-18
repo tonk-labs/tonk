@@ -14,7 +14,7 @@ stale design contract before implementation work begins.
 ## Summary
 
 Four findings remain after merging related observations: two high and two
-medium; `B-02`, `B-07`, `B-08`, and `B-09` are fixed and kept for their history. `B-06` is gone with the
+medium; `B-02`, `B-07`, `B-08`, `B-09`, and `B-10` are fixed and kept for their history. `B-06` is gone with the
 account service it described. The high findings share one theme: a
 user-visible account transition can cross an irreversible authority or
 durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
@@ -31,6 +31,7 @@ behavior remain in the verification backlog rather than this file.
 | `B-07` | Renamed account retains an old founder membership in a space | medium | Account and space membership | fixed | — |
 | `B-08` | Returning device cannot open a space with old branch facts | high | Space adoption and sync | fixed in source | — |
 | `B-09` | A release resets a space's home and name | high | Space library upgrade | fixed in source | — |
+| `B-10` | A page read before another device's change waits on the service, or fails offline | high | Space sync | fixed in source | — |
 
 ## High
 
@@ -228,6 +229,46 @@ behavior remain in the verification backlog rather than this file.
   pass with the fix, and an upgraded space holds what a fresh install holds.
   Damaged production spaces need manual recovery. The profile library's
   reconcile is unchanged.
+
+### B-10: A page read before another device's change waits on the service, or fails offline
+
+- **Where the user meets it:** Opening a page of a space that this device has
+  shown before, after another device changed the space and this device
+  synced while showing something else. On a slow link the page takes many
+  seconds; offline it shows "This page could not be loaded." Tracked in the
+  team space as `BUG-213`.
+- **Observed evidence:** Two browser profiles against the local access
+  service, with every connection to it delayed to 600 ms round trips. Device
+  B reads a page of 200 notes, then sits on the space's home while device A
+  adds 200 notes and the pull lands. B then opens the notes page with a cold
+  service worker: 11.8 s, with 518 KB fetched over 7 connections before the
+  notes show. With the service refusing connections the page does not load.
+- **Root cause:** A space is a partial replica, and a sync pulled it by
+  reference: the head moved to the other device's and nothing was
+  downloaded. Every leaf the other device had changed was then missing from
+  this device's store, including leaves it had held before the pull. A page
+  left open hides this, because its subscriptions query again after the head
+  moves and fetch what they miss. A page that is not open has no
+  subscription, so its next load, or the next edit under it, fetches from
+  the service.
+- **Severity:** `high`. A space the device has already shown stops working
+  offline, and nothing the person did explains why.
+- **Resolution:** A space's sync pulls with dialog's
+  `Download::QueriedRanges`: before the head moves, the pull fetches what
+  changed in the key ranges this device holds, and nothing it never read. In
+  the same run the load takes 5.8 s with 6.8 KB fetched, and 6.6 s offline.
+  Not covered: a space this device syncs but has never read holds nothing,
+  so its first load still fetches; a first write to a key the device only
+  read fetches once; values and blobs stored outside the tree are not
+  brought along.
+- **Raised by:** a report of slow and failing loads on tonk.network under
+  emulated 3G; `UI-02` (returning and offline boot), `SYNC-03` (pull).
+- **Status:** Fixed in source.
+  `held_sync_tests::it_reads_a_synced_space_without_the_service` in
+  [`sync.rs`](../../rust/tonk-worker/src/router/sync.rs) has a member read a
+  space, the founder change it and both sync, and counts the member's
+  requests to the service on its next read: none with the fix, eight when
+  the sync pulls by reference. Not run against production.
 
 ## Medium
 

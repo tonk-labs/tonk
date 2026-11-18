@@ -270,7 +270,9 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     let merged = run_remote(
         "pull main",
         upstream_target(branch),
-        branch.pull().perform(&site.operator),
+        branch
+            .pull(dialog_repository::Download::MinimalRanges)
+            .perform(&site.operator),
         map_pull_error,
     )
     .await?;
@@ -285,7 +287,8 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         run_remote(
             "pull metadata",
             upstream_target(&meta),
-            meta.pull().perform(&site.operator),
+            meta.pull(dialog_repository::Download::MinimalRanges)
+                .perform(&site.operator),
             map_pull_error,
         )
         .await?;

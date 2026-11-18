@@ -1,7 +1,8 @@
 //! `intent/suggest` end to end: a space seeded with the core library,
-//! asked over the `/query` route exactly as the `<command-palette>` element
-//! asks (through the portal, which relays `window.tonk.query` there), and
-//! the reading it returns transacted.
+//! asked exactly as the `<command-palette>` element asks (the command
+//! asserted over the `/transact` route, its answer read back over
+//! `/query` from the branch's `session:` layer, where the stack's provider
+//! wrote it), and the reading it returns transacted.
 //!
 //! Native, on the same fixture as the other native router tests.
 
@@ -75,21 +76,176 @@ async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// Ask `intent/suggest` what `input` could mean, as the element does.
-async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value> {
+/// The wire type of each field an `intent/suggest` can carry.
+fn ask_field(name: &str) -> Value {
+    let as_ = match name {
+        "input" | "memory" => "Text",
+        "now" => "Float",
+        "max" => "UnsignedInteger",
+        "subject" | "site" | "expression" => "Entity",
+        other => panic!("not a field of intent/suggest: {other}"),
+    };
+    json!({ "the": format!("tonk.dialog.intent.suggest/{name}"), "as": as_ })
+}
+
+/// An `intent/suggest` with `fields`, as the palette asserts it: a fresh
+/// command entity per ask, which its answer names.
+fn ask_claim(this: &str, fields: &Value) -> String {
+    let fields = fields.as_object().expect("fields are an object");
+    let with: serde_json::Map<String, Value> = fields
+        .keys()
+        .map(|name| (name.clone(), ask_field(name)))
+        .collect();
+    let mut parameters = fields.clone();
+    parameters.insert("this".into(), json!(this));
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Ask what a line typed in the command palette could mean.",
+                        "with": with
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// A fresh ask entity.
+fn fresh_ask() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "ask:test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// The `intent/answer` of `ask` on the branch at `prefix`, once the
+/// provider has written it: how many readings it has.
+async fn answered(app: &Router, prefix: &str, ask: &str) -> Option<u64> {
+    for _ in 0..500 {
+        let rows = send(
+            app,
+            "POST",
+            &format!("{prefix}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "ask": { "the": "tonk.dialog.intent.answer/ask", "as": "Entity", "cardinality": "one" },
+                    "readings": { "the": "tonk.dialog.intent.answer/readings", "as": "UnsignedInteger", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "ask": ask,
+                    "readings": { "?": { "name": "readings" } }
+                }
+            })
+            .to_string(),
+        )
+        .await;
+        if let Some(count) = rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["readings"].as_u64())
+        {
+            return Some(count);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    None
+}
+
+/// The `intent/reading` rows of `ask` on the branch at `prefix`, best
+/// first, each as `{ "this", "fields" }`.
+async fn readings_of(app: &Router, prefix: &str, ask: &str) -> Vec<Value> {
+    let field = |name: &str, as_: &str, optional: bool| {
+        let mut field = json!({
+            "the": format!("tonk.dialog.intent.reading/{name}"), "as": as_, "cardinality": "one"
+        });
+        if optional {
+            field["optional"] = json!(true);
+        }
+        field
+    };
+    let names = [
+        ("rank", "UnsignedInteger", false),
+        ("score", "Float", false),
+        ("command", "Entity", false),
+        ("text", "Text", false),
+        ("display", "Text", false),
+        ("nouns", "Text", false),
+        ("listed", "Boolean", false),
+        ("entities", "Text", false),
+        ("input", "Text", true),
+        ("completion", "Text", true),
+        ("claim", "Text", true),
+    ];
+    let mut with = serde_json::Map::new();
+    let mut terms = serde_json::Map::new();
+    with.insert("ask".into(), field("ask", "Entity", false));
+    terms.insert("this".into(), json!({ "?": { "name": "this" } }));
+    terms.insert("ask".into(), json!(ask));
+    for (name, as_, optional) in names {
+        with.insert(name.into(), field(name, as_, optional));
+        terms.insert(name.into(), json!({ "?": { "name": name } }));
+    }
     let rows = send(
         app,
         "POST",
-        &format!("/api/repository/{key}/branch/main/query"),
+        &format!("{prefix}/query"),
         "application/json",
-        json!({
-            "predicate": "intent/suggest",
-            "terms": { "input": input, "this": this, "now": 1.0 }
-        })
-        .to_string(),
+        json!({ "predicate": { "with": with }, "terms": terms }).to_string(),
     )
     .await;
-    rows.as_array().cloned().unwrap_or_default()
+    let mut rows = rows.as_array().cloned().unwrap_or_default();
+    rows.sort_by_key(|row| row["fields"]["rank"].as_u64().unwrap_or(u64::MAX));
+    rows
+}
+
+/// Ask `intent/suggest` with `fields` on the branch at `prefix`, as the
+/// palette does: assert the command through `/transact`, wait for its
+/// answer in the branch's `session:` layer, and read the readings back,
+/// best first.
+async fn ask(app: &Router, prefix: &str, fields: Value) -> Vec<Value> {
+    let this = fresh_ask();
+    send(
+        app,
+        "POST",
+        &format!("{prefix}/transact"),
+        "application/json",
+        ask_claim(&this, &fields),
+    )
+    .await;
+    let count = answered(app, prefix, &this)
+        .await
+        .unwrap_or_else(|| panic!("{fields} was never answered on {prefix}"));
+    if count == 0 {
+        return Vec::new();
+    }
+    let rows = readings_of(app, prefix, &this).await;
+    assert_eq!(
+        rows.len() as u64,
+        count,
+        "the answer says how many: {rows:?}"
+    );
+    rows
+}
+
+/// Ask `intent/suggest` what `input` could mean, as the element does.
+async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value> {
+    ask(
+        app,
+        &format!("/api/repository/{key}/branch/main"),
+        json!({ "input": input, "subject": this, "now": 1.0 }),
+    )
+    .await
 }
 
 fn field<'a>(row: &'a Value, name: &str) -> &'a Value {
@@ -257,19 +413,12 @@ async fn it_fills_a_field_by_the_role_on_its_attribute() {
     .await;
     let space = format!("/api/repository/{key}/branch/main");
     selection(&app, &space, site, Some("Roadmap")).await;
-    let rows = send(
+    let rows = ask(
         &app,
-        "POST",
-        &format!("{space}/query"),
-        "application/json",
-        json!({
-            "predicate": "intent/suggest",
-            "terms": { "input": "retitle", "this": subject, "now": 1.0, "site": site }
-        })
-        .to_string(),
+        &space,
+        json!({ "input": "retitle", "subject": subject, "now": 1.0, "site": site }),
     )
     .await;
-    let rows = rows.as_array().cloned().unwrap_or_default();
     assert!(
         rows.iter()
             .any(|row| field(row, "text") == "retitle to [Roadmap]"),
@@ -486,19 +635,12 @@ async fn interpreted(
 
 /// The readings of an interpreted expression.
 async fn readings(app: &Router, prefix: &str, expression: &str, this: &str) -> Vec<Value> {
-    let rows = send(
+    ask(
         app,
-        "POST",
-        &format!("{prefix}/query"),
-        "application/json",
-        json!({
-            "predicate": "intent/suggest",
-            "terms": { "expression": expression, "this": this, "now": 1.0, "max": 8 }
-        })
-        .to_string(),
+        prefix,
+        json!({ "expression": expression, "subject": this, "now": 1.0, "max": 8 }),
     )
-    .await;
-    rows.as_array().cloned().unwrap_or_default()
+    .await
 }
 
 /// A site on a notebook's page, as the route stamp would leave it.
@@ -662,19 +804,16 @@ async fn it_runs_every_menu_act_from_the_palette() {
         ("connect this space", "connect"),
         ("confirm your email", "connect"),
     ] {
-        let rows = send(
+        let rows = ask(
             &app,
-            "POST",
-            &format!("{profile}/query"),
-            "application/json",
+            &profile,
             json!({
-                "predicate": "intent/suggest",
-                "terms": { "input": said, "this": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH", "now": 1.0 }
-            })
-            .to_string(),
+                "input": said,
+                "subject": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                "now": 1.0
+            }),
         )
         .await;
-        let rows = rows.as_array().cloned().unwrap_or_default();
         let top = rows
             .first()
             .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
@@ -737,19 +876,7 @@ async fn it_says_publishing_in_the_palette() {
         "make space private",
         "unpublish space",
     ] {
-        let rows = send(
-            &app,
-            "POST",
-            &format!("{profile}/query"),
-            "application/json",
-            json!({
-                "predicate": "intent/suggest",
-                "terms": { "input": said, "now": 1.0 }
-            })
-            .to_string(),
-        )
-        .await;
-        let rows = rows.as_array().cloned().unwrap_or_default();
+        let rows = ask(&app, &profile, json!({ "input": said, "now": 1.0 })).await;
         let top = rows
             .first()
             .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
@@ -1231,21 +1358,360 @@ async fn it_lists_the_components_install_can_take() {
             "fields": { "command": command, "value": entities[0], "time": 1.0 }
         }]
     });
-    let remembered = send(
+    let remembered = ask(
+        &app,
+        &space,
+        json!({
+            "expression": expression, "subject": subject, "now": 1.0, "max": 8,
+            "memory": memory.to_string()
+        }),
+    )
+    .await;
+    let top = &remembered[0];
+    assert_eq!(field(top, "text"), field(last, "text"), "{remembered:?}");
+}
+
+/// The answer comes from a provider on the branch's stack, and lands in
+/// the stack's own `session:` layer, which the page reads through the
+/// query it already has: registering the provider wrote its discovery
+/// row there, and an ask writes nothing durable.
+#[dialog_common::test]
+async fn it_answers_from_a_provider_on_the_stack_into_the_session_layer() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let head = |app: &Router| {
+        let space = space.clone();
+        let app = app.clone();
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("{space}/transact"),
+                "application/json",
+                json!({ "claims": [] }).to_string(),
+            )
+            .await["revision_after"]
+                .clone()
+        }
+    };
+    let before = head(&app).await;
+
+    let rows = suggest(&app, &key, "exp", &subject).await;
+    assert!(!rows.is_empty(), "expel is suggested: {rows:?}");
+
+    // What this process can perform is a row of `session:`.
+    let provided = send(
         &app,
         "POST",
         &format!("{space}/query"),
         "application/json",
         json!({
-            "predicate": "intent/suggest",
-            "terms": {
-                "expression": expression, "this": subject, "now": 1.0, "max": 8,
-                "memory": memory.to_string()
-            }
+            "predicate": { "with": {
+                "command": { "the": "dialog.provider/command", "as": "Entity", "cardinality": "many" }
+            } },
+            "terms": { "this": "session:", "command": { "?": { "name": "command" } } }
         })
         .to_string(),
     )
     .await;
-    let top = &remembered.as_array().unwrap()[0];
-    assert_eq!(field(top, "text"), field(last, "text"), "{remembered:?}");
+    assert!(
+        provided
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["fields"]["command"].is_string())),
+        "the provider's discovery row is read from session:: {provided}"
+    );
+
+    // Nothing of the ask or its answer moved the branch.
+    assert_eq!(head(&app).await, before, "an answer is no commit");
+}
+
+/// The answer names the ask, never the subject. The palette asks a
+/// space's page with the space as `subject` beside the ask's own `this`
+/// (and the expression its `intent/interpret` recorded), so a claim
+/// built from those fields must keep the ask as the command entity: an
+/// answer written under the space would be one the page, polling for
+/// its ask, never sees.
+#[dialog_common::test]
+async fn it_names_the_ask_in_its_answer_not_the_subject() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+    let expression = "intent:9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a";
+    interpreted(&app, &space, expression, "exp", site, 1.0).await;
+
+    // The palette's own shape: the ask is `this`, the space its subject.
+    let this = fresh_ask();
+    let fields = json!({ "expression": expression, "subject": subject, "now": 2.0, "max": 5 });
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(&this, &fields),
+    )
+    .await;
+    let count = answered(&app, &space, &this)
+        .await
+        .expect("the ask is answered under its own entity");
+    assert!(count > 0, "expel is read from the expression's intents");
+    let rows = readings_of(&app, &space, &this).await;
+    assert_eq!(rows.len() as u64, count);
+    assert!(
+        rows.iter()
+            .all(|row| field(row, "ask").as_str() == Some(this.as_str())),
+        "every reading names the ask: {rows:?}"
+    );
+
+    // No answer, and no reading, names the space.
+    let named = |attribute: &str| {
+        let app = app.clone();
+        let space = space.clone();
+        let the = format!("tonk.dialog.intent.{attribute}/ask");
+        async move {
+            send(
+                &app,
+                "POST",
+                &format!("{space}/query"),
+                "application/json",
+                json!({
+                    "predicate": { "with": {
+                        "ask": { "the": the, "as": "Entity", "cardinality": "one" }
+                    } },
+                    "terms": { "this": { "?": { "name": "this" } }, "ask": { "?": { "name": "ask" } } }
+                })
+                .to_string(),
+            )
+            .await
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row["fields"]["ask"].as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        }
+    };
+    let answers = named("answer").await;
+    assert_eq!(answers, vec![this.clone()], "one answer, naming the ask");
+    let readings = named("reading").await;
+    assert!(
+        !readings.is_empty() && readings.iter().all(|ask| *ask == this),
+        "the readings name the ask, not {subject}: {readings:?}"
+    );
+}
+
+/// The two shapes an ask takes are both claimed: one naming an
+/// interpreted expression and no `input` (the recorded line stands in),
+/// and one with an `input` and no `max` (the provider's default count).
+/// A stack provider claims an ask whose rows satisfy its concept's
+/// required fields, so `input` and `max` are optional in the concept;
+/// were either required, the ask lacking it would satisfy no concept,
+/// no provider would run, and the page would wait for an answer that
+/// never comes. An answer is the proof the provider ran: an unclaimed
+/// command is answered by nothing.
+#[dialog_common::test]
+async fn it_claims_an_ask_without_input_and_one_without_max() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    let site = "site:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+    let expression = "intent:0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    interpreted(&app, &space, expression, "exp", site, 1.0).await;
+
+    // The expression and no input.
+    let by_expression = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &by_expression,
+            &json!({ "expression": expression, "subject": subject, "now": 2.0, "max": 5 }),
+        ),
+    )
+    .await;
+    let count = answered(&app, &space, &by_expression)
+        .await
+        .expect("an ask naming an expression and no input is claimed and answered");
+    assert!(count > 0, "the expression's recorded line is read: {count}");
+
+    // An input and no max.
+    let by_line = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &by_line,
+            &json!({ "input": "exp", "subject": subject, "now": 3.0, "site": site }),
+        ),
+    )
+    .await;
+    let count = answered(&app, &space, &by_line)
+        .await
+        .expect("an ask with an input and no max is claimed and answered");
+    assert!(count > 0, "the default count admits a reading: {count}");
+}
+
+/// An asker (here a tab's site) holds one answer: the next ask replaces
+/// the readings of the one before, so a reading that lost a field between
+/// asks does not keep the old value.
+#[dialog_common::test]
+async fn it_replaces_an_askers_previous_answer() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    let evaluate = format!("{space}/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", RENAME.into()).await;
+    send(
+        &app,
+        "POST",
+        &evaluate,
+        "application/yaml",
+        format!("tonk/repository!:\n  this: {subject}\n  name: \"Budget\"\n"),
+    )
+    .await;
+    let site = "site:1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
+
+    // "ren" completes to the rename; the site asks it.
+    let first = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &first,
+            &json!({ "input": "ren", "subject": subject, "now": 1.0, "site": site }),
+        ),
+    )
+    .await;
+    assert!(answered(&app, &space, &first).await.is_some_and(|n| n > 0));
+    let rows = readings_of(&app, &space, &first).await;
+    assert!(
+        field(&rows[0], "completion")
+            .as_str()
+            .is_some_and(|completion| completion.starts_with("rename")),
+        "ren completes to rename: {rows:?}"
+    );
+
+    // The same site asks the menu: the first ask's readings are gone,
+    // and the menu's readings name the second ask alone.
+    let second = fresh_ask();
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        ask_claim(
+            &second,
+            &json!({ "input": "", "subject": subject, "now": 2.0, "site": site }),
+        ),
+    )
+    .await;
+    let count = answered(&app, &space, &second)
+        .await
+        .expect("the menu is answered");
+    let menu = readings_of(&app, &space, &second).await;
+    assert_eq!(menu.len() as u64, count);
+    assert!(
+        menu.iter().all(|row| field(row, "completion").is_null()),
+        "a menu reading completes nothing: {menu:?}"
+    );
+    assert!(
+        readings_of(&app, &space, &first).await.is_empty(),
+        "the first ask's readings were replaced"
+    );
+    let answers = send(
+        &app,
+        "POST",
+        &format!("{space}/query"),
+        "application/json",
+        json!({
+            "predicate": { "with": {
+                "ask": { "the": "tonk.dialog.intent.answer/ask", "as": "Entity", "cardinality": "one" }
+            } },
+            "terms": { "this": { "?": { "name": "this" } }, "ask": { "?": { "name": "ask" } } }
+        })
+        .to_string(),
+    )
+    .await;
+    let asks: Vec<&str> = answers
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row["fields"]["ask"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        asks,
+        vec![second.as_str()],
+        "one answer per asker: {answers}"
+    );
 }

@@ -171,8 +171,7 @@ async fn collect(mut source: BlobReader) -> Result<Vec<u8>, BlobError> {
     Ok(bytes)
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<archive::Get> for Cached<P, C>
 where
     P: Provider<archive::Get> + ConditionalSync,
@@ -208,8 +207,7 @@ where
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<archive::Put> for Cached<P, C>
 where
     P: Provider<archive::Put> + ConditionalSync,
@@ -230,8 +228,7 @@ where
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<blob::Read> for Cached<P, C>
 where
     P: Provider<blob::Read> + Clone + ConditionalSend + ConditionalSync + 'static,
@@ -307,8 +304,7 @@ impl<C: ObjectCache> BlobSink for Filling<C> {
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<blob::Import> for Cached<P, C>
 where
     P: Provider<blob::Import> + ConditionalSync,
@@ -328,8 +324,7 @@ where
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<memory::Resolve> for Cached<P, C>
 where
     P: Provider<memory::Resolve> + ConditionalSync,
@@ -344,8 +339,7 @@ where
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<memory::Publish> for Cached<P, C>
 where
     P: Provider<memory::Publish> + ConditionalSync,
@@ -360,8 +354,7 @@ where
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl<P, C> Provider<memory::Retract> for Cached<P, C>
 where
     P: Provider<memory::Retract> + ConditionalSync,

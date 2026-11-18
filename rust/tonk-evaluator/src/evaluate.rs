@@ -29,7 +29,7 @@
 //!     .evaluate(branch.transaction())
 //!     .perform(env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
-//! // evaluated.transients — dispatched transient facts (commands), for post-commit dispatch
+//! // evaluated.commands — how many commands the document dispatched into the transaction
 //! // evaluated.matches — pre-mutation per-expression match blocks
 //! // evaluated.commits — claim count + entity bindings for the response envelope
 //! // evaluated.analysis — re-run queries against the overlay to get post-mutation matches
@@ -54,9 +54,9 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::{Changes, Entity, Preload, Speculation, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Changes, Entity, Preload, Speculation, Statement as _, Value};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
@@ -65,7 +65,7 @@ use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::attribute::The;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, RemoteSite, Transaction};
+use dialog_repository::{Branch, RemoteSite, StackTransaction, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -73,7 +73,7 @@ use tonk_notation::Syntax;
 use tonk_analyzer::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use tonk_analyzer::analyzer;
 use tonk_schema::concept::{QueryEnv, application_to_plan};
-use tonk_schema::query_source::Source;
+use tonk_schema::query_source::{Pending, Source};
 use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
 // ---------------------------------------------------------------- //
@@ -168,6 +168,9 @@ pub trait EvaluateEnv:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -187,6 +190,9 @@ impl<T> EvaluateEnv for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -317,23 +323,47 @@ pub trait SyntaxEvaluateExt {
     /// baked into its overlay. The chain does *not* commit —
     /// the caller decides whether to commit, drop, or compose
     /// further on `Evaluated::txn`.
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a>;
+    fn evaluate<T: Staging>(&self, txn: T) -> Evaluate<'_, T>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
+    fn evaluate<T: Staging>(&self, txn: T) -> Evaluate<'_, T> {
         Evaluate { syntax: self, txn }
+    }
+}
+
+/// A transaction an evaluation stages its writes on: a branch's own
+/// ([`Transaction`]), or one through the branch's stack
+/// ([`StackTransaction`]), which reads every layer the stack holds and
+/// whose publish reports the commands it landed. The evaluation reads
+/// through it ([`Pending`]) and hands it the document's writes and
+/// commands.
+pub trait Staging: Pending + Sized {
+    /// Stage `changes`, the document's writes, and `dispatched`, the
+    /// commands it dispatched, in that order.
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self;
+}
+
+impl Staging for Transaction<&Branch> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        self.assert(changes).dispatch(dispatched)
+    }
+}
+
+impl Staging for StackTransaction<&Branch> {
+    fn stage(self, changes: Changes, dispatched: Changes) -> Self {
+        self.assert(changes).dispatch(dispatched)
     }
 }
 
 /// Chain handle for an evaluation. Holds the syntax and the
 /// transaction until `.perform(env)` consumes them.
-pub struct Evaluate<'s, 'a> {
+pub struct Evaluate<'s, T> {
     syntax: &'s Syntax,
-    txn: Transaction<&'a Branch>,
+    txn: T,
 }
 
-impl<'s, 'a> Evaluate<'s, 'a> {
+impl<'s, T: Staging> Evaluate<'s, T> {
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, apply the resulting
     /// claims, and run effect induction. The transaction is
@@ -346,16 +376,16 @@ impl<'s, 'a> Evaluate<'s, 'a> {
     /// retract-target resolution, rule-retract source resolution)
     /// go through the transaction's overlay so the chain never
     /// needs a `&Branch`.
-    pub async fn perform<Env: EvaluateEnv>(
-        self,
-        env: &Env,
-    ) -> Result<Evaluated<'a>, EvaluateError> {
+    pub async fn perform<Env: EvaluateEnv>(self, env: &Env) -> Result<Evaluated<T>, EvaluateError> {
         let Evaluate { syntax, mut txn } = self;
 
         // Run `compile` under the hood. Resolution reads through
         // the txn overlay; pre-mutation overlay is empty so this
         // sees branch state.
-        let Compiled { analysis } = syntax.compile(&txn).perform(env).await?;
+        let Compiled { analysis } = syntax
+            .compile(Source::Transaction(&txn))
+            .perform(env)
+            .await?;
         let document = &analysis.analysis;
 
         // ---- Build base bindings frame from analysis-derived vars ----
@@ -410,11 +440,17 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // reads and commit-time induction, never committed).
         let transient_entities = document.transient_entities();
         let mut claim_count = 0usize;
-        // Every dispatched transient, mirrored into a bucket the caller
-        // can hand to a post-commit command dispatcher. The commit sweeps
-        // transients from the transaction, so this mirror is the only
-        // post-evaluate view of which commands the document carried.
-        let mut transients = Changes::new();
+        // How many commands the document dispatched. A command lands in
+        // the session's `control:` layer once the transaction publishes,
+        // where the caller reads it back; the count is only for a caller
+        // that must refuse a document carrying any before it commits.
+        let mut commands = 0usize;
+        // The document's writes, in order, as one batch each: what the
+        // transaction is handed below, and what a caller committing
+        // through the stack's invocation rather than this transaction
+        // asserts and invokes.
+        let mut changes = Changes::new();
+        let mut dispatched = Changes::new();
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
@@ -454,12 +490,10 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 claim_count += 2 + tonk_schema::rule::reads_entities(rule).len();
                             }
                             if dispatch {
-                                let mut command = Changes::new();
-                                command.assert(plan);
-                                txn = txn.dispatch(command.clone());
-                                transients.assert(command);
+                                plan.assert(&mut dispatched);
+                                commands += 1;
                             } else {
-                                txn = txn.assert(plan);
+                                plan.assert(&mut changes);
                             }
                         }
                         Statement::Retract(application) => {
@@ -481,12 +515,12 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     // canonical encoding makes the
                                     // dissociate byte-exact.
                                     claim_count += 2 + tonk_schema::rule::on_entities(&rule).len();
-                                    txn = txn.retract(*rule);
+                                    rule.retract(&mut changes);
                                 }
                                 ApplicationPlan::DeductiveRule(rule) => {
                                     claim_count +=
                                         2 + tonk_schema::rule::reads_entities(&rule).len();
-                                    txn = txn.retract(*rule);
+                                    rule.retract(&mut changes);
                                 }
                             }
                         }
@@ -494,10 +528,14 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                 }
             }
             for claim in retract_claims {
-                txn = txn.retract(claim);
+                claim.retract(&mut changes);
             }
         }
         commits.claims = claim_count;
+        // The same writes, in the same order, into the transaction: its
+        // overlay answers the post-mutation reads, and a caller that
+        // commits it writes what `changes` and `dispatched` hold.
+        txn = txn.stage(changes.clone(), dispatched.clone());
 
         let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
@@ -505,15 +543,18 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // `TransactionCommit::perform` fires installed rules over the
         // transaction's delta (durable changes and dispatched
         // transients alike) and folds their durable novelty into the
-        // commit, while transients are dropped, never written. The
-        // caller's txn is returned with the dispatch staged; they
-        // commit or drop.
+        // commit, while transients are dropped, never written: a
+        // transaction from a session lands them in its `control:` layer
+        // once it publishes. The caller's txn is returned with the
+        // dispatch staged; they commit or drop.
         Ok(Evaluated {
             txn,
             matches,
             commits,
             analysis,
-            transients,
+            commands,
+            changes,
+            dispatched,
         })
     }
 }
@@ -526,11 +567,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 /// drop (rollback), or query (`txn.query()`) further. Post-
 /// mutation matches are computed by the caller from the txn;
 /// the chain itself never commits and never re-queries.
-pub struct Evaluated<'a> {
+pub struct Evaluated<T> {
     /// Transaction with the document's mutations + induction
     /// applied to its overlay. Caller drives commit / drop /
     /// further composition.
-    pub txn: Transaction<&'a Branch>,
+    pub txn: T,
     /// Pre-mutation per-source-expression match blocks. For
     /// post-mutation matches, call [`Self::matches_after`].
     pub matches: Vec<QueryMatchBlock>,
@@ -541,15 +582,30 @@ pub struct Evaluated<'a> {
     /// against the transaction overlay to compute post-mutation
     /// matches.
     pub analysis: Analysis<Syntax>,
-    /// The transient facts (commands) the document dispatched into
-    /// the transaction. The commit sweeps them from the transaction,
-    /// so a caller that dispatches commands post-commit reads them
-    /// here — same contract as the reactor builder's transient
-    /// bucket on the `/transact` path.
-    pub transients: Changes,
+    /// How many commands (transient-concept assertions) the document
+    /// dispatched into the transaction. The commit never writes them;
+    /// a transaction from a branch's session lands them in its
+    /// `control:` layer once it publishes, and a caller running
+    /// providers reads them back from there. A caller that cannot land
+    /// them (one committing outside a session) refuses a document with
+    /// any.
+    pub commands: usize,
+    /// The document's durable writes, asserts and retracts in order, as
+    /// the transaction was handed them: for a caller that commits them
+    /// through the stack's own invocation ([`Stack::assert`]) instead,
+    /// to get the report of what the dispatch landed.
+    ///
+    /// [`Stack::assert`]: dialog_repository::Stack::assert
+    pub changes: Changes,
+    /// The commands the document dispatched, as rows: what
+    /// [`commands`](Self::commands) counts, for a caller invoking them
+    /// through the stack ([`Invocation::invoke`]).
+    ///
+    /// [`Invocation::invoke`]: dialog_repository::Invocation::invoke
+    pub dispatched: Changes,
 }
 
-impl<'a> Evaluated<'a> {
+impl<T: Staging> Evaluated<T> {
     /// Post-mutation per-source-expression match blocks. Runs
     /// the analyzer's queries against the transaction overlay,
     /// which already reflects every applied write plus the
@@ -571,7 +627,9 @@ impl<'a> Evaluated<'a> {
         };
         Ok(render_match_blocks(document, post_results.as_ref()))
     }
+}
 
+impl<'a> Evaluated<Transaction<&'a Branch>> {
     /// Convenience: hand the underlying transaction to dialog's
     /// commit chain. Same as `self.txn.commit()` — exposed on
     /// `Evaluated` so the common `.evaluate(...).perform(...)?
@@ -646,7 +704,7 @@ struct QueryResults {
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
     synthesized: &[SynthesizedQuery],
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
@@ -719,16 +777,16 @@ fn merge_frames(a: &Parameters, b: &Parameters) -> Option<Parameters> {
 /// Wraps dialog's `Statement` trait so retraction targets land
 /// in the transaction the same way an `ApplicationPlan` does.
 struct RawClaim {
-    the: dialog_artifacts::Relation,
+    the: dialog_corpus::Relation,
     of: Entity,
     is: Value,
 }
 
-impl dialog_artifacts::Statement for RawClaim {
-    fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        update.associate(self.the, self.of, self.is, dialog_artifacts::Pick::All);
+impl dialog_corpus::Statement for RawClaim {
+    fn assert(self, update: &mut impl dialog_corpus::Update) {
+        update.associate(self.the, self.of, self.is, dialog_corpus::Pick::All);
     }
-    fn retract(self, update: &mut impl dialog_artifacts::Update) {
+    fn retract(self, update: &mut impl dialog_corpus::Update) {
         update.dissociate(self.the, self.of, self.is);
     }
 }
@@ -749,7 +807,7 @@ impl dialog_artifacts::Statement for RawClaim {
 /// so this function only handles `ApplicationPlan::Concept`.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
     plan: tonk_schema::transact::ConceptPlan,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
     let Some(this_term) = plan.statement.terms.get("this") else {
@@ -850,7 +908,7 @@ fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
 /// frame carries every entry's binding.
 async fn collect_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     if let Application::Concept {
@@ -877,7 +935,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// extracts every bound variable from each [`ConceptConclusion`].
 async fn collect_single_matches<Env: EvaluateEnv>(
     application: Application,
-    txn: &Transaction<&Branch>,
+    txn: &dyn Pending,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     // Capture the variable names present in the application's
@@ -1348,12 +1406,12 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    use dialog_artifacts::Changes;
-    use dialog_artifacts::Statement as ArtifactsStatement;
+    use dialog_corpus::Changes;
+    use dialog_corpus::Statement as ArtifactsStatement;
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
-    use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
+    use dialog_query::corpus::Type;
     use dialog_query::{AttributeDescriptor, the};
     use tonk_notation::parse;
 
@@ -1404,7 +1462,7 @@ mod tests {
         // Publish the name — `id:<name>` carries the
         // `db.meta/name` claim pointing at the concept
         // entity. This is the same shape `name!:` produces.
-        let id_entity: dialog_artifacts::Entity =
+        let id_entity: dialog_corpus::Entity =
             format!("id:{name}").parse().expect("id:<name> is valid");
         let mut txn = txn.assert(the!("db.name/referent").of(id_entity).is(entity.clone()));
         if transient {
@@ -1479,97 +1537,6 @@ attribute!: &foo/title
         Ok(())
     }
 
-    /// A transient-concept assertion must mirror into
-    /// [`Evaluated::transients`] — the bucket post-commit command
-    /// dispatch runs on — while a durable assertion must not. The
-    /// commit sweeps transients from the transaction, so this mirror
-    /// is the only post-evaluate view of the commands a document
-    /// carried.
-    #[dialog_common::test]
-    async fn it_mirrors_dispatched_transients_for_command_dispatch() -> anyhow::Result<()> {
-        let (operator, profile) = test_session_with_peer().await;
-        let repo = test_repo(&operator, &profile).await;
-        let branch = repo.branch("main").open().perform(&operator).await?;
-
-        // Commit 1: a transient `ping` concept and a durable `note`
-        // concept.
-        let setup = r#"concept!: &ping
-  transient:
-  with:
-    message:
-      the: xyz.tonk.ping/message
-      as: text
-      cardinality: :one
-      description: "message"
-
-attribute!: &note-body
-  description: "body"
-  the: xyz.tonk.note/body
-  as: text
-  cardinality: :one
-
-concept!: &note
-  description: "A note"
-  with:
-    body: note-body
-"#;
-        let parsed = parse(setup);
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("setup evaluate failed: {e}"))?
-            .commit()
-            .publish()
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("setup commit failed: {e}"))?;
-
-        // A transient instance mirrors its facts.
-        let parsed = parse("ping!:\n  message: \"hello\"\n");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let evaluated = parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("ping evaluate failed: {e}"))?;
-        assert!(
-            !evaluated.transients.is_empty(),
-            "transient assert must mirror into Evaluated::transients",
-        );
-        let attributes: Vec<String> = evaluated
-            .transients
-            .iter()
-            .map(|(_, attribute, _)| attribute.to_string())
-            .collect();
-        assert!(
-            attributes.iter().any(|a| a == "xyz.tonk.ping/message"),
-            "mirror carries the transient's facts, got {attributes:?}",
-        );
-
-        // A durable instance mirrors nothing.
-        let parsed = parse("note!:\n  body: \"kept\"\n");
-        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let evaluated = parsed
-            .syntax
-            .expect("syntax")
-            .evaluate(branch.transaction())
-            .perform(&operator)
-            .await
-            .map_err(|e| anyhow::anyhow!("note evaluate failed: {e}"))?;
-        assert!(
-            evaluated.transients.is_empty(),
-            "durable asserts must not mirror into Evaluated::transients",
-        );
-
-        Ok(())
-    }
-
     /// Repro for BUG-domain-head-cardinality-many: a
     /// `cardinality: many` attribute must accumulate values when
     /// asserted through a domain head (`repro.demo!:`), exactly as
@@ -1622,13 +1589,13 @@ concept!: &note
         }
 
         // Both edges must be stored: cardinality-many accumulates.
-        let a: dialog_artifacts::Entity = "id:a".parse()?;
+        let a: dialog_corpus::Entity = "id:a".parse()?;
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("repro.demo/edge"))
-                    .of(Term::<dialog_artifacts::Entity>::from(a))
-                    .is(Term::<dialog_artifacts::Entity>::var("edge")),
+                    .of(Term::<dialog_corpus::Entity>::from(a))
+                    .is(Term::<dialog_corpus::Entity>::var("edge")),
             ))
             .perform(&operator)
             .try_vec()
@@ -2111,14 +2078,14 @@ concept!: &note
 
         // Every spelling stored the one number, read back as the
         // narrowest type that holds it: what the declared reader expects.
-        let the: dialog_artifacts::Relation = "io.test.person/age".parse()?;
+        let the: dialog_corpus::Relation = "io.test.person/age".parse()?;
         for (uri, spelling) in [("test:1", "41"), ("test:2", "+41"), ("test:3", "41.0")] {
-            let entity: dialog_artifacts::Entity = uri.parse()?;
+            let entity: dialog_corpus::Entity = uri.parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the.clone())),
-                    Term::<dialog_artifacts::Entity>::from(entity),
+                    Term::Constant(dialog_corpus::Value::Symbol(the.clone())),
+                    Term::<dialog_corpus::Entity>::from(entity),
                     Term::<dialog_query::Any>::var("age"),
                     Term::blank(),
                     None,
@@ -2175,15 +2142,15 @@ concept!: &note
             .await
             .map_err(|e| anyhow::anyhow!("commit failed: {e}"))?;
 
-        let entity: dialog_artifacts::Entity = "test:raw".parse()?;
+        let entity: dialog_corpus::Entity = "test:raw".parse()?;
         let mut by_field = std::collections::BTreeMap::new();
         for field in ["bare", "signed", "negative", "float"] {
-            let the: dialog_artifacts::Relation = format!("io.test.raw/{field}").parse()?;
+            let the: dialog_corpus::Relation = format!("io.test.raw/{field}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(entity.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(entity.clone()),
                     Term::<dialog_query::Any>::var("v"),
                     Term::blank(),
                     None,
@@ -2254,17 +2221,17 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let nb: dialog_corpus::Entity = "id:nb".parse()?;
         let mut entries: Vec<(String, String)> = Vec::new();
         for key in ["N", "N5"] {
             // A position-named attribute is not a `The` (those are the
             // symbol-named half), so the lookup pins the raw attribute.
-            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_corpus::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(nb.clone()),
                     Term::<dialog_query::Any>::var("block"),
                     Term::blank(),
                     None,
@@ -2273,7 +2240,7 @@ concept!: &note
                 .try_vec()
                 .await?;
             for claim in claims {
-                let dialog_artifacts::Value::Entity(block) = claim.is else {
+                let dialog_corpus::Value::Entity(block) = claim.is else {
                     anyhow::bail!("a block is an entity");
                 };
                 entries.push((key.to_owned(), block.to_string()));
@@ -2353,15 +2320,15 @@ concept!: &note
                 .map_err(|e| anyhow::anyhow!("commit failed for {doc:?}: {e}"))?;
         }
 
-        let nb: dialog_artifacts::Entity = "id:nb".parse()?;
+        let nb: dialog_corpus::Entity = "id:nb".parse()?;
         let mut counts = Vec::new();
         for key in ["N", "N5"] {
-            let the: dialog_artifacts::Relation = format!("xyz.test.notebook/{key}").parse()?;
+            let the: dialog_corpus::Relation = format!("xyz.test.notebook/{key}").parse()?;
             let claims: Vec<dialog_query::Claim> = branch
                 .query()
                 .select(dialog_query::AttributeQuery::new(
-                    Term::Constant(dialog_artifacts::Value::Symbol(the)),
-                    Term::<dialog_artifacts::Entity>::from(nb.clone()),
+                    Term::Constant(dialog_corpus::Value::Symbol(the)),
+                    Term::<dialog_corpus::Entity>::from(nb.clone()),
                     Term::<dialog_query::Any>::var("block"),
                     Term::blank(),
                     None,
@@ -2439,12 +2406,12 @@ concept!: &note
             refused.err()
         );
 
-        let the: dialog_artifacts::Relation = "xyz.test.ticket/queue".parse()?;
+        let the: dialog_corpus::Relation = "xyz.test.ticket/queue".parse()?;
         let queues: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::new(
                 Term::Constant(Value::Symbol(the)),
-                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_corpus::Entity>::var("of"),
                 Term::<dialog_query::Any>::var("is"),
                 Term::blank(),
                 None,
@@ -2485,8 +2452,8 @@ concept!: &note
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         // Seed: id:demo's referent points at a target entity.
-        let target: dialog_artifacts::Entity = "did:key:zReproTarget".parse()?;
-        let id_demo: dialog_artifacts::Entity = "id:demo".parse()?;
+        let target: dialog_corpus::Entity = "did:key:zReproTarget".parse()?;
+        let id_demo: dialog_corpus::Entity = "id:demo".parse()?;
         branch
             .transaction()
             .assert(the!("db.name/referent").of(id_demo).is(target.clone()))
@@ -2525,13 +2492,13 @@ name!:
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
 
         // id:demo-copy now carries the copied referent.
-        let id_copy: dialog_artifacts::Entity = "id:demo-copy".parse()?;
+        let id_copy: dialog_corpus::Entity = "id:demo-copy".parse()?;
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
-                    .of(Term::<dialog_artifacts::Entity>::from(id_copy))
-                    .is(Term::<dialog_artifacts::Entity>::var("referent")),
+                    .of(Term::<dialog_corpus::Entity>::from(id_copy))
+                    .is(Term::<dialog_corpus::Entity>::var("referent")),
             ))
             .perform(&operator)
             .try_vec()
@@ -2597,7 +2564,7 @@ name!:
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
-                    .of(Term::<dialog_artifacts::Entity>::var("effect"))
+                    .of(Term::<dialog_corpus::Entity>::var("effect"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
             .perform(&operator)
@@ -2613,7 +2580,7 @@ name!:
         // through the raw Changes path. The reactor's induce
         // loop should fire the installed rule and land the
         // durable pong head.
-        let subject: dialog_artifacts::Entity = "did:key:zNotationSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zNotationSubject".parse()?;
         let ping_tag = the!("io.gozala.ping/tag");
         let mut transients = Changes::new();
         ping_tag
@@ -2773,7 +2740,7 @@ rule!:
 
         // Second commit: submit a transient ping and verify
         // the rule fires through induce.
-        let subject: dialog_artifacts::Entity = "did:key:zPureNotationSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zPureNotationSubject".parse()?;
         let ping_tag = the!("io.gozala.ping/tag");
         let mut transients = Changes::new();
         ping_tag
@@ -2894,7 +2861,7 @@ counter!: &counter-demo
 
         // The seeded counter holds an unsigned 0.
         let count_attr = the!("xyz.tonk.counter/count");
-        let counter_demo: dialog_artifacts::Entity =
+        let counter_demo: dialog_corpus::Entity =
             "id:counter-demo".parse().expect("id:<name> entity");
         // Resolve the named counter entity via its referent claim.
         let referent: Vec<dialog_query::Claim> = branch
@@ -2902,7 +2869,7 @@ counter!: &counter-demo
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3066,14 +3033,14 @@ counter!: &counter-demo
         }
 
         // Resolve counter-demo's entity via its name referent.
-        let counter_demo: dialog_artifacts::Entity =
+        let counter_demo: dialog_corpus::Entity =
             "id:counter-demo".parse().expect("id:<name> entity");
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3188,13 +3155,13 @@ counter!: &counter-demo
             .await
             .map_err(|e| anyhow::anyhow!("commit (increment): {e}"))?;
 
-        let counter_demo: dialog_artifacts::Entity = "id:counter-demo".parse().expect("id:<name>");
+        let counter_demo: dialog_corpus::Entity = "id:counter-demo".parse().expect("id:<name>");
         let referent: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("db.name/referent"))
                     .of(Term::from(counter_demo))
-                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+                    .is(Term::<dialog_corpus::Entity>::var("e")),
             ))
             .perform(&operator)
             .try_vec()
@@ -3526,7 +3493,7 @@ concept!: &pong
         setup = install_named_concept(setup, "ping", &ping, /*transient=*/ false);
         setup = install_named_concept(setup, "pong", &pong, /*transient=*/ false);
         // One durable `ping` instance — the premise the rule derives from.
-        let subject: dialog_artifacts::Entity = "did:key:zDeducedSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zDeducedSubject".parse()?;
         setup = setup.assert(
             the!("io.gozala.ping/tag")
                 .of(subject.clone())
@@ -3592,7 +3559,7 @@ concept!: &pong
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::Relation>::from(the!("dialog.rule/source"))
-                    .of(Term::<dialog_artifacts::Entity>::var("rule"))
+                    .of(Term::<dialog_corpus::Entity>::var("rule"))
                     .is(Term::<Vec<u8>>::var("source")),
             ))
             .perform(&operator)
@@ -3747,7 +3714,7 @@ concept!: &person
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.person/name"))
-                    .of(Term::<dialog_artifacts::Entity>::var("p"))
+                    .of(Term::<dialog_corpus::Entity>::var("p"))
                     .is(Term::<String>::var("v")),
             ))
             .perform(&operator)
@@ -3827,7 +3794,7 @@ rule!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
 
-        let subject: dialog_artifacts::Entity = "did:key:zNotationTransientSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zNotationTransientSubject".parse()?;
 
         let pong_claims: Vec<dialog_query::Claim> = branch
             .query()
@@ -3926,7 +3893,7 @@ ping!:
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
 
-        let subject: dialog_artifacts::Entity = "did:key:zSingleCommitSubject".parse()?;
+        let subject: dialog_corpus::Entity = "did:key:zSingleCommitSubject".parse()?;
 
         let pong_claims: Vec<dialog_query::Claim> = branch
             .query()
@@ -4095,9 +4062,9 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
-        let sheet_c: dialog_artifacts::Entity = "did:key:zSheetC".parse()?;
+        let workspace: dialog_corpus::Entity = "about:blank".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
+        let sheet_c: dialog_corpus::Entity = "did:key:zSheetC".parse()?;
 
         // Sanity: active is sheet A.
         let active_before: Vec<dialog_query::Claim> = branch
@@ -4105,7 +4072,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4120,7 +4087,7 @@ workspace!:
         // (active is A). next = B (C's neighbour, as the binder would
         // compute). The retract rule should drop C's membership; the
         // reassign rule must NOT fire (active != C), so active stays A.
-        let close_entity: dialog_artifacts::Entity = "did:key:zCloseBgCmd".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCloseBgCmd".parse()?;
         let mut transients = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4145,7 +4112,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/sheet"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4167,7 +4134,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4283,12 +4250,12 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "did:key:zCloseActiveWorkspace".parse()?;
-        let sheet_a: dialog_artifacts::Entity = "did:key:zSheetA".parse()?;
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
+        let workspace: dialog_corpus::Entity = "did:key:zCloseActiveWorkspace".parse()?;
+        let sheet_a: dialog_corpus::Entity = "did:key:zSheetA".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
 
         // Close the ACTIVE sheet A; next = B (its neighbour).
-        let close_entity: dialog_artifacts::Entity = "did:key:zCloseActiveCmd".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCloseActiveCmd".parse()?;
         let mut transients = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4313,7 +4280,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4478,10 +4445,10 @@ workspace!:
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
-        let workspace: dialog_artifacts::Entity = "did:key:zCreateCloseWorkspace".parse()?;
+        let workspace: dialog_corpus::Entity = "did:key:zCreateCloseWorkspace".parse()?;
 
         // Fire create-sheet (the new sheet entity = the command entity).
-        let new_sheet: dialog_artifacts::Entity = "did:key:zCreatedSheet".parse()?;
+        let new_sheet: dialog_corpus::Entity = "did:key:zCreatedSheet".parse()?;
         let mut create = Changes::new();
         the!("dom.event.detail/name")
             .of(new_sheet.clone())
@@ -4506,7 +4473,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4524,8 +4491,8 @@ workspace!:
         );
 
         // Now close the NEW (background) sheet; active is A, next = B.
-        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
-        let close_entity: dialog_artifacts::Entity = "did:key:zCreateCloseCmd".parse()?;
+        let sheet_b: dialog_corpus::Entity = "did:key:zSheetB".parse()?;
+        let close_entity: dialog_corpus::Entity = "did:key:zCreateCloseCmd".parse()?;
         let mut close = Changes::new();
         the!("dom.event.detail/closed")
             .of(close_entity.clone())
@@ -4550,7 +4517,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4697,7 +4664,7 @@ workspace!:
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
         // Fire create-sheet. The new sheet entity = the command entity.
-        let new_sheet: dialog_artifacts::Entity = "did:key:zNewSheet".parse()?;
+        let new_sheet: dialog_corpus::Entity = "did:key:zNewSheet".parse()?;
         let mut create = Changes::new();
         the!("dom.event.detail/name")
             .of(new_sheet.clone())
@@ -4741,7 +4708,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.artifact/entity"))
                     .of(Term::from(new_sheet.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4757,7 +4724,7 @@ workspace!:
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.artifact/model"))
                     .of(Term::from(new_sheet.clone()))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -4770,13 +4737,13 @@ workspace!:
         );
 
         // The workspace auto-activated the new sheet.
-        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
+        let workspace: dialog_corpus::Entity = "about:blank".parse()?;
         let active: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.workspace/active"))
                     .of(Term::from(workspace))
-                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+                    .is(Term::<dialog_corpus::Entity>::var("v")),
             ))
             .perform(&operator)
             .try_vec()
@@ -5177,8 +5144,8 @@ person!:
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let alice: dialog_artifacts::Entity = "id:alice".parse()?;
-        let bob: dialog_artifacts::Entity = "id:bob".parse()?;
+        let alice: dialog_corpus::Entity = "id:alice".parse()?;
+        let bob: dialog_corpus::Entity = "id:bob".parse()?;
 
         // alice has only name; bob has name + bio.
         branch

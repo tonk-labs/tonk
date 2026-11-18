@@ -158,13 +158,20 @@ impl Offer {
     }
 }
 
-/// Read `link`: expand a `/@/` shortcut, claim a ticket link's ticket, or
-/// parse an `access=` link, and answer what it offers. Changes nothing.
+/// Read `link`: expand a `/@/` shortcut, fetch the ticket a ticket link's
+/// space keeps for it, or parse an `access=` link, and answer what it
+/// offers. Changes nothing: fetching a ticket is a `/use/get/ticket/claim`
+/// read, which the access service answers from storage without recording
+/// or consuming anything, so the link works as often as it is read.
+///
+/// A shortcut is expanded only when it is on one of Tonk's own origins
+/// ([`SHORTCUT_HOSTS`], or `origin`, the one this endpoint is served at),
+/// so a pasted link never makes this service request some other host.
 ///
 /// # Errors
 ///
 /// A sentence for the person, never one that repeats the link.
-pub async fn read_link(link: &str) -> Result<Offer, String> {
+pub async fn read_link(link: &str, origin: Option<&str>) -> Result<Offer, String> {
     let link = link.trim();
     if link.is_empty() || link.len() > MAX_LINK {
         return Err("Paste the whole Tonk invite link.".into());
@@ -179,6 +186,9 @@ pub async fn read_link(link: &str) -> Result<Offer, String> {
         return Err("That is not a Tonk invite link.".into());
     }
     let link = if parsed.path().starts_with("/@/") {
+        if !shortcut_origin(&parsed, origin) {
+            return Err("That is not a Tonk invite link.".into());
+        }
         expand(link).await?
     } else {
         link.to_owned()
@@ -187,6 +197,24 @@ pub async fn read_link(link: &str) -> Result<Offer, String> {
         .await
         .map_err(|failure| failure.kind().message().to_string())?;
     Offer::of(invite)
+}
+
+/// Hosts that serve Tonk's `/@/` shortcuts, over HTTPS on the default port.
+pub const SHORTCUT_HOSTS: &[&str] = &["tonk.network", "tonk.foundation"];
+
+/// Whether `link` is on an origin whose shortcuts this service may expand:
+/// one of [`SHORTCUT_HOSTS`], or `origin`, the one this endpoint is served
+/// at (which is how a staging or local deployment expands its own).
+pub fn shortcut_origin(link: &url::Url, origin: Option<&str>) -> bool {
+    let tonk = link.scheme() == "https"
+        && link.port().is_none()
+        && link
+            .host_str()
+            .is_some_and(|host| SHORTCUT_HOSTS.contains(&host));
+    let own = origin
+        .and_then(|origin| url::Url::parse(origin).ok())
+        .is_some_and(|origin| origin.origin() == link.origin());
+    tonk || own
 }
 
 /// Where a shortcut lands, with the link's fragment (its key) put back:
@@ -338,6 +366,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": ACCEPT,
+            "title": "Accept a Tonk invite",
             "description": "Join the space with the access the person chose. Called by the card.",
             "inputSchema": {
                 "type": "object",
@@ -347,6 +376,13 @@ pub fn tools() -> Vec<Value> {
                 },
                 "required": ["link", "access"],
                 "additionalProperties": false,
+            },
+            // Joining records a grant in the agent space and reaches the
+            // space's own service; it adds access and removes nothing.
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "openWorldHint": true,
             },
             "_meta": {
                 "ui": { "visibility": ["app"] },
@@ -367,19 +403,24 @@ pub fn resources() -> Vec<Value> {
 }
 
 /// The `resources/read` result for `uri`, or `None` when it is not the
-/// card. The card loads nothing: it talks only to the host.
-pub fn read_resource(uri: &str) -> Option<Value> {
+/// card. The card talks only to the host; from `origin`, the provider the
+/// host reached, it loads nothing but Tonk's fonts.
+pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     if uri != CARD_URI {
         return None;
     }
+    let origin = origin.trim_end_matches('/');
     Some(json!({
         "contents": [{
             "uri": CARD_URI,
             "mimeType": CARD_MIME,
-            "text": CARD,
+            "text": super::in_agent::splice(CARD, origin),
             "_meta": {
-                "ui": { "csp": { "connectDomains": [], "resourceDomains": [] }, "prefersBorder": true },
-                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [] },
+                "ui": {
+                    "csp": { "connectDomains": [], "resourceDomains": [origin] },
+                    "prefersBorder": true,
+                },
+                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [origin] },
             },
         }],
     }))
@@ -398,6 +439,7 @@ pub async fn call<W: Writers>(
     writers: &W,
     bearer: &str,
     mcp_session: &str,
+    origin: &str,
 ) -> Option<Value> {
     if name != JOIN && name != ACCEPT {
         return None;
@@ -418,6 +460,7 @@ pub async fn call<W: Writers>(
     let body = serde_json::to_string(&LinkRequest {
         link: link.to_owned(),
         access,
+        origin: Some(origin.to_owned()),
     })
     .expect("a link request serializes");
     let request = Request::builder()
@@ -515,6 +558,10 @@ pub struct LinkRequest {
     /// what the link offers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The origin the asking endpoint is served at, whose `/@/` shortcuts
+    /// may be expanded besides Tonk's own (see [`shortcut_origin`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// What the agent space's writer answers about a link.

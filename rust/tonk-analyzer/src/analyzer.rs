@@ -78,7 +78,7 @@ use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
 
 use assertion::build_assertion_application;
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
@@ -645,7 +645,7 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
 /// existing query are skipped: the user query will pick them up.
 fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
     use crate::analysis::SynthesizedQuery;
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
     use dialog_query::Term;
 
     let statements = document.statements();
@@ -808,7 +808,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
 /// constant). Used to detect when an `Application`'s `this:` slot
 /// has been resolved to a known entity at analysis time.
 fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<Entity> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
     use dialog_query::Term;
     match term {
         Term::Constant(Value::Entity(e)) => Some(e.clone()),
@@ -819,7 +819,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::{Entity, Value};
+    use dialog_corpus::{Entity, Value};
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
@@ -4035,9 +4035,9 @@ view!:
     #[dialog_common::test]
     async fn it_converges_wire_path_for_pinned_concept_when_this_is_carried() {
         use dialog_query::AttributeDescriptor;
-        use dialog_query::artifact::Type;
         use dialog_query::attribute::Cardinality as DialogCardinality;
         use dialog_query::concept::descriptor::ConceptDescriptor as DialogConceptDescriptor;
+        use dialog_query::corpus::Type;
         use tonk_core::claim::{ConceptDescriptor as WireDescriptor, SourceApplication, ValueMap};
         use tonk_schema::transact::{
             ApplicationPlan, application_plan_from_predicate, derive_this,
@@ -6082,7 +6082,7 @@ seed/installed!:
 
     /// Every `event!:` declaration name the document's views inlined.
     fn inlined_declarations(name: &str, source: &str) -> Vec<String> {
-        use dialog_artifacts::Value as ArtifactValue;
+        use dialog_corpus::Value as ArtifactValue;
         use dialog_query::Term as QueryTerm;
 
         let syntax = parse_library(name, source);

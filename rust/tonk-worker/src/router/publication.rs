@@ -394,8 +394,7 @@ async fn publications(
 /// Run the [`PublishSpace`] command for the space it names.
 ///
 /// [`PublishSpace`]: tonk_schema::command::PublishSpace
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::PublishSpace) {
         let Ok(space) = command.space.0.to_string().parse::<Did>() else {
@@ -417,8 +416,7 @@ impl dialog_capability::Provider<tonk_schema::command::PublishSpace> for crate::
 /// Run the [`UnpublishSpace`] command for the space it names.
 ///
 /// [`UnpublishSpace`]: tonk_schema::command::UnpublishSpace
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::UnpublishSpace>
     for crate::router::CommandEnv
 {
@@ -864,7 +862,7 @@ mod tests {
                     .await
                     .expect("the reader's branch opens");
                 let refused = branch
-                    .pull()
+                    .pull(dialog_repository::Download::MinimalRanges)
                     .perform(&reader.operator)
                     .await
                     .expect_err("a revoked reader's pull is refused");
@@ -1309,7 +1307,7 @@ mod tests {
                 .await
                 .expect("the reader's branch opens");
             branch
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .perform(&reader.operator)
                 .await
                 .expect_err("the first visitor's grant is revoked too");
@@ -1328,7 +1326,7 @@ mod tests {
                 .perform(&newcomer.operator)
                 .await
                 .expect("the newcomer's branch opens")
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .perform(&newcomer.operator)
                 .await
                 .expect_err("the adopted grant is revoked as well");

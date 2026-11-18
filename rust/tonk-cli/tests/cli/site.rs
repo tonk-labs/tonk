@@ -866,7 +866,7 @@ mod when_minting_and_claiming_an_invite {
 
 mod when_syncing_with_an_upstream {
     use anyhow::Result;
-    use dialog_artifacts::{Artifact, Instruction, Value};
+    use dialog_corpus::{Fact, Instruction, Value};
     use dialog_repository::Branch;
     use tonk_cli::sync::{self, SyncError};
 
@@ -903,7 +903,7 @@ mod when_syncing_with_an_upstream {
         of: &str,
         is: &str,
     ) -> Result<()> {
-        let artifact = Artifact {
+        let artifact = Fact {
             the: the.parse()?,
             of: of.parse()?,
             is: Value::String(is.to_owned()),
@@ -912,7 +912,7 @@ mod when_syncing_with_an_upstream {
         branch
             .transaction()
             .integrate(
-                vec![Instruction::Assert(artifact, dialog_artifacts::Pick::All)]
+                vec![Instruction::Assert(artifact, dialog_corpus::Pick::All)]
                     .into_iter()
                     .collect(),
             )
@@ -1056,7 +1056,7 @@ mod when_syncing_with_an_upstream {
 
 mod when_authoring_an_html_view {
     use anyhow::{Result, anyhow};
-    use dialog_artifacts::{Relation, Value};
+    use dialog_corpus::{Relation, Value};
     use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 
     use crate::common::{self, VIEW_DECL};
@@ -1075,7 +1075,7 @@ mod when_authoring_an_html_view {
             .query()
             .select(AttributeQuery::new(
                 Term::from(the_term),
-                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_corpus::Entity>::var("of"),
                 Term::<dialog_query::Any>::var("is"),
                 Term::<attribute::Cause>::blank(),
                 None,

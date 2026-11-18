@@ -28,7 +28,7 @@
 //! transaction overlay by passing whichever — both `&Branch` and
 //! `&Transaction` are `Into<Source>`.
 
-pub use dialog_artifacts::Entity;
+pub use dialog_corpus::Entity;
 
 use crate::concept::{
     AttributeByEntity, Concept, ConceptLookupError, QueryEnv, TransientConcept, lookup_named_entity,

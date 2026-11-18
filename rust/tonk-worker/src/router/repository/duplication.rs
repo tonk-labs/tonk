@@ -1,6 +1,6 @@
 //! Copy current content into a new identity, without adopting source history.
 use super::*;
-use dialog_artifacts::{ArtifactSelector, BlobIndexExt as _, Changes, Update};
+use dialog_corpus::{BlobIndexExt as _, Changes, Selector, Update};
 use dialog_repository::{Blob, Index, Snapshot};
 use futures_util::StreamExt as _;
 
@@ -11,7 +11,7 @@ fn error(error: impl std::fmt::Display) -> RepositoryError {
 pub(super) struct Copy {
     snapshot: Snapshot,
     content: Changes,
-    blobs: Vec<dialog_artifacts::Entity>,
+    blobs: Vec<dialog_corpus::Entity>,
 }
 
 // These are space lifecycle records, even when stored on main. Definitions
@@ -80,7 +80,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
 
     let stream = snapshot
         .claims()
-        .select(ArtifactSelector::new().of_starting_with(""))
+        .select(Selector::new().of_starting_with(""))
         .perform(&tonk.operator)
         .await
         .map_err(error)?;
@@ -91,7 +91,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     let mut blobs = Vec::new();
     while let Some(artifact) = stream.next().await {
         let artifact = artifact.map_err(error)?.to_owned().map_err(error)?;
-        if artifact.the.as_str() == dialog_artifacts::ASSET_SIZE {
+        if artifact.the.as_str() == dialog_corpus::ASSET_SIZE {
             blobs.push(artifact.of.clone());
         }
         if !is_metadata(artifact.the.as_str()) {
@@ -99,7 +99,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
                 artifact.the,
                 artifact.of,
                 artifact.is,
-                dialog_artifacts::Pick::All,
+                dialog_corpus::Pick::All,
             );
         }
     }
@@ -114,7 +114,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     tokio::pin!(stream);
     while let Some(blob) = stream.next().await {
         let (hash, _) = blob.map_err(error)?;
-        let entity = dialog_artifacts::Entity::from_blob(&hash).map_err(error)?;
+        let entity = dialog_corpus::Entity::from_blob(&hash).map_err(error)?;
         if !blobs.contains(&entity) {
             blobs.push(entity);
         }
@@ -188,9 +188,9 @@ pub(super) async fn create(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use dialog_artifacts::{Artifact, Entity, Value};
+    use dialog_corpus::{Entity, Fact, Value};
 
-    async fn facts(tonk: &TonkState, key: &str, branch: &str) -> Vec<Artifact> {
+    async fn facts(tonk: &TonkState, key: &str, branch: &str) -> Vec<Fact> {
         let session = tonk
             .reactor
             .repository(key)
@@ -201,7 +201,7 @@ mod tests {
         let stream = session
             .handle()
             .claims()
-            .select(ArtifactSelector::new().of_starting_with(""))
+            .select(Selector::new().of_starting_with(""))
             .perform(&tonk.operator)
             .await
             .unwrap();
@@ -270,7 +270,7 @@ mod tests {
                     attribute.parse().unwrap(),
                     entity.parse().unwrap(),
                     value,
-                    dialog_artifacts::Pick::All,
+                    dialog_corpus::Pick::All,
                 );
             }
             tonk.reactor
@@ -287,7 +287,7 @@ mod tests {
                 "example/private".parse().unwrap(),
                 "id:other".parse().unwrap(),
                 Value::Boolean(true),
-                dialog_artifacts::Pick::All,
+                dialog_corpus::Pick::All,
             );
             tonk.reactor
                 .repository(&source)
@@ -370,7 +370,7 @@ mod tests {
             "example/text".parse().unwrap(),
             "id:copy-only".parse::<Entity>().unwrap(),
             Value::String("Independent".into()),
-            dialog_artifacts::Pick::All,
+            dialog_corpus::Pick::All,
         );
         tonk.reactor
             .repository(&destination)
