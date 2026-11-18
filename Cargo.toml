@@ -225,6 +225,28 @@ dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.
 dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
 
+# Proof of concept: build against the local notation stack of dialog-db.
+[patch."https://github.com/dialog-db/dialog-db.git"]
+dialog-stack = { path = "/home/claude/notation/rust/dialog-stack" }
+dialog-corpus = { path = "/home/claude/notation/rust/dialog-corpus" }
+dialog-capability = { path = "/home/claude/notation/rust/dialog-capability" }
+dialog-common = { path = "/home/claude/notation/rust/dialog-common" }
+dialog-credentials = { path = "/home/claude/notation/rust/dialog-credentials" }
+dialog-csv = { path = "/home/claude/notation/rust/dialog-csv" }
+dialog-effects = { path = "/home/claude/notation/rust/dialog-effects" }
+dialog-peer = { path = "/home/claude/notation/rust/dialog-peer" }
+dialog-query = { path = "/home/claude/notation/rust/dialog-query" }
+dialog-remote-s3 = { path = "/home/claude/notation/rust/dialog-remote-s3" }
+dialog-remote-ucan-s3 = { path = "/home/claude/notation/rust/dialog-remote-ucan-s3" }
+dialog-remote-ucan = { path = "/home/claude/notation/rust/dialog-remote-ucan" }
+dialog-did-web = { path = "/home/claude/notation/rust/dialog-did-web" }
+dialog-repository = { path = "/home/claude/notation/rust/dialog-repository" }
+dialog-search-tree = { path = "/home/claude/notation/rust/dialog-search-tree" }
+dialog-storage = { path = "/home/claude/notation/rust/dialog-storage" }
+dialog-ucan = { path = "/home/claude/notation/rust/dialog-ucan" }
+dialog-ucan-core = { path = "/home/claude/notation/rust/dialog-ucan-core" }
+dialog-varsig = { path = "/home/claude/notation/rust/dialog-varsig" }
+
 [profile.dev]
 opt-level = 1
 strip = "debuginfo"
