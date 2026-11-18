@@ -15,11 +15,11 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a9931c59900ea311af5f124fc8670144fda6f32a", version = "0.5.0-rc.6" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a9931c59900ea311af5f124fc8670144fda6f32a", version = "0.5.0-rc.6" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a9931c59900ea311af5f124fc8670144fda6f32a", version = "0.5.0-rc.6" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a9931c59900ea311af5f124fc8670144fda6f32a", version = "0.5.0-rc.6" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a9931c59900ea311af5f124fc8670144fda6f32a", version = "0.5.0-rc.6" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "59ed30a40ea8c83806bbbf2fb2790a6fc245f921", version = "0.5.0-rc.6" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "59ed30a40ea8c83806bbbf2fb2790a6fc245f921", version = "0.5.0-rc.6" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "59ed30a40ea8c83806bbbf2fb2790a6fc245f921", version = "0.5.0-rc.6" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "59ed30a40ea8c83806bbbf2fb2790a6fc245f921", version = "0.5.0-rc.6" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "59ed30a40ea8c83806bbbf2fb2790a6fc245f921", version = "0.5.0-rc.6" }
 js-sys = "0.3"
 tonk-worker = { path = "../tonk-worker", features = ["volatile-storage"] }
 url = "2"
