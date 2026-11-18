@@ -97,9 +97,11 @@ channel.port1.onmessage = (e) => window.heard.push(e.data);
  * Serve a stand-in provider on a free port. `peer` answers the view
  * peer's requests by path suffix; `guest` is the guest page's script
  * (omit it, or pass `null`, for a page that never speaks).
+ * `runtimeFails` is how many runtime requests fail before one succeeds.
  */
-export async function standIn({ peer = {}, guest = null } = {}) {
+export async function standIn({ peer = {}, guest = null, runtimeFails = 0 } = {}) {
   const served = [];
+  let runtimeFailures = runtimeFails;
   const server = createServer(async (request, response) => {
     const { pathname } = new URL(request.url, 'http://stand-in');
     served.push(pathname);
@@ -119,7 +121,13 @@ export async function standIn({ peer = {}, guest = null } = {}) {
     if (pathname === '/view-peer/tonk_view_peer.js')
       return send(200, 'text/javascript', PEER(peer));
     if (pathname === '/view-peer/tonk_view_peer_bg.wasm') return send(200, 'application/wasm', '');
-    if (pathname === '/space-runtime.json') return send(200, 'application/json', '{}');
+    if (pathname === '/space-runtime.json') {
+      if (runtimeFailures > 0) {
+        runtimeFailures--;
+        return send(503, 'text/plain', 'not now');
+      }
+      return send(200, 'application/json', '{}');
+    }
     if (pathname === '/worker-guest')
       return send(200, 'text/html', guest ? GUEST(guest) : '<!doctype html><p>silent');
     send(404, 'text/plain', 'not stood in');
