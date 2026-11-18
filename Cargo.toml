@@ -198,6 +198,9 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
+# Proof of concept: pinned to the pushed head of dialog-db's
+# feat/notation-poc, which carries dialog-notation, until it is on
+# dialog's main and tagged.
 # v0.5.0-rc.6, the release that carries the layers stack (dialog-db#823):
 # a row has a layer `in`, a `Stack` over a
 # branch routes writes to layers, commands land in `control:` for one
@@ -205,49 +208,26 @@ web-sys = { version = "0.3" }
 # durable layer is a tree the primary points at, and a stack shares
 # one evaluation of a query among its subscribers (`Stack::subscribe`,
 # `Stack::settle`).
-dialog-stack = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-dialog-notation = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
-
-# Proof of concept: build against the local notation stack of dialog-db.
-[patch."https://github.com/dialog-db/dialog-db.git"]
-dialog-stack = { path = "/home/claude/notation/rust/dialog-stack" }
-dialog-corpus = { path = "/home/claude/notation/rust/dialog-corpus" }
-dialog-capability = { path = "/home/claude/notation/rust/dialog-capability" }
-dialog-common = { path = "/home/claude/notation/rust/dialog-common" }
-dialog-credentials = { path = "/home/claude/notation/rust/dialog-credentials" }
-dialog-csv = { path = "/home/claude/notation/rust/dialog-csv" }
-dialog-effects = { path = "/home/claude/notation/rust/dialog-effects" }
-dialog-peer = { path = "/home/claude/notation/rust/dialog-peer" }
-dialog-query = { path = "/home/claude/notation/rust/dialog-query" }
-dialog-remote-s3 = { path = "/home/claude/notation/rust/dialog-remote-s3" }
-dialog-remote-ucan-s3 = { path = "/home/claude/notation/rust/dialog-remote-ucan-s3" }
-dialog-remote-ucan = { path = "/home/claude/notation/rust/dialog-remote-ucan" }
-dialog-did-web = { path = "/home/claude/notation/rust/dialog-did-web" }
-dialog-repository = { path = "/home/claude/notation/rust/dialog-repository" }
-dialog-search-tree = { path = "/home/claude/notation/rust/dialog-search-tree" }
-dialog-storage = { path = "/home/claude/notation/rust/dialog-storage" }
-dialog-ucan = { path = "/home/claude/notation/rust/dialog-ucan" }
-dialog-ucan-core = { path = "/home/claude/notation/rust/dialog-ucan-core" }
-dialog-varsig = { path = "/home/claude/notation/rust/dialog-varsig" }
-dialog-notation = { path = "/home/claude/notation/rust/dialog-notation" }
+dialog-stack = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
+dialog-notation = { git = "https://github.com/dialog-db/dialog-db.git", rev = "c938ec9c78d86512b0ad8c3cff7ec8a2632006aa", version = "0.5.0-rc.6" }
 
 [profile.dev]
 opt-level = 1
