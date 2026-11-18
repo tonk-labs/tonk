@@ -57,6 +57,8 @@
       at: [`${at}.entry/at`, 'UnsignedInteger'],
       key: [`${at}.entry/key`, 'Entity'],
       state: [`${at}.entry/state`, 'Text'],
+    },
+    rank: {
       rank: [`${at}.entry/rank`, 'UnsignedInteger'],
     },
     claim: {

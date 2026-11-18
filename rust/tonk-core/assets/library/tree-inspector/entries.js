@@ -96,10 +96,13 @@
     if (entity) box.append(kv('entity', entity.text));
     const attribute = of(parts, 'attribute');
     if (attribute) box.append(kv('attribute', attribute.text));
-    if (shownValue) box.append(kv('value', shownValue.text));
+    if (shownValue) {
+      box.append(element('div', 'k', 'value'));
+      box.append(element('pre', 'value', shownValue.text));
+    }
     box.append(kv('index', ordering));
     box.append(kv('state', entry.state));
-    box.append(kv('rank', entry.rank));
+    if (entry.rank !== undefined) box.append(kv('rank', entry.rank));
     const version = model.versions.get(entry.entry);
     if (version) {
       box.append(kv('origin', version.origin));

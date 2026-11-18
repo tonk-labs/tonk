@@ -350,10 +350,6 @@ concept!: &tree-inspector/entry
       description: "`asserted` for a stored datum, `removed` for a tombstone."
       the: xyz.tonk.tree-inspector.entry/state
       as: text
-    rank:
-      description: The key's leaf-coin rank.
-      the: xyz.tonk.tree-inspector.entry/rank
-      as: natural
 
 rule!:
   description: An open node's entries, or an index's buffered operations, are read through `tree/entry`.
@@ -362,7 +358,7 @@ rule!:
     - assert: tree-inspector/opened
       where: { this: ?exploration, open: ?segment }
     - assert: tree/entry
-      where: { of: ?segment, entry: ?this, at: ?at, key: ?bytes, state: ?state, rank: ?rank }
+      where: { of: ?segment, entry: ?this, at: ?at, key: ?bytes, state: ?state }
     - assert: dialog/key-part
       where: { of: ?bytes, part: ?key, at: ?position, kind: ?kind, text: ?text, bytes: ?component }
 
@@ -398,6 +394,23 @@ rule!:
       where: { this: ?exploration, open: ?node }
     - assert: tree/entry
       where: { of: ?node, entry: ?this, retraction: ?retraction, cause: ?cause, collapsed: ?collapsed, supersedes: ?supersedes }
+
+concept!: &tree-inspector/rank
+  description: The leaf-coin rank of an entry's key in an open segment; a buffered operation has none.
+  with:
+    rank:
+      description: The rank, which decides whether a boundary forms after the key.
+      the: xyz.tonk.tree-inspector.entry/rank
+      as: natural
+
+rule!:
+  description: An open segment's entries carry their key's rank.
+  assert: tree-inspector/rank
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, rank: ?rank }
 
 concept!: &tree-inspector/version
   description: The version that wrote an entry of an open node.

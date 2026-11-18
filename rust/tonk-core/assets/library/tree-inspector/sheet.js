@@ -11,17 +11,28 @@
   --square: var(--tonk-square, #b94a3d);
   --closure: var(--tonk-closure, #7a7268);
   --alarm: var(--tonk-alarm, #a8302a);
-  --text: currentColor;
+  /* Its own surface and ink, light or dark as the page is: a guest's
+     scheme follows its embedder's, which declares both. */
+  color-scheme: light dark;
+  --surface: #fcfbfb;
+  --ink: #38182a;
+  --text: var(--ink);
   --quiet: color-mix(in oklab, currentColor 55%, transparent);
   --rule: color-mix(in oklab, currentColor 16%, transparent);
   --loud: color-mix(in oklab, currentColor 50%, transparent);
   --fill: color-mix(in oklab, currentColor 8%, transparent);
+  /* The tree's connecting lines stay in the background. */
+  --guide: color-mix(in oklab, currentColor 20%, transparent);
   display: block;
   box-sizing: border-box;
   height: 100dvh;
+  background: var(--surface);
   color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 13px;
+}
+@media (prefers-color-scheme: dark) {
+  :host { --surface: #161515; --ink: #e6e1de; }
 }
 * { box-sizing: border-box; }
 .shell {
@@ -44,7 +55,8 @@
   border-bottom: 1px solid var(--rule);
   color: var(--quiet); font-size: 0.85em;
 }
-.head .label { flex: 1 1 auto; padding-left: 1.5em; }
+.head .label { padding-left: 1.5em; }
+.head .legend { flex: 1 1 auto; text-align: center; white-space: pre; opacity: 0.8; }
 
 .row {
   position: relative;
@@ -67,7 +79,7 @@
    child stops the spine at its dot. */
 .indent { display: flex; align-self: stretch; flex: none; }
 .gutter { position: relative; width: 1.5em; flex: none; }
-.gutter.on::before, .elbow::before, .elbow::after { content: ''; position: absolute; border-color: var(--loud); }
+.gutter.on::before, .elbow::before, .elbow::after { content: ''; position: absolute; border-color: var(--guide); }
 .gutter.on::before { left: 50%; top: 0; bottom: 0; border-left: 1px solid; }
 .elbow::before { left: 50%; top: 0; bottom: 0; border-left: 1px solid; }
 .elbow.last::before { bottom: 50%; }
@@ -139,12 +151,21 @@ a.button { text-decoration: none; display: inline-block; }
 .link { color: var(--circle); text-decoration: underline; }
 
 /* The detail pane. */
-.detail { border-left: 1px solid var(--rule); font-size: 14px; }
+/* The space's title sits over the page's top right corner, so the pane
+   starts below it; the outline, on the left, needs no such room. */
+.detail { border-left: 1px solid var(--rule); font-size: 14px; padding-top: 64px; }
 .detail h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
 .detail h3 { margin: 20px 0 8px; font-size: 15px; font-weight: 600; }
 .kv { display: flex; align-items: center; gap: 12px; line-height: 1.75; }
 .kv .k { color: var(--quiet); min-width: 0; }
 .kv .v { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.detail > .entity { margin: 0 0 8px; }
+.storage--local { color: var(--text); }
+.storage--remote { color: var(--triangle); }
+.storage--unknown { color: var(--quiet); }
+details.header { margin-top: 20px; }
+details.header > summary { cursor: pointer; font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+details.header:not([open]) > summary { margin-bottom: 0; }
 
 /* A key in the pane: its parts as solid chips that wrap as text. */
 .chips { margin: 4px 0 10px; line-height: 2; }

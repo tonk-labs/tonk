@@ -65,10 +65,12 @@
   }
   for (const list of spans.values()) list.sort((a, b) => a.at - b.at);
 
+  const ranks = new Map();
+  for (const row of rows.rank) ranks.set(text(row.this), number(fields(row).rank));
   const entries = new Map();
   for (const row of once(rows.entry, (row) => row.this)) {
     const f = fields(row);
-    group(entries, text(f.segment), { entry: text(row.this), at: number(f.at), key: text(f.key), state: text(f.state), rank: number(f.rank) });
+    group(entries, text(f.segment), { entry: text(row.this), at: number(f.at), key: text(f.key), state: text(f.state), rank: ranks.get(text(row.this)) });
   }
   for (const list of entries.values()) list.sort((a, b) => a.at - b.at);
 

@@ -61,7 +61,9 @@
   list.append(top);
   const head = element('div', 'head');
   head.setAttribute('aria-hidden', 'true');
-  head.append(element('span', 'label', 'node'), element('span', 'col size', 'size'), element('span', 'col count', 'count'), element('span', 'col novelty', 'novelty'));
+  const legend = element('span', 'legend', '● local  ○ remote  ◌ not asked');
+  legend.title = 'whether this replica holds a node: a remote one is fetched when opened';
+  head.append(element('span', 'label', 'node'), legend, element('span', 'col size', 'size'), element('span', 'col count', 'count'), element('span', 'col novelty', 'novelty'), element('span', 'cloud'));
   list.append(head);
 
   // The widest node shown sets the bars' scale, as one ruler for the page.

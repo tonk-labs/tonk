@@ -15,7 +15,8 @@
   pane.dataset.for = selected;
   const kv = (name, value, extra) => {
     const line = element('div', 'kv');
-    line.append(element('span', 'k', name), element('span', 'v', String(value)));
+    line.append(element('span', 'k', name));
+    if (value !== '') line.append(element('span', 'v', String(value)));
     if (extra) line.append(extra);
     return line;
   };
@@ -38,7 +39,13 @@
   const held = model.held.get(selected);
 
   pane.append(element('h2', '', info.kind === 'index' ? 'Index node' : 'Segment node'));
-  pane.append(kv('hash', selected.replace(/^node:/, '')));
+  // The node's entity, which starts an exploration rooted at it.
+  const base = (self.getAttribute('base') || '/console/tree').replace(/\/$/, '');
+  const link = element('a', 'entity', selected);
+  link.href = `${base}/${selected}`;
+  link.dataset.explore = selected;
+  link.title = 'explore the tree rooted here';
+  pane.append(link);
   const bar = element('span', 'bar');
   bar.style.width = `${Math.max(2, Math.round(80 * info.size / Math.max(1, state.widest ?? info.size)))}px`;
   pane.append(kv('size', self.size(info.size), bar));
@@ -47,9 +54,17 @@
   pane.append(kv('scale', info.scale));
   pane.append(kv('novelty', info.novelty));
   if (span) pane.append(kv('buffered in parent', span.novelty));
-  pane.append(kv('storage', held === true ? 'local' : held === false ? 'remote (fetched on demand)' : 'not asked'));
+  const storage = element('span', `storage storage--${held === true ? 'local' : held === false ? 'remote' : 'unknown'}`, held === true ? '● local' : held === false ? '○ remote, fetched on open' : '◌ not asked yet');
+  pane.append(kv('storage', '', storage));
 
-  pane.append(element('h3', '', 'manifest'));
+  // The header a node was written under. Nodes of one tree mostly share
+  // it, so it is folded but on the root.
+  const header = element('details', 'header');
+  state.headers ??= new Map();
+  header.open = state.headers.get(selected) ?? selected === self.getAttribute('selected');
+  header.addEventListener('toggle', () => state.headers.set(selected, header.open));
+  header.append(element('summary', '', 'header'));
+  pane.append(header);
   const format = info.format;
   for (const [name, value] of [
     ['version', format.version],
@@ -64,11 +79,11 @@
     ['key-overhead', format['key-overhead']],
     ['link-overhead', format['link-overhead']],
   ]) {
-    pane.append(kv(name, value));
+    header.append(kv(name, value));
   }
 
   if (span) {
-    pane.append(kv('separator', ''));
+    pane.append(element('h3', '', 'separator'));
     pane.append(self.chips(model.partsOf(span.separator)));
   }
 

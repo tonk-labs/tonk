@@ -1738,7 +1738,9 @@ async fn it_replaces_an_askers_previous_answer() {
 /// branch's root and opening it are commands whose rules write into the
 /// stack's `session:` layer, so the branch's revision does not move, and
 /// the concepts the console reads (the node, its spans, the parts of their
-/// separators) answer for the open node from dialog's resolvers.
+/// separators, the operations it buffers) answer for the open node from
+/// dialog's resolvers. Besides the open node, only children this replica
+/// holds are read, so nothing is fetched that was not opened.
 #[dialog_common::test]
 async fn it_keeps_a_tree_exploration_in_the_session() {
     let (app, state, _lsp) = api_router_with_state(test_state().await);
@@ -1825,23 +1827,6 @@ async fn it_keeps_a_tree_exploration_in_the_session() {
     assert_eq!(explorations.len(), 1, "one exploration: {explorations:?}");
     assert_eq!(explorations[0]["this"], root, "named by its root");
 
-    let nodes = rows(query(
-        json!({
-            "kind": { "the": "xyz.tonk.tree-inspector.node/kind", "as": "Text", "cardinality": "one" },
-            "size": { "the": "xyz.tonk.tree-inspector.node/size", "as": "UnsignedInteger", "cardinality": "one" },
-            "count": { "the": "xyz.tonk.tree-inspector.node/count", "as": "UnsignedInteger", "cardinality": "one" },
-            "scale": { "the": "xyz.tonk.tree-inspector.node/scale", "as": "UnsignedInteger", "cardinality": "one" },
-            "novelty": { "the": "xyz.tonk.tree-inspector.node/novelty", "as": "UnsignedInteger", "cardinality": "one" }
-        }),
-        &["kind", "size", "count", "scale", "novelty"],
-    ))
-    .await;
-    assert_eq!(
-        nodes.len(),
-        1,
-        "the open root, and no other node: {nodes:?}"
-    );
-    assert_eq!(nodes[0]["this"], root);
     let format = rows(query(
         json!({ "fanout": { "the": "xyz.tonk.tree-inspector.node/fanout-exponent", "as": "UnsignedInteger", "cardinality": "one" } }),
         &["fanout"],
@@ -1875,10 +1860,43 @@ async fn it_keeps_a_tree_exploration_in_the_session() {
         Some(json!(true)),
         "the root was fetched and is held: {held:?}"
     );
-    let kind = nodes[0]["fields"]["kind"]
+
+    // A node is read only when it is open, or when it is a child of an
+    // open index that this replica holds: never one it would fetch.
+    let nodes = rows(query(
+        json!({
+            "kind": { "the": "xyz.tonk.tree-inspector.node/kind", "as": "Text", "cardinality": "one" },
+            "size": { "the": "xyz.tonk.tree-inspector.node/size", "as": "UnsignedInteger", "cardinality": "one" },
+            "count": { "the": "xyz.tonk.tree-inspector.node/count", "as": "UnsignedInteger", "cardinality": "one" },
+            "scale": { "the": "xyz.tonk.tree-inspector.node/scale", "as": "UnsignedInteger", "cardinality": "one" },
+            "novelty": { "the": "xyz.tonk.tree-inspector.node/novelty", "as": "UnsignedInteger", "cardinality": "one" }
+        }),
+        &["kind", "size", "count", "scale", "novelty"],
+    ))
+    .await;
+    let locally_held = |node: &Value| {
+        held.iter()
+            .any(|row| row["this"] == *node && row["fields"]["local"] == json!(true))
+    };
+    assert!(
+        nodes.iter().any(|node| node["this"] == root),
+        "the open root is read: {nodes:?}"
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node["this"] == root || locally_held(&node["this"])),
+        "no node is read but the open root and children held here: {nodes:?}"
+    );
+    let root_row = nodes
+        .iter()
+        .find(|node| node["this"] == root)
+        .expect("the root is read");
+    let kind = root_row["fields"]["kind"]
         .as_str()
         .unwrap_or_default()
         .to_owned();
+    let novelty = root_row["fields"]["novelty"].as_u64().unwrap_or_default();
 
     let after = rows(query(
         json!({ "revision": { "the": "dialog.branch/revision", "as": "Entity", "cardinality": "one" } }),
@@ -1905,6 +1923,21 @@ async fn it_keeps_a_tree_exploration_in_the_session() {
         .await;
         assert!(!spans.is_empty(), "the open index's spans: {spans:?}");
         assert!(spans.iter().all(|span| span["fields"]["parent"] == root));
+
+        // What the index buffers is read as its entries, each on a span.
+        let buffered = rows(query(
+            json!({ "span": { "the": "xyz.tonk.tree-inspector.buffer/span", "as": "Entity", "cardinality": "one" } }),
+            &["span"],
+        ))
+        .await;
+        assert_eq!(
+            buffered.len() as u64,
+            novelty,
+            "one row per buffered operation: {buffered:?}"
+        );
+        assert!(buffered.iter().all(|row| spans
+            .iter()
+            .any(|span| span["this"] == row["fields"]["span"])));
     }
     let parts = rows(query(
         json!({
