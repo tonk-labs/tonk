@@ -16311,6 +16311,423 @@ concept!: &writer-app
         );
     }
 
+    /// The notebook component written in the dialog notation.
+    const NOTEBOOK_NOTATION_SOURCE: &str = "/library/notebook.clj";
+
+    /// What one space's notebook reads as after a step, with every block
+    /// entity spelled as its block's source: the two spaces derive a
+    /// block's entity from a command each names by its own concept, so
+    /// entities are compared by what they stand for.
+    #[derive(Debug, PartialEq)]
+    struct NotebookReading {
+        /// `notebook/named`: every title the notebook holds.
+        titles: Vec<String>,
+        /// `notebook`'s block collection, in key order: key and block.
+        order: Vec<(String, String)>,
+        /// `notebook/blocks`, in key order: key and block.
+        entries: Vec<(String, String)>,
+        /// `notebook/block` of the notebook, by source: its source.
+        blocks: Vec<String>,
+        /// `block/position` of the notebook's blocks and the edge, in
+        /// position order: block and position.
+        positions: Vec<(String, String)>,
+        /// `block/chain` of the notebook's blocks, sorted: block and next.
+        chains: Vec<(String, String)>,
+    }
+
+    async fn read_rows(
+        tonk: &TonkState,
+        key: &str,
+        query: &str,
+    ) -> Vec<std::collections::BTreeMap<String, serde_json::Value>> {
+        let response = super::super::evaluate::evaluate_body(
+            tonk,
+            key,
+            CONTENT_BRANCH,
+            query.to_owned(),
+            false,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{query} reads: {error}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| {
+                block
+                    .results
+                    .iter()
+                    .map(|result| {
+                        let mut fields = result.fields.clone();
+                        fields.insert(
+                            "this".to_owned(),
+                            serde_json::Value::String(result.this.clone()),
+                        );
+                        fields
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn text(row: &std::collections::BTreeMap<String, serde_json::Value>, field: &str) -> String {
+        match row.get(field) {
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(other) => other.to_string(),
+            None => String::from("(absent)"),
+        }
+    }
+
+    /// The notebook `notebook` names, read in `key` as the notebook's own
+    /// tests read it, and the block entities by source.
+    async fn read_notebook(
+        tonk: &TonkState,
+        key: &str,
+        notebook: &str,
+    ) -> (NotebookReading, std::collections::BTreeMap<String, String>) {
+        let block_rows = read_rows(
+            tonk,
+            key,
+            &format!("notebook/block:\n  this: ?this\n  notebook: {notebook}\n  source: ?source\n"),
+        )
+        .await;
+        let by_entity: std::collections::BTreeMap<String, String> = block_rows
+            .iter()
+            .map(|row| (text(row, "this"), text(row, "source")))
+            .collect();
+        let name = |entity: &str| {
+            by_entity
+                .get(entity)
+                .map(|source| format!("block {source:?}"))
+                .unwrap_or_else(|| entity.to_owned())
+        };
+        let collection = |rows: &[std::collections::BTreeMap<String, serde_json::Value>]| {
+            let mut out: Vec<(String, String)> = rows
+                .iter()
+                .filter_map(|row| row.get("block")?.as_object().cloned())
+                .flat_map(|entries| entries.into_iter())
+                .map(|(at, block)| (at, name(block.as_str().unwrap_or_default())))
+                .collect();
+            out.sort();
+            out
+        };
+        let mut titles: Vec<String> = read_rows(
+            tonk,
+            key,
+            &format!("notebook/named:\n  this: {notebook}\n  title: ?title\n"),
+        )
+        .await
+        .iter()
+        .map(|row| text(row, "title"))
+        .collect();
+        titles.sort();
+        let order = collection(
+            &read_rows(
+                tonk,
+                key,
+                &format!("notebook:\n  this: {notebook}\n  block: {{?key: ?block}}\n"),
+            )
+            .await,
+        );
+        let entries = collection(
+            &read_rows(
+                tonk,
+                key,
+                &format!("notebook/blocks:\n  this: {notebook}\n  block: {{?key: ?block}}\n"),
+            )
+            .await,
+        );
+        let mut blocks: Vec<String> = by_entity.values().cloned().collect();
+        blocks.sort();
+        let ours = |entity: &str| by_entity.contains_key(entity) || entity == "tonk:notebook/edge";
+        let mut positions: Vec<(String, String)> =
+            read_rows(tonk, key, "block/position:\n  this: ?this\n  at: ?at\n")
+                .await
+                .iter()
+                .filter(|row| ours(&text(row, "this")))
+                .map(|row| (text(row, "at"), name(&text(row, "this"))))
+                .collect();
+        positions.sort();
+        let positions = positions.into_iter().map(|(at, b)| (b, at)).collect();
+        let mut chains: Vec<(String, String)> =
+            read_rows(tonk, key, "block/chain:\n  this: ?this\n  next: ?next\n")
+                .await
+                .iter()
+                .filter(|row| ours(&text(row, "this")))
+                .map(|row| (name(&text(row, "this")), name(&text(row, "next"))))
+                .collect();
+        chains.sort();
+        let entities = by_entity
+            .into_iter()
+            .map(|(entity, source)| (source, entity))
+            .collect();
+        (
+            NotebookReading {
+                titles,
+                order,
+                entries,
+                blocks,
+                positions,
+                chains,
+            },
+            entities,
+        )
+    }
+
+    impl NotebookReading {
+        /// The reading with each position key spelled as its rank among
+        /// the keys read. `dialog/position` biases a key by its block's
+        /// entity, and the two spaces derive a block's entity from
+        /// commands named by different concepts, so the same order is
+        /// spelled with different keys.
+        fn ranked(&self) -> NotebookReading {
+            let mut keys: Vec<&String> = self
+                .order
+                .iter()
+                .chain(&self.entries)
+                .map(|(at, _)| at)
+                .chain(self.positions.iter().map(|(_, at)| at))
+                .collect();
+            keys.sort();
+            keys.dedup();
+            let rank = |at: &String| match keys.iter().position(|key| *key == at) {
+                Some(rank) => format!("#{rank}"),
+                None => at.clone(),
+            };
+            NotebookReading {
+                titles: self.titles.clone(),
+                order: self
+                    .order
+                    .iter()
+                    .map(|(at, b)| (rank(at), b.clone()))
+                    .collect(),
+                entries: self
+                    .entries
+                    .iter()
+                    .map(|(at, b)| (rank(at), b.clone()))
+                    .collect(),
+                blocks: self.blocks.clone(),
+                positions: self
+                    .positions
+                    .iter()
+                    .map(|(b, at)| (b.clone(), rank(at)))
+                    .collect(),
+                chains: self.chains.clone(),
+            }
+        }
+    }
+
+    /// The keys a block is stored under in `notebook`'s sequence.
+    fn keys_of(reading: &NotebookReading, source: &str) -> Vec<String> {
+        let block = format!("block {source:?}");
+        reading
+            .order
+            .iter()
+            .filter(|(_, b)| *b == block)
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+
+    /// The same commands in, the same facts out: two spaces on YAML core,
+    /// one with the notebook installed from `notebook.yaml`, one from the
+    /// notation sketch, run one script, and after every step read their
+    /// notebooks the way the notebook's own tests read one.
+    ///
+    #[dialog_common::test]
+    async fn a_notebook_installed_from_the_notation_reads_as_from_yaml() {
+        const NOTEBOOK: &str = "notebook:probe";
+        let tonk = test_state().await;
+        let mut spaces = Vec::new();
+        for (name, source) in [
+            ("From YAML", NOTEBOOK_SOURCE),
+            ("From notation", NOTEBOOK_NOTATION_SOURCE),
+        ] {
+            let (key, _) = new_space(&tonk, CORE, name).await;
+            assert!(
+                install_component(&tonk, &key, CONTENT_BRANCH, source)
+                    .await
+                    .unwrap_or_else(|error| panic!("{source} installs: {error}")),
+                "{source}: a first install installs"
+            );
+            let installed = component(&tonk, &key, source)
+                .await
+                .unwrap_or_else(|| panic!("{source}: the install is recorded"));
+            assert!(installed.complete);
+            spaces.push(key);
+        }
+
+        // Each step is a document per space, written from what that space
+        // read after the step before.
+        type Step = fn(&NotebookReading, &std::collections::BTreeMap<String, String>) -> String;
+        let steps: Vec<(&str, Step)> = vec![
+            ("create", |_, _| {
+                tonk_inspector::notation::create_notation(
+                    "notebook:probe",
+                    "Groceries",
+                    "# Groceries\n\nmilk\n\neggs",
+                )
+                .expect("the create notation builds")
+            }),
+            ("insert", |_, blocks| {
+                format!(
+                    "block/insert!:\n  this: ?b0\n  notebook: notebook:probe\n  source: \"bread\"\n  next: case:none\n  prev: {}\n",
+                    blocks["eggs"]
+                )
+            }),
+            ("edit", |_, blocks| {
+                format!(
+                    "block/edit!:\n  subject: {}\n  notebook: notebook:probe\n  source: \"oat milk\"\n",
+                    blocks["milk"]
+                )
+            }),
+            ("move", |reading, blocks| {
+                // Bread moves between the heading and the milk: a key after
+                // the heading's that sorts before the milk's.
+                let heading = keys_of(reading, "# Groceries");
+                let from = keys_of(reading, "bread");
+                format!(
+                    "block/move!:\n  subject: {}\n  notebook: notebook:probe\n  from: {:?}\n  key: {:?}\n",
+                    blocks["bread"],
+                    from.first().cloned().unwrap_or_default(),
+                    format!("{}V", heading.first().cloned().unwrap_or_default()),
+                )
+            }),
+            ("remove", |reading, blocks| {
+                format!(
+                    "block/remove!:\n  subject: {}\n  notebook: notebook:probe\n  key: {:?}\n",
+                    blocks["eggs"],
+                    keys_of(reading, "eggs")
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            }),
+            ("retitle", |_, _| {
+                "notebook/retitle!:\n  subject: notebook:probe\n  title: \"Shopping\"\n".to_owned()
+            }),
+        ];
+
+        let mut readings = Vec::new();
+        for key in &spaces {
+            readings.push(read_notebook(&tonk, key, NOTEBOOK).await);
+        }
+        let mut differing = Vec::new();
+        for (step, document) in &steps {
+            for (at, key) in spaces.iter().enumerate() {
+                let (reading, blocks) = &readings[at];
+                let written = document(reading, blocks);
+                author(&tonk, key, &written).await;
+            }
+            for (at, key) in spaces.iter().enumerate() {
+                readings[at] = read_notebook(&tonk, key, NOTEBOOK).await;
+            }
+            let (yaml, notation) = (&readings[0].0, &readings[1].0);
+            println!("## {step}\n### from YAML\n{yaml:?}\n### from the notation\n{notation:?}");
+            if yaml.ranked() != notation.ranked() {
+                differing.push(*step);
+            }
+        }
+        println!("## steps that read differently: {differing:?}");
+
+        // The notebook's views, rendered headless as the outline renders
+        // them, in each space.
+        let mut outlines = Vec::new();
+        for key in &spaces {
+            let backend = Headless {
+                tonk: &tonk,
+                key: key.clone(),
+            };
+            let mut lines = Vec::new();
+            for route in [
+                "notebook:probe@notebook",
+                "notebook",
+                "notebook/block",
+                "notebook/index-route",
+                "tonk:notebook/index-route",
+                "notebook:probe@notebook/route",
+                "notebook:probe@tonk:notebook/route",
+            ] {
+                let route = tonk_render::RenderRoute::parse(route).expect("a route");
+                match tonk_render::outline(&backend, &route).await {
+                    Ok(outline) => summarize(&outline, 0, &mut lines),
+                    Err(error) => lines.push(format!("{route}: fails: {error}")),
+                }
+            }
+            outlines.push(lines);
+        }
+        println!(
+            "## views\n### from YAML\n{}\n### from the notation\n{}",
+            outlines[0].join("\n"),
+            outlines[1].join("\n")
+        );
+        assert_eq!(differing, Vec::<&str>::new());
+
+        // Every view named by its concept's name renders alike. A route
+        // concept the YAML pins to an entity (`tonk:notebook/route`,
+        // `tonk:notebook/index-route`), the entity the router names as a
+        // site's concept, resolves only from YAML: the notation cannot
+        // pin a concept to an entity.
+        let pinned = |line: &&String| line.starts_with("tonk:") || line.contains("@tonk:");
+        let by_name = |lines: &[String]| -> Vec<String> {
+            lines.iter().filter(|line| !pinned(line)).cloned().collect()
+        };
+        assert_eq!(by_name(&outlines[0]), by_name(&outlines[1]));
+        assert!(
+            outlines[0]
+                .iter()
+                .filter(pinned)
+                .all(|line| line.contains("resolved=true"))
+        );
+        assert!(
+            outlines[1]
+                .iter()
+                .filter(pinned)
+                .all(|line| line.contains("fails: no concept matched"))
+        );
+    }
+
+    /// One space's content branch, as the outline reads it.
+    struct Headless<'a> {
+        tonk: &'a TonkState,
+        key: String,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl tonk_render::QueryBackend for Headless<'_> {
+        async fn query(
+            &self,
+            query: dialog_query::ConceptQuery,
+        ) -> Result<Vec<tonk_schema::conclusion::Conclusion>, tonk_render::RenderError> {
+            self.tonk
+                .reactor
+                .repository(&self.key)
+                .branch(CONTENT_BRANCH)
+                .query(query)
+                .perform(&self.tonk.operator)
+                .await
+                .map_err(|error| tonk_render::RenderError::Query(error.to_string()))
+        }
+    }
+
+    /// An outline as lines, without the concept entities, which the two
+    /// spaces derive differently.
+    fn summarize(outline: &tonk_render::Outline, depth: usize, lines: &mut Vec<String>) {
+        lines.push(format!(
+            "{}{} entity={:?} name={:?} view={:?} resolved={} records={} items={} error={:?}",
+            "  ".repeat(depth),
+            outline.model,
+            outline.entity,
+            outline.name,
+            outline.view,
+            outline.concept.is_some(),
+            outline.records,
+            outline.items.len(),
+            outline.error,
+        ));
+        for child in &outline.children {
+            summarize(child, depth + 1, lines);
+        }
+    }
+
     /// An attribute two libraries can each declare, word for word, under
     /// names of their own (one document names a thing once).
     fn shared_attribute(name: &str) -> String {
