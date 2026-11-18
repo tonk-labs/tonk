@@ -36,6 +36,12 @@ runs assertions and commands with their normal effects, once. If a write's
 response is lost, query before trying again; never replay it blindly. A
 successful write answers after it has been saved to the space.
 
+With `confirm: true`, `tonk_evaluate` writes nothing: the person sees what the
+change would do in a card and applies or declines it there, and the card tells
+you which. Use it for many changes at once, for changes others will see that
+are hard to undo, or when the person asked to confirm first. Wait for their
+answer; do not write the same change again meanwhile.
+
 Read only what the task needs. Discover a space's schema by querying
 `concept:`; inspect a concept's `source` descriptors for exact attribute
 domains, field types and commands. Schema presence does not prove records

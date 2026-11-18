@@ -8,6 +8,7 @@
   },
   "scripts": {
     "test": "node --test --test-timeout=600000 agent.test.mjs",
+    "test:card": "node --test --test-timeout=60000 card.test.mjs",
     "test:relay": "node --test --test-timeout=60000 relay.test.mjs"
   },
   "devDependencies": {
