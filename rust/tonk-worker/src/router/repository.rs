@@ -5748,6 +5748,12 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
+        "/library/notebook.clj" => {
+            Ok(include_str!("../../../tonk-core/assets/library/notebook.clj").to_owned())
+        }
+        "/library/core.clj" => {
+            Ok(include_str!("../../../tonk-core/assets/library/core.clj").to_owned())
+        }
         other => embedded_language(other)
             .ok_or_else(|| TonkWorkerError::Internal(format!("no embedded library for '{other}'"))),
     }
