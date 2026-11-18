@@ -1265,10 +1265,10 @@ concept!: &mcp-note
         assert_eq!(ask["changes"][0]["mark"], "+", "{ask}");
         assert_eq!(ask["changes"][0]["name"], "note asked");
         let answers = ask["answers"].as_array().unwrap();
-        assert_eq!(answers[0]["tool"], "tonk_proposal_apply");
-        assert_eq!(answers[0]["kind"], "main");
-        assert_eq!(answers[1]["tool"], "tonk_proposal_dismiss");
-        let arguments = answers[0]["arguments"].clone();
+        assert_eq!(answers[0]["tool"], "tonk_proposal_dismiss");
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply");
+        assert_eq!(answers[1]["kind"], "main");
+        let arguments = answers[1]["arguments"].clone();
         assert!(
             proposed["content"][0]["text"]
                 .as_str()
@@ -1380,10 +1380,10 @@ concept!: &mcp-note
         assert!(!holds("stale").await, "a stale proposal wrote");
         // The same change, held again at the new head: use mine writes it.
         let answers = tell["answers"].as_array().unwrap();
-        assert_eq!(answers[0]["label"], "keep theirs");
-        assert_eq!(answers[1]["label"], "use mine");
+        assert_eq!(answers[0]["label"], "use mine");
+        assert_eq!(answers[1]["label"], "keep theirs");
         let mine = client
-            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .result("tonk_proposal_apply", answers[0]["arguments"].clone())
             .await;
         assert_eq!(mine["isError"], false, "{mine}");
         assert!(holds("stale").await, "use mine wrote nothing");

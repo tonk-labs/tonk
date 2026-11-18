@@ -108,11 +108,15 @@
             const list = el('ul', 'tonk-changes');
             for (const change of card.changes) {
               const item = el('li');
+              // The mark says what it means to a screen reader: adds,
+              // changes or removes.
               const mark = el('span', 'tonk-mark', change.mark);
-              mark.setAttribute('aria-hidden', 'true');
               const words = { '+': 'adds', '−': 'removes', '-': 'removes', '~': 'changes' };
+              if (words[change.mark]) {
+                mark.setAttribute('role', 'img');
+                mark.setAttribute('aria-label', words[change.mark]);
+              } else mark.setAttribute('aria-hidden', 'true');
               const name = el('span', null, change.name);
-              name.setAttribute('aria-label', (words[change.mark] || '') + ' ' + change.name);
               item.append(mark, name);
               if (change.kind) item.append(el('span', 'tonk-kind', change.kind));
               list.append(item);
@@ -132,7 +136,7 @@
           if (card.fine) section.append(el('p', 'tonk-fine', card.fine));
           if (card.answers?.length) {
             const acts = el('div', 'tonk-acts');
-            // In the order the server gives them: the main answer first.
+            // In the order the server gives them: the main answer last.
             const LOOK = { main: 'tonk-btn', ring: 'tonk-btn tonk-btn--ring', link: 'tonk-link' };
             for (const answer of card.answers) {
               const button = el('button', LOOK[answer.kind] || LOOK.ring, answer.label);

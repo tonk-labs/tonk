@@ -100,7 +100,7 @@ fn a_tell_where_the_person_is_not_in_the_space_has_no_role() {
 }
 
 #[dialog_common::test]
-fn an_ask_lists_its_answers_main_first() {
+fn an_ask_lists_its_answers_main_last() {
     let card = Card::ask(
         launch(),
         Some(Role::Write),
@@ -111,18 +111,18 @@ fn an_ask_lists_its_answers_main_first() {
     .entry("in", "Launch")
     .entry_bot("changed by", "you")
     .answer(
-        "install",
-        Look::Main,
-        "tonk_proposal_apply",
-        json!({ "id": "a" }),
-    )
-    .answer(
         "not now",
         Look::Ring,
         "tonk_proposal_dismiss",
         json!({ "id": "a" }),
     )
     .answer_saying("drop it", Look::Link, "dropped", "The person dropped it.")
+    .answer(
+        "install",
+        Look::Main,
+        "tonk_proposal_apply",
+        json!({ "id": "a" }),
+    )
     .to_value();
     assert_eq!(card["role"], "write");
     assert_eq!(card["disc"], "filled");
@@ -138,9 +138,9 @@ fn an_ask_lists_its_answers_main_first() {
     assert_eq!(
         card["answers"],
         json!([
-            { "label": "install", "kind": "main", "tool": "tonk_proposal_apply", "arguments": { "id": "a" } },
             { "label": "not now", "kind": "ring", "tool": "tonk_proposal_dismiss", "arguments": { "id": "a" } },
             { "label": "drop it", "kind": "link", "receipt": "dropped", "context": "The person dropped it." },
+            { "label": "install", "kind": "main", "tool": "tonk_proposal_apply", "arguments": { "id": "a" } },
         ])
     );
 }

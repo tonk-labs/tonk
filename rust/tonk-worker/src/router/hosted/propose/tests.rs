@@ -175,7 +175,7 @@ fn the_ask_says_what_it_does_and_leads_with_the_main_answer() {
         [
             ("in", "Launch"),
             ("who sees it", "everyone in Launch"),
-            ("undo", "from the receipt, or from Activity in Tonk")
+            ("undo", "from the receipt")
         ]
     );
     assert!(card.fine.is_none());
@@ -186,20 +186,20 @@ fn the_ask_says_what_it_does_and_leads_with_the_main_answer() {
         .collect();
     assert_eq!(
         answers,
-        [("add 2 items", Look::Main), ("not now", Look::Ring)]
+        [("not now", Look::Ring), ("add 2 items", Look::Main)]
     );
     let arguments = json!({ "space": "did:key:zLaunch", "id": "id-1" });
     assert_eq!(
         card.answers[0].does,
         Does::Call {
-            tool: APPLY.into(),
+            tool: DISMISS.into(),
             arguments: arguments.clone()
         }
     );
     assert_eq!(
         card.answers[1].does,
         Does::Call {
-            tool: DISMISS.into(),
+            tool: APPLY.into(),
             arguments
         }
     );
@@ -209,7 +209,7 @@ fn the_ask_says_what_it_does_and_leads_with_the_main_answer() {
     assert_eq!(one.ledger[1].value, "you and this agent");
     let changing = ask(&context(false), "id", &evaluation());
     assert_eq!(changing.say, "change 2 items in Launch");
-    assert_eq!(changing.answers[1].label, "keep as is");
+    assert_eq!(changing.answers[0].label, "keep as is");
 }
 
 #[dialog_common::test]
@@ -252,7 +252,7 @@ fn a_refused_write_is_not_the_same_as_one_not_saved() {
         .collect();
     assert_eq!(
         answers,
-        [("try again", Look::Main), ("drop it", Look::Link)]
+        [("drop it", Look::Link), ("try again", Look::Main)]
     );
     let refused = rejected(&context(false), false);
     assert_eq!(refused.disc, Disc::Filled);
@@ -285,9 +285,9 @@ fn a_space_that_moved_shows_theirs_and_yours_then_offers_theirs_first() {
         .map(|entry| (entry.term.as_str(), entry.value.as_str()))
         .collect();
     assert_eq!(ledger, [("theirs", "4"), ("yours", "3")]);
-    assert_eq!(card.answers[0].label, "keep theirs");
-    assert_eq!(card.answers[0].kind, Look::Main);
-    assert_eq!(card.answers[1].label, "use mine");
+    assert_eq!(card.answers[0].label, "use mine");
+    assert_eq!(card.answers[1].label, "keep theirs");
+    assert_eq!(card.answers[1].kind, Look::Main);
     let stale = moved(&context(false), None);
     assert!(stale.answers.is_empty());
 }
@@ -311,10 +311,10 @@ fn a_space_out_of_reach_offers_to_grant_it_in_tonk() {
     assert_eq!(read.role, Some(Role::Read));
     assert_eq!(read.label.as_deref(), Some("read only in Launch"));
     assert_eq!(
-        read.answers[0].does,
+        read.answers[1].does,
         Does::Open {
             url: "https://tonk.example/space/did:key:zLaunch".into()
         }
     );
-    assert_eq!(read.answers[1].label, "skip");
+    assert_eq!(read.answers[0].label, "skip");
 }

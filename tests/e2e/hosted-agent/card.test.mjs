@@ -38,8 +38,8 @@ const ask = {
       ],
       fine: 'From the Tonk library.',
       answers: [
-        { label: 'change 2 items', kind: 'main', tool: 'tonk_proposal_apply', arguments: HELD },
         { label: 'keep as is', kind: 'ring', tool: 'tonk_proposal_dismiss', arguments: HELD },
+        { label: 'change 2 items', kind: 'main', tool: 'tonk_proposal_apply', arguments: HELD },
       ],
       agent: AGENT,
       person: PERSON,
@@ -97,6 +97,7 @@ async function drawn(frame) {
       where: head?.querySelector('.tonk-where')?.textContent ?? null,
       say: card.querySelector('.tonk-say')?.textContent ?? null,
       changes: [...card.querySelectorAll('.tonk-changes li')].map((li) => li.textContent),
+      marks: [...card.querySelectorAll('.tonk-mark')].map((mark) => [mark.getAttribute('role'), mark.getAttribute('aria-label')]),
       lines: card.querySelector('.tonk-lines')?.textContent ?? null,
       ledger: [...card.querySelectorAll('.tonk-ledger dd')].map((dd) => dd.textContent),
       fine: card.querySelector('.tonk-fine')?.textContent ?? null,
@@ -136,7 +137,7 @@ async function receipt(frame, past = 'saving') {
   throw new Error('no strip');
 }
 
-test('an ask draws its request, what changes and its answers, main first', async () => {
+test('an ask draws its request, what changes and its answers, main last', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS });
   try {
     const card = await drawn(shown.card());
@@ -148,17 +149,18 @@ test('an ask draws its request, what changes and its answers, main first', async
     assert.equal(card.where, '› Packing list');
     assert.equal(card.say, 'change 2 items in Family trip');
     assert.deepEqual(card.changes, ['+Towelsview', '~Sunscreen']);
+    assert.deepEqual(card.marks, [['img', 'adds'], ['img', 'changes']], 'each mark says what it means');
     assert.equal(card.lines, '+ Pack towels.');
     assert.deepEqual(card.ledger, ['Family trip', 'youbot']);
     assert.equal(card.fine, 'From the Tonk library.');
     assert.deepEqual(
       card.buttons.map(({ text, look }) => ({ text, look })),
       [
-        { text: 'change 2 items', look: 'tonk-btn' },
         { text: 'keep as is', look: 'tonk-btn tonk-btn--ring' },
+        { text: 'change 2 items', look: 'tonk-btn' },
       ],
     );
-    assert.ok(card.buttons[0].x < card.buttons[1].x, 'the main answer is not on the left');
+    assert.ok(card.buttons[0].x < card.buttons[1].x, 'the safe answer is on the left, the main one on the right');
     assert.equal(card.receiptInHead, false, 'an empty receipt in the head');
     assert.equal(card.background, 'rgb(56, 24, 42)');
     assert.deepEqual(shown.violations, []);

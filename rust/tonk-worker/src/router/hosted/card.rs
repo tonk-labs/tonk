@@ -106,8 +106,9 @@ pub struct Card {
     /// The fine print.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fine: Option<String>,
-    /// A button for each answer, the main one first: the card draws them
-    /// left to right, as the in-agent mocks do.
+    /// A button for each answer, the safe one first and the main one last:
+    /// the card draws them left to right at its right edge, as the in-agent
+    /// mocks do.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<Answer>,
     /// The agent: its account's name, shown with the bot tag.
@@ -207,8 +208,8 @@ pub struct Answer {
     pub does: Does,
 }
 
-/// How an answer is drawn: the main one solid and first, the others a
-/// ring or a link after it, as the in-agent asks and tells draw them.
+/// How an answer is drawn: the main one solid and last, the others a
+/// ring or a link before it, as the in-agent asks and tells draw them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Look {
@@ -361,7 +362,7 @@ impl Card {
         self
     }
 
-    /// An answer that calls `tool`, in order: the main one first.
+    /// An answer that calls `tool`, in order: the main one last.
     pub fn answer(
         mut self,
         label: impl Into<String>,

@@ -434,9 +434,9 @@ pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     } else {
         card.entry("who sees it", format!("everyone in {space}"))
     };
-    card.entry("undo", "from the receipt, or from Activity in Tonk")
-        .answer(act, Look::Main, APPLY, arguments.clone())
-        .answer(decline, Look::Ring, DISMISS, arguments)
+    card.entry("undo", "from the receipt")
+        .answer(decline, Look::Ring, DISMISS, arguments.clone())
+        .answer(act, Look::Main, APPLY, arguments)
 }
 
 /// The receipt for a write whose answer is `evaluation`; `moved` says
@@ -492,17 +492,17 @@ pub fn not_saved(context: &Context) -> Card {
     )
     .disc(Disc::Hollow)
     .answer_saying(
+        "drop it",
+        Look::Link,
+        format!("dropped · nothing changed in {space}"),
+        "The person dropped the change that was not saved. Do not try it again unless they ask.",
+    )
+    .answer_saying(
         "try again",
         Look::Main,
         "asked to try again",
         "The person asked you to try the same change again. It was not saved: query the space \
          first, then write it once.",
-    )
-    .answer_saying(
-        "drop it",
-        Look::Link,
-        format!("dropped · nothing changed in {space}"),
-        "The person dropped the change that was not saved. Do not try it again unless they ask.",
     )
 }
 
@@ -577,8 +577,8 @@ pub fn moved(context: &Context, again: Option<(&str, &Value)>) -> Card {
             }
         }
     }
-    card.answer("keep theirs", Look::Main, DISMISS, arguments.clone())
-        .answer("use mine", Look::Ring, APPLY, arguments)
+    card.answer("use mine", Look::Ring, APPLY, arguments.clone())
+        .answer("keep theirs", Look::Main, DISMISS, arguments)
 }
 
 /// The fields `evaluation`'s `key` matches hold for the entity `this`.
@@ -677,7 +677,6 @@ pub fn read_only(context: &Context) -> Card {
     )
     .entry("this agent", "read · sees and searches only")
     .entry("to let it write", "your agents in Tonk")
-    .answer_opening("open in tonk ↗", Look::Main, context.in_tonk())
     .answer_saying(
         "skip",
         Look::Ring,
@@ -685,6 +684,7 @@ pub fn read_only(context: &Context) -> Card {
         "The person skipped the change: this connection may only read the space. Do not try \
          to write it again unless they grant write access.",
     )
+    .answer_opening("open in tonk ↗", Look::Main, context.in_tonk())
 }
 
 #[cfg(test)]
