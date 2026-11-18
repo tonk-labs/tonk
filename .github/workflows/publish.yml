@@ -18,8 +18,9 @@ on:
         type: boolean
         default: true
   # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
-  # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
-  # deploys production. `release.yml` explains how to cut one.
+  # prerelease tag (`v0.7.0-rc.1`) deploys staging, then moves the `staging`
+  # branch to it, and a final tag (`v0.7.0`) deploys production. `release.yml`
+  # explains how to cut one.
   push:
     branches: [main]
     tags: ['v*']
@@ -708,6 +709,39 @@ jobs:
             **MCP preview** · [run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
             ${{ steps.config.outputs.connection_settings }}
+
+  # A staging release moves the `staging` branch to the commit it deployed,
+  # so the branch names what staging serves. It moves only once both the app
+  # and the MCP worker landed, and it is forced: staging follows the latest
+  # deployed prerelease, so deploying an older rc moves the branch back.
+  advance-staging:
+    name: Advance the staging branch
+    needs: [deploy, mcp]
+    if: github.event_name == 'push' && github.ref_type == 'tag' && needs.deploy.outputs.channel == 'staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: advance-staging
+      cancel-in-progress: false
+    steps:
+      - name: Point staging at the deployed commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The tag may be annotated; resolve it to the commit it names.
+          commit="$(gh api "repos/$REPO/commits/$TAG" --jq .sha)"
+          if gh api "repos/$REPO/git/ref/heads/staging" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$REPO/git/refs/heads/staging" \
+              -f sha="$commit" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$REPO/git/refs" \
+              -f ref=refs/heads/staging -f sha="$commit" > /dev/null
+          fi
+          echo "staging -> $commit ($TAG)" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The hosted agent end to end against this pull request's preview: an MCP
   # SDK client does OAuth, and Playwright with a virtual passkey signs up and

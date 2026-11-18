@@ -19,7 +19,8 @@ name: 'Release'
 # here builds the tonk.network variant. A stable release becomes GitHub's `latest`, which is what
 # `install.sh` and `tonk update` resolve for the stable channel. A staging
 # release also replaces the rolling `tonk-staging` release, which the
-# staging channel resolves.
+# staging channel resolves, and once `publish.yml` has deployed it, the
+# `staging` branch points at its commit.
 on:
   push:
     tags:
