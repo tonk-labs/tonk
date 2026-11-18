@@ -31,6 +31,7 @@ use dialog_query::formula::cell::Cells;
 use dialog_query::formula::conversions::{
     ParseFloat, ParseSignedInteger, ParseUnsignedInteger, ToString as ToStringFormula,
 };
+use dialog_query::formula::entity::Derive as DeriveEntity;
 use dialog_query::formula::key::{KeyPart, SeparatorPart};
 use dialog_query::formula::logic::{And, Not, Or};
 use dialog_query::formula::math::{Difference, Modulo, Product, Quotient, Sum};
@@ -130,6 +131,7 @@ fn build_registry() -> Vec<FormulaInfo> {
         info::<ParseUnsignedInteger>("unsigned-integer/parse"),
         info::<ParseSignedInteger>("signed-integer/parse"),
         info::<ParseFloat>("float/parse"),
+        info::<DeriveEntity>("entity/derive"),
         info::<Revision>("dialog/revision"),
         info::<RevisionParent>("dialog/revision-parent"),
         info::<KeyPart>("dialog/key-part"),
@@ -166,6 +168,7 @@ mod tests {
             "dialog/revision",
             "dialog/revision-parent",
             "dialog/separator-part",
+            "entity/derive",
             "float/parse",
             "math/difference",
             "math/modulo",
