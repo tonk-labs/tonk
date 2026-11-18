@@ -167,12 +167,12 @@ test('an ask draws its request, what changes and its answers, main first', async
   }
 });
 
-test('applying swaps the ask for a receipt by you and the bot, and tells the model', async () => {
+test('applying swaps the ask for a receipt that starts with you and the bot, and tells the model', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS });
   try {
     await shown.card().click('button:text-is("change 2 items")');
     const shownReceipt = await receipt(shown.card());
-    assert.equal(shownReceipt.text, 'changed 2 items in Family trip · by youbot');
+    assert.equal(shownReceipt.text, 'youbot changed 2 items in Family trip');
     assert.equal(shownReceipt.status, 'status');
     assert.equal(shownReceipt.bot, true);
     assert.equal(shownReceipt.focused, true, 'focus did not move to the receipt');
@@ -280,7 +280,7 @@ test('an answer shows a saving strip until the space answers', async () => {
       'the ask stays while saving',
     );
     await shown.card().waitForFunction(() =>
-      document.querySelector('.tonk-strip .tonk-receipt')?.textContent.startsWith('changed'),
+      document.querySelector('.tonk-strip .tonk-receipt')?.textContent.startsWith('youbot changed'),
     );
   } finally {
     await shown.close();

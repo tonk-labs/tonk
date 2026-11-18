@@ -90,8 +90,8 @@ pub struct Card {
     /// What a tell is about, for its label ("Tonk: not saved").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// That the agent made the change a strip receipts, which it ends
-    /// with: "by you" and the bot tag.
+    /// That the agent made the change a strip receipts, which it starts
+    /// with: "you" and the bot tag.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub by_agent: bool,
     /// What an ask will change, one line each.

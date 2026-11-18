@@ -1,4 +1,8 @@
-Copyright 2019 IBM Corp. All rights reserved. IBMPlexSans-Italic[wdth,wght].ttf: Copyright 2019 IBM Corp. All rights reserved.
+IBM Plex, as the font files in this folder state it:
+
+ibm-plex-sans-latin-400-normal.woff2 (IBM Plex Sans): Copyright 2019 IBM Corp. All rights reserved.
+ibm-plex-sans-condensed-latin-400-normal.woff2, -500-normal.woff2, -600-normal.woff2 (IBM Plex Sans Condensed): Copyright 2019 IBM Corp. All rights reserved.
+ibm-plex-mono-latin-400-normal.woff2 (IBM Plex Mono): Copyright 2017 IBM Corp. All rights reserved.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
