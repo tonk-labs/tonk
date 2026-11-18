@@ -245,7 +245,6 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       for (const space of [spaces.writable, spaces.readable]) {
         await call(client, 'tonk_query', { space, document: 'concept:\n' });
       }
-      assert.match(readRefusal.text, /revoked|no access/i);
       const refused = await client.callTool({
         name: 'tonk_evaluate',
         arguments: { space: spaces.readable, document: NOTE },
@@ -372,6 +371,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const readRefusal = await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
         since: Date.now(), budget: REVOKE_BUDGET,
       });
+      assert.match(readRefusal.text, /revoked|no access/i);
       const refused = await client.callTool({
         name: 'tonk_evaluate', arguments: { space: subject, document: note('revoked agent') },
       });
