@@ -245,6 +245,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       for (const space of [spaces.writable, spaces.readable]) {
         await call(client, 'tonk_query', { space, document: 'concept:\n' });
       }
+      assert.match(readRefusal.text, /revoked|no access/i);
       const refused = await client.callTool({
         name: 'tonk_evaluate',
         arguments: { space: spaces.readable, document: NOTE },
@@ -368,23 +369,32 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       assert.equal(listed.find((space) => space.subject === subject)?.access, 'write');
       await call(client, 'tonk_evaluate', { space: subject, document: NOTE });
       await revoke(person.page, { agent, space: subject });
-      await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
+      const readRefusal = await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
         since: Date.now(), budget: REVOKE_BUDGET,
       });
       const refused = await client.callTool({
         name: 'tonk_evaluate', arguments: { space: subject, document: note('revoked agent') },
       });
       assert.equal(refused.isError, true, 'agent write succeeded after revocation');
+      assert.match(JSON.stringify(refused.content), /revoked|no access/i);
       const labels = await person.page.evaluate(async ([space, document, query]) => {
         const branch = `/api/repository/${encodeURIComponent(space)}/branch/main`;
-        const pull = await fetch(branch + '/sync/pull', { method: 'POST' });
-        if (!pull.ok) throw new Error(await pull.text());
+        const sync = async (operation) => {
+          for (let attempt = 1; ; attempt++) {
+            const response = await fetch(branch + '/sync/' + operation, { method: 'POST' });
+            if (response.ok) return;
+            const { error } = await response.json();
+            if (response.status !== 503 || error?.code !== 'SYNC_UNAVAILABLE' || attempt >= 3)
+              throw new Error(`owner ${operation} returned ${response.status}: ${JSON.stringify(error)}`);
+            await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+          }
+        };
+        await sync('pull');
         const write = await fetch(branch + '/evaluate?transact=true', {
           method: 'POST', headers: { 'content-type': 'application/yaml' }, body: document,
         });
         if (!write.ok) throw new Error(await write.text());
-        const push = await fetch(branch + '/sync/push', { method: 'POST' });
-        if (!push.ok) throw new Error(await push.text());
+        await sync('push');
         const read = await fetch(branch + '/evaluate?transact=false', {
           method: 'POST', headers: { 'content-type': 'application/yaml' }, body: query,
         });
