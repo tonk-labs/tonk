@@ -321,7 +321,6 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
     throw error;
   }
   console.log(`${agent}: spaces offered ${(Date.now() - shown) / 1000}s after continue`);
-  await root.getByRole('checkbox', { name: /create spaces/i }).check();
   await snap(page, `approval ${agent}`);
   // A browser that just signed in keeps pushing its own profile and account
   // state for a while; let that finish so the budget measures approving

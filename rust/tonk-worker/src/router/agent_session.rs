@@ -69,8 +69,6 @@ pub struct AgentSessionRequest {
     /// The spaces the agent may reach, by routing key.
     #[serde(default)]
     spaces: Vec<AgentSpaceChoice>,
-    #[serde(default)]
-    create_spaces: bool,
     /// The pending OAuth authorization this answers.
     request: String,
 }
@@ -358,7 +356,6 @@ pub async fn create(
         name: request.name.trim().to_owned(),
         agent: request.agent,
         provider: provider.map(str::to_owned),
-        create_spaces: request.create_spaces,
         spaces: request.spaces,
     };
     pending()
@@ -593,9 +590,8 @@ async fn authorize_inner(
         js_sys::Date::now() - started
     );
 
-    // Data access remains in the agent space. The optional provisioning
-    // permission belongs to this connection and only authorizes creation.
-    let permissions = if authorization.create_spaces {
+    // Each connection can request a new space for approval in chat.
+    let permissions = {
         let tonk = state.read().await;
         let provider = super::account_state::account_remote(&tonk)
             .await
@@ -607,8 +603,6 @@ async fn authorize_inner(
                 .await
                 .map_err(|error| error.to_string())?,
         ]
-    } else {
-        Vec::new()
     };
     let issued = tonk_identity::agent::issue_agent_session_with_grants(
         Signer::from(agent),

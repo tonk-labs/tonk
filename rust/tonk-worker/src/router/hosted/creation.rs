@@ -71,7 +71,7 @@ pub(super) async fn call<W: Writers>(
     let Some(permission) = verified.token().grants().iter().find(|grant| {
         grant.ability() == "/provider/create-space" && grant.audience() == verified.agent()
     }) else {
-        return error("Reconnect this agent in Tonk and enable permission to create spaces.");
+        return error("Reconnect this agent in Tonk to request a new space.");
     };
     let body = if tool == CREATE {
         let Some(name) = args["name"].as_str() else {
