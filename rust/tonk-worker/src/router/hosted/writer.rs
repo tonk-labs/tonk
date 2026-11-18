@@ -826,7 +826,7 @@ impl SpaceWriter {
         if self.space != self.agent {
             return Err("Only the agent's own space joins spaces.".into());
         }
-        let offer = super::join::read_link(&request.link).await?;
+        let offer = super::join::read_link(&request.link, request.origin.as_deref()).await?;
         let granted = match request.access.as_deref() {
             None => None,
             Some(access) => {
