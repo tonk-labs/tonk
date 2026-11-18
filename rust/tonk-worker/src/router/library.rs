@@ -166,11 +166,15 @@ fn is_component(name: &str) -> bool {
         })
 }
 
-/// Whether `source` is a component's library file (`/library/<name>.yaml`).
+/// Whether `source` is a component's library file (`/library/<name>.yaml`,
+/// or `/library/<name>.clj` for one written in the dialog notation).
 pub(super) fn is_component_url(source: &str) -> bool {
     source
         .strip_prefix("/library/")
-        .and_then(|file| file.strip_suffix(".yaml"))
+        .and_then(|file| {
+            file.strip_suffix(".yaml")
+                .or_else(|| file.strip_suffix(".clj"))
+        })
         .is_some_and(is_component)
 }
 
@@ -229,6 +233,8 @@ mod tests {
             Some("/library/code-editor.yaml")
         );
         assert!(is_component_url("/library/language/common-lisp.yaml"));
+        assert!(is_component_url("/library/notebook.clj"));
+        assert!(!is_component_url("/library/core.clj"));
         for name in [
             "language/",
             "language/../core",

@@ -24,6 +24,7 @@ dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
+dialog-notation = { workspace = true }
 dialog-repository = { workspace = true }
 lsp-types = { workspace = true }
 parking_lot = { workspace = true }
@@ -33,6 +34,7 @@ thiserror = { workspace = true }
 tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-render = { workspace = true }
 tonk-template = { workspace = true }
 
 [dev-dependencies]
