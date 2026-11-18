@@ -115,6 +115,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": ACCESS,
+            "title": "Give a Tonk view access",
             "description": "Delegate one space to a shown view's own key. Called by the view.",
             "inputSchema": {
                 "type": "object",
@@ -128,6 +129,13 @@ pub fn tools() -> Vec<Value> {
                 },
                 "required": ["space", "audience"],
                 "additionalProperties": false,
+            },
+            // It issues a delegation, so it is not a read, but it only adds
+            // a short-lived grant and removes nothing.
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": false,
+                "openWorldHint": false,
             },
             "_meta": { "ui": { "visibility": ["app"] } },
         }),
