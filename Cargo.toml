@@ -224,6 +224,7 @@ dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0
 dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
 dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
 dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
+dialog-notation = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.5.0-rc.6", version = "0.5.0-rc.6" }
 
 # Proof of concept: build against the local notation stack of dialog-db.
 [patch."https://github.com/dialog-db/dialog-db.git"]
@@ -246,6 +247,7 @@ dialog-storage = { path = "/home/claude/notation/rust/dialog-storage" }
 dialog-ucan = { path = "/home/claude/notation/rust/dialog-ucan" }
 dialog-ucan-core = { path = "/home/claude/notation/rust/dialog-ucan-core" }
 dialog-varsig = { path = "/home/claude/notation/rust/dialog-varsig" }
+dialog-notation = { path = "/home/claude/notation/rust/dialog-notation" }
 
 [profile.dev]
 opt-level = 1

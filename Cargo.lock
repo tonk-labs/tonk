@@ -1217,6 +1217,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-notation"
+version = "0.5.0-rc.6"
+dependencies = [
+ "base58",
+ "dialog-corpus",
+ "dialog-query",
+ "merkle-reference",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dialog-number"
 version = "0.5.0-rc.6"
 dependencies = [
@@ -5039,6 +5051,7 @@ dependencies = [
  "dialog-common",
  "dialog-corpus",
  "dialog-effects",
+ "dialog-notation",
  "dialog-peer",
  "dialog-query",
  "dialog-repository",
