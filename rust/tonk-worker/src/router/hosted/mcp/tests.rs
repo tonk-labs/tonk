@@ -1547,7 +1547,8 @@ concept!: &mcp-note
             &agent,
             &remote,
             &shelf,
-            &["get", "put"],
+            // Read only: leaving needs no write access to the space left.
+            &["get"],
             Some("Shelf"),
             None,
             FOREIGN,

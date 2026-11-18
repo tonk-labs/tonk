@@ -1231,7 +1231,20 @@ impl SpaceWriter {
         if dropped == 0 {
             return Err("this agent holds no access to that space".into());
         }
-        self.push(&peer).await.map_err(String::from)?;
+        // A leave whose push failed must not take effect later: unless it
+        // landed, discard it by reopening, as a failed write does.
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(dropped);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error.into());
+        }
         Ok(dropped)
     }
 

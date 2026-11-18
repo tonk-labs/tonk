@@ -747,7 +747,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
         confirm: bool,
         call: &mut Call,
     ) -> Value {
-        let reached = match self.reach(verified, bearer, session, space, call).await {
+        let reached = match self
+            .reach(verified, bearer, session, space, true, call)
+            .await
+        {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
@@ -892,7 +895,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 true,
             );
         }
-        let reached = match self.reach(verified, bearer, session, &space, call).await {
+        let reached = match self
+            .reach(verified, bearer, session, &space, false, call)
+            .await
+        {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
@@ -953,7 +959,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let Some(id) = arguments["id"].as_str().filter(|id| !id.is_empty()) else {
             return tool_result(json!("Name the proposal."), true);
         };
-        let reached = match self.reach(verified, bearer, session, &space, call).await {
+        let reached = match self
+            .reach(verified, bearer, session, &space, true, call)
+            .await
+        {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
@@ -965,7 +974,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 let Ok(target) = target.parse::<Did>() else {
                     return tool_result(json!("Name the space being left."), true);
                 };
-                match self.reach(verified, bearer, session, &target, call).await {
+                match self
+                    .reach(verified, bearer, session, &target, false, call)
+                    .await
+                {
                     Ok(target) => Some(target.context),
                     Err(refused) => return refused,
                 }
@@ -1106,6 +1118,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
         bearer: &str,
         session: &str,
         space: &Did,
+        write: bool,
         call: &mut Call,
     ) -> Result<Reached, Value> {
         let access = match self.access(verified, bearer, session, call).await {
@@ -1149,7 +1162,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 context,
             });
         }
-        if let Some((kind, refusal)) = refusal(held, space, true) {
+        if let Some((kind, refusal)) = refusal(held, space, write) {
             call.end(Outcome::Refused, kind);
             // The model reads the refusal; the card says it for the person.
             let card = match held {
