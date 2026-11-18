@@ -73,14 +73,17 @@
 .elbow.last::before { bottom: 50%; }
 .elbow::after { left: 50%; right: -4px; top: 50%; border-top: 1px solid; }
 
-/* A node's dot: filled once it is read, hollow until then. A spinning arc
-   takes its place while it is read. */
+/* A node's dot: filled when this replica holds the node, hollow when it
+   does not, dotted until dialog has said. A spinning arc takes its place
+   while it is read. */
 .dot {
   position: relative; z-index: 1; flex: none;
   width: 8px; height: 8px; border-radius: 50%;
   border: 1.5px solid var(--loud); background: transparent;
 }
 .dot.read { background: var(--loud); }
+.dot.remote { background: transparent; }
+.dot.unknown { border-style: dotted; opacity: 0.6; }
 .dot.leaf { width: 5px; height: 5px; border-width: 1px; background: var(--loud); }
 .dot.loading { border-color: transparent; }
 .dot.loading::after {

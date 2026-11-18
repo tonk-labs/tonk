@@ -1842,6 +1842,39 @@ async fn it_keeps_a_tree_exploration_in_the_session() {
         "the open root, and no other node: {nodes:?}"
     );
     assert_eq!(nodes[0]["this"], root);
+    let format = rows(query(
+        json!({ "fanout": { "the": "xyz.tonk.tree-inspector.node/fanout-exponent", "as": "UnsignedInteger", "cardinality": "one" } }),
+        &["fanout"],
+    ))
+    .await;
+    assert!(
+        format
+            .first()
+            .and_then(|row| row["fields"]["fanout"].as_u64())
+            .is_some_and(|n| n > 0),
+        "the node says the format it was written under: {format:?}"
+    );
+
+    // dialog answers the fetch of the root and the probes of its children
+    // after the commit; the answers are kept in the session as `held`.
+    let mut held = Vec::new();
+    for _ in 0..500 {
+        held = rows(query(
+            json!({ "local": { "the": "xyz.tonk.tree-inspector.node/held", "as": "Boolean", "cardinality": "one", "in": "session:" } }),
+            &["local"],
+        ))
+        .await;
+        if held.iter().any(|row| row["this"] == root) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let of_root = held.iter().find(|row| row["this"] == root);
+    assert_eq!(
+        of_root.map(|row| row["fields"]["local"].clone()),
+        Some(json!(true)),
+        "the root was fetched and is held: {held:?}"
+    );
     let kind = nodes[0]["fields"]["kind"]
         .as_str()
         .unwrap_or_default()

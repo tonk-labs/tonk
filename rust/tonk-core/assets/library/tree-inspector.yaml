@@ -36,6 +36,7 @@ element!: &tree-inspector
     concepts: !include/text ./tree-inspector/concepts.js
     watch: !include/text ./tree-inspector/watch.js
     refresh: !include/text ./tree-inspector/refresh.js
+    bytes: !include/text ./tree-inspector/bytes.js
     read: !include/text ./tree-inspector/read.js
     render: !include/text ./tree-inspector/render.js
     overview: !include/text ./tree-inspector/overview.js
@@ -181,6 +182,50 @@ concept!: &tree-inspector/node
       description: Buffered operations riding the node.
       the: xyz.tonk.tree-inspector.node/novelty
       as: natural
+    version:
+      description: "The layout version, which pins how the rest of the node is read."
+      the: xyz.tonk.tree-inspector.node/version
+      as: natural
+    fanout-exponent:
+      description: "How many bits of a key's hash decide a boundary; the expected fanout is 2 to this."
+      the: xyz.tonk.tree-inspector.node/fanout-exponent
+      as: natural
+    max-separator:
+      description: "Keys longer than this never become boundaries."
+      the: xyz.tonk.tree-inspector.node/max-separator
+      as: natural
+    inline-n:
+      description: "Values longer than this spill out of the key."
+      the: xyz.tonk.tree-inspector.node/inline-n
+      as: natural
+    spill-prefix:
+      description: "Leading value bytes a spilled value's key keeps."
+      the: xyz.tonk.tree-inspector.node/spill-prefix
+      as: natural
+    max-segment:
+      description: "The leaf-run weight cap; 0 disables it."
+      the: xyz.tonk.tree-inspector.node/max-segment
+      as: natural
+    frame-ceiling-factor:
+      description: "The hard frame-weight ceiling, as a multiple of `max-segment`."
+      the: xyz.tonk.tree-inspector.node/frame-ceiling-factor
+      as: natural
+    anchor-selector:
+      description: "Which candidate seam a forced cut anchors at."
+      the: xyz.tonk.tree-inspector.node/anchor-selector
+      as: natural
+    entry-overhead:
+      description: "Weight charged per leaf entry beyond its key and value bytes."
+      the: xyz.tonk.tree-inspector.node/entry-overhead
+      as: natural
+    key-overhead:
+      description: "Weight the per-key cut floor charges beyond a key's bytes."
+      the: xyz.tonk.tree-inspector.node/key-overhead
+      as: natural
+    link-overhead:
+      description: "Weight charged per index link beyond its separator and child hash."
+      the: xyz.tonk.tree-inspector.node/link-overhead
+      as: natural
 
 rule!:
   description: An open node is read through `tree/node`.
@@ -189,7 +234,24 @@ rule!:
     - assert: tree-inspector/opened
       where: { this: ?exploration, open: ?this }
     - assert: tree/node
-      where: { of: ?this, kind: ?kind, size: ?size, count: ?count, scale: ?scale, novelty: ?novelty }
+      where:
+        of: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+        version: ?version
+        fanout-exponent: ?fanout-exponent
+        max-separator: ?max-separator
+        inline-n: ?inline-n
+        spill-prefix: ?spill-prefix
+        max-segment: ?max-segment
+        frame-ceiling-factor: ?frame-ceiling-factor
+        anchor-selector: ?anchor-selector
+        entry-overhead: ?entry-overhead
+        key-overhead: ?key-overhead
+        link-overhead: ?link-overhead
 
 concept!: &tree-inspector/span
   description: A span of an open index node, naming a child node.
@@ -302,6 +364,163 @@ rule!:
       where: { of: ?parent, separator: ?bytes }
     - assert: dialog/separator-part
       where: { of: ?bytes, part: ?this, at: ?at, kind: ?kind, text: ?text, bytes: ?component }
+
+# An entry whose value spilled out of its key names the value by its
+# `asset:` entity. Opening that entity in an exploration reads the value,
+# as opening a node reads the node: only when it is asked for.
+concept!: &tree-inspector/spill
+  description: The spilled value of an entry of an open segment.
+  with:
+    value:
+      description: The value, as its `asset:` entity.
+      the: xyz.tonk.tree-inspector.spill/value
+      as: entity
+
+rule!:
+  description: An open segment's entries name their spilled values.
+  assert: tree-inspector/spill
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?segment }
+    - assert: tree/entry
+      where: { of: ?segment, entry: ?this, spill: ?value }
+
+concept!: &tree-inspector/value
+  description: A spilled value opened in an exploration.
+  with:
+    size:
+      description: Its size in bytes.
+      the: xyz.tonk.tree-inspector.value/size
+      as: natural
+    bytes:
+      description: Its bytes.
+      the: xyz.tonk.tree-inspector.value/bytes
+      as: bytes
+
+rule!:
+  description: An open value is read through `tree/value`.
+  assert: tree-inspector/value
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?this }
+    - assert: tree/value
+      where: { of: ?this, size: ?size, bytes: ?bytes }
+
+# ---------------------------------------------------------------------------
+# What this replica holds, asked of dialog by command.
+#
+# Reading a node fetches it, so whether it was held cannot be read from a
+# query. dialog answers two commands instead, written into `control:` on
+# the node's own entity: a probe says whether a node is held without
+# fetching it, a fetch brings it local and says whether that worked. A
+# node opened is fetched; the children an open index names are probed.
+# Each answer is kept in the session as `held`.
+# ---------------------------------------------------------------------------
+
+concept!: &tree-inspector/probe
+  description: dialog's command asking whether a node is held, without fetching it.
+  with:
+    node:
+      description: The node asked about.
+      the: dialog.node.probe/node
+      as: entity
+      in: "control:"
+
+concept!: &tree-inspector/fetch
+  description: dialog's command asking for a node to be brought local.
+  with:
+    node:
+      description: The node to bring local.
+      the: dialog.node.fetch/node
+      as: entity
+      in: "control:"
+
+concept!: &tree-inspector/probed
+  description: dialog's answer to a probe.
+  with:
+    node:
+      description: The node asked about.
+      the: dialog.node.probed/node
+      as: entity
+    local:
+      description: Whether the replica held it.
+      the: dialog.node.probed/local
+      as: boolean
+
+concept!: &tree-inspector/fetched
+  description: dialog's answer to a fetch.
+  with:
+    node:
+      description: The node asked for.
+      the: dialog.node.fetched/node
+      as: entity
+    local:
+      description: Whether the replica holds it, having tried.
+      the: dialog.node.fetched/local
+      as: boolean
+
+concept!: &tree-inspector/held
+  description: Whether this replica holds a node, as dialog last answered.
+  with:
+    local:
+      description: Whether the node is held.
+      the: xyz.tonk.tree-inspector.node/held
+      as: boolean
+      in: "session:"
+
+rule!:
+  description: Exploring a root fetches it.
+  assert!: tree-inspector/fetch
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?this, time: ?time }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Opening a node fetches it.
+  assert!: tree-inspector/fetch
+  when:
+    - assert: tree-inspector/open
+      where: { exploration: ?exploration, node: ?this, time: ?time }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Opening an index node probes each child it names.
+  assert!: tree-inspector/probe
+  when:
+    - assert: tree-inspector/open
+      where: { exploration: ?exploration, node: ?parent, time: ?time }
+    - assert: tree/span
+      where: { of: ?parent, node: ?this }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Exploring a root probes each child it names.
+  assert!: tree-inspector/probe
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?root, time: ?time }
+    - assert: tree/span
+      where: { of: ?root, node: ?this }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: A probe's answer is kept in the session.
+  assert!: tree-inspector/held
+  when:
+    - assert: tree-inspector/probed
+      where: { this: ?command, node: ?this, local: ?local }
+
+rule!:
+  description: A fetch's answer is kept in the session.
+  assert!: tree-inspector/held
+  when:
+    - assert: tree-inspector/fetched
+      where: { this: ?command, node: ?this, local: ?local }
 
 event!: &on/tree-explore
   type: "tree-explore"

@@ -19,6 +19,14 @@
     relay.remove();
     return;
   }
+  const read = event.target.closest?.('[data-value]');
+  if (read) {
+    // A spilled value is opened in the exploration like a node.
+    state.pending.set(read.dataset.value, 'open');
+    self.send('tree-open', { exploration: self.getAttribute('selected') || '', node: read.dataset.value });
+    self.schedule();
+    return;
+  }
   const row = event.target.closest?.('.row');
   if (!row) return;
   if (row.dataset.more) {

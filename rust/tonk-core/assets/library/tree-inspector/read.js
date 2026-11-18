@@ -37,7 +37,25 @@
   const nodes = new Map();
   for (const row of rows.node) {
     const f = fields(row);
-    nodes.set(text(row.this), { kind: text(f.kind), size: number(f.size), count: number(f.count), scale: number(f.scale), novelty: number(f.novelty) });
+    const format = {};
+    for (const name of ['version', 'fanout-exponent', 'max-separator', 'inline-n', 'spill-prefix', 'max-segment', 'frame-ceiling-factor', 'anchor-selector', 'entry-overhead', 'key-overhead', 'link-overhead']) {
+      format[name] = number(f[name]);
+    }
+    nodes.set(text(row.this), { kind: text(f.kind), size: number(f.size), count: number(f.count), scale: number(f.scale), novelty: number(f.novelty), format });
+  }
+
+  // Whether the replica holds a node, as dialog last answered; a node
+  // never asked about is in neither.
+  const held = new Map();
+  for (const row of rows.held) held.set(text(row.this), fields(row).local === true);
+
+  const spills = new Map();
+  for (const row of rows.spill) spills.set(text(row.this), text(fields(row).value));
+
+  const values = new Map();
+  for (const row of rows.value) {
+    const f = fields(row);
+    values.set(text(row.this), { size: number(f.size), bytes: self.bytes(f.bytes) });
   }
 
   const spans = new Map();
@@ -65,5 +83,5 @@
   for (const list of parts.values()) list.sort((a, b) => a.at - b.at);
   const partsOf = (part) => parts.get(part.slice(0, part.lastIndexOf('/'))) ?? null;
 
-  return { branches, explorations, nodes, spans, entries, partsOf };
+  return { branches, explorations, nodes, held, spills, values, spans, entries, partsOf };
 }

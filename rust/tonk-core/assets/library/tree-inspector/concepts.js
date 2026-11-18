@@ -21,6 +21,27 @@
       count: [`${at}.node/count`, 'UnsignedInteger'],
       scale: [`${at}.node/scale`, 'UnsignedInteger'],
       novelty: [`${at}.node/novelty`, 'UnsignedInteger'],
+      'version': [`${at}.node/version`, 'UnsignedInteger'],
+      'fanout-exponent': [`${at}.node/fanout-exponent`, 'UnsignedInteger'],
+      'max-separator': [`${at}.node/max-separator`, 'UnsignedInteger'],
+      'inline-n': [`${at}.node/inline-n`, 'UnsignedInteger'],
+      'spill-prefix': [`${at}.node/spill-prefix`, 'UnsignedInteger'],
+      'max-segment': [`${at}.node/max-segment`, 'UnsignedInteger'],
+      'frame-ceiling-factor': [`${at}.node/frame-ceiling-factor`, 'UnsignedInteger'],
+      'anchor-selector': [`${at}.node/anchor-selector`, 'UnsignedInteger'],
+      'entry-overhead': [`${at}.node/entry-overhead`, 'UnsignedInteger'],
+      'key-overhead': [`${at}.node/key-overhead`, 'UnsignedInteger'],
+      'link-overhead': [`${at}.node/link-overhead`, 'UnsignedInteger'],
+    },
+    held: {
+      local: [`${at}.node/held`, 'Boolean', session],
+    },
+    spill: {
+      value: [`${at}.spill/value`, 'Entity'],
+    },
+    value: {
+      size: [`${at}.value/size`, 'UnsignedInteger'],
+      bytes: [`${at}.value/bytes`, 'Bytes'],
     },
     span: {
       parent: [`${at}.span/parent`, 'Entity'],

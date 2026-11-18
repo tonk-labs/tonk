@@ -126,7 +126,11 @@
     if (waiting === 'close' && !isOpen) state.pending.delete(node);
     const item = row(node, guides, last, isOpen);
     item.dataset.node = node;
-    const dot = element('span', `dot${info ? ' read' : ''}${loading ? ' loading' : ''}`);
+    // Filled when the replica holds the node, hollow when it does not,
+    // faint until dialog has answered.
+    const held = model.held.get(node);
+    const dot = element('span', `dot${held === true ? ' read' : held === false ? ' remote' : ' unknown'}${loading ? ' loading' : ''}`);
+    dot.title = held === true ? 'held by this replica' : held === false ? 'not held: opening fetches it' : 'not asked yet';
     dot.setAttribute('aria-hidden', 'true');
     item.append(dot);
     if (!span) item.append(element('span', 'name', short(node)));
@@ -152,6 +156,7 @@
       line.append(key(entry.key, 'empty key'));
       const cell = element('span', 'col buffered');
       if (entry.state === 'removed') cell.append(element('span', 'chip chip--removed', 'removed'));
+      else if (model.spills.has(entry.entry)) cell.append(element('span', 'chip chip--spill', 'spilled'));
       line.append(cell);
     });
     if (more) {

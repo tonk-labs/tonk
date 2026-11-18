@@ -800,7 +800,10 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
                             state.clone(),
                             origin.repo.clone(),
                             origin.branch.clone(),
-                        )
+                        )?;
+                        // dialog's own: whether the replica holds a node,
+                        // and bringing one local, asked by command.
+                        dialog_repository::holdings::provide(stack, tonk.operator.clone())
                     }) {
                         log!("commands: registering the providers on {origin:?} failed: {error}");
                     }
@@ -1446,7 +1449,8 @@ pub(crate) mod tests {
                             state.clone(),
                             origin.repo.clone(),
                             origin.branch.clone(),
-                        )
+                        )?;
+                        dialog_repository::holdings::provide(stack, tonk.operator.clone())
                     })
                     .expect("the vocabulary registers");
                 tonk.operator.clone()

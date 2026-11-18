@@ -1,5 +1,5 @@
 // Follow the state the page is drawn from: the explorations and what is
-// open in them, and the branch's root. A frame of either subscription is
+// open in them, what the replica holds, and the branch's root. A frame of either subscription is
 // only a signal to read everything again. Dispatched from a consumer of
 // its own, which carries the `reset`/`update` methods the host calls; a
 // host still starting may not claim the event yet, so it is offered again
@@ -9,7 +9,7 @@
   if (state.watches) return;
   state.watches = [];
   const concepts = self.concepts();
-  for (const fields of [concepts.opened, concepts.branch]) {
+  for (const fields of [concepts.opened, concepts.held, concepts.branch]) {
     const consumer = document.createElement('span');
     consumer.hidden = true;
     const frame = () => self.refresh();
