@@ -93,9 +93,9 @@
           return node;
         }
         function receiptText(card) {
-          const parts = [document.createTextNode(card.say)];
-          if (card.byAgent) parts.push(document.createTextNode(' · by you'), bot());
-          return parts;
+          // A receipt starts with who: "you bot added 2 to Accommodation".
+          if (!card.byAgent) return [document.createTextNode(card.say)];
+          return [document.createTextNode('you'), bot(), document.createTextNode(' ' + card.say)];
         }
 
         function draw(card, change) {
