@@ -13,11 +13,17 @@
   pane.setAttribute('aria-label', 'Selected node');
   const selected = state.selected || self.getAttribute('selected') || '';
   pane.dataset.for = selected;
-  const kv = (name, value, extra) => {
+  // A fact of the node: its name, with what it means dim beneath, and
+  // its value.
+  const kv = (name, value, extra, about) => {
     const line = element('div', 'kv');
-    line.append(element('span', 'k', name));
-    if (value !== '') line.append(element('span', 'v', String(value)));
-    if (extra) line.append(extra);
+    const key = element('div', 'k');
+    key.append(element('span', 'name', name));
+    if (about) key.append(element('span', 'about', about));
+    const shown = element('div', 'v');
+    if (value !== '') shown.append(element('span', '', String(value)));
+    if (extra) shown.append(extra);
+    line.append(key, shown);
     return line;
   };
 
@@ -48,14 +54,18 @@
   pane.append(link);
   const bar = element('span', 'bar');
   bar.style.width = `${Math.max(2, Math.round(80 * info.size / Math.max(1, state.widest ?? info.size)))}px`;
-  pane.append(kv('size', self.size(info.size), bar));
-  pane.append(kv(info.kind === 'index' ? 'children' : 'entries', info.count));
-  if (span) pane.append(kv('rank', span.rank));
-  pane.append(kv('scale', info.scale));
-  pane.append(kv('novelty', info.novelty));
-  if (span) pane.append(kv('buffered in parent', span.novelty));
-  const storage = element('span', `storage storage--${held === true ? 'local' : held === false ? 'remote' : 'unknown'}`, held === true ? '● local' : held === false ? '○ remote, fetched on open' : '◌ not asked yet');
-  pane.append(kv('storage', '', storage));
+  const facts = element('div', 'facts');
+  pane.append(facts);
+  facts.append(kv('size', self.size(info.size), bar, 'The block as stored: what a fetch pays for.'));
+  facts.append(info.kind === 'index'
+    ? kv('children', info.count, null, 'Spans it delegates, one child node each.')
+    : kv('entries', info.count, null, 'Entries it stores.'));
+  if (span) facts.append(kv('rank', span.rank, null, 'The level coin of its separator, which made the boundary.'));
+  facts.append(kv('scale', info.scale, null, 'An estimate of its subtree’s size, on a log scale.'));
+  facts.append(kv('novelty', info.novelty, null, 'Operations it buffers for its children, not written down there yet.'));
+  if (span) facts.append(kv('novelty in parent', span.novelty, null, 'Operations its parent buffers against it.'));
+  const storage = element('span', `storage storage--${held === true ? 'local' : held === false ? 'remote' : 'unknown'}`, held === true ? '● local' : held === false ? '○ remote' : '◌ not asked yet');
+  facts.append(kv('storage', '', storage, 'Whether this replica holds the block; a remote one is fetched when opened.'));
 
   // The header a node was written under. Nodes of one tree mostly share
   // it, so it is folded but on the root.
@@ -63,34 +73,36 @@
   state.headers ??= new Map();
   header.open = state.headers.get(selected) ?? selected === self.getAttribute('selected');
   header.addEventListener('toggle', () => state.headers.set(selected, header.open));
-  header.append(element('summary', '', 'header'));
+  header.append(element('summary', '', 'Header'));
+  const written = element('div', 'facts');
+  header.append(written);
   pane.append(header);
   const format = info.format;
-  for (const [name, value] of [
-    ['version', format.version],
-    ['fanout', 2 ** format['fanout-exponent']],
-    ['max-separator', format['max-separator']],
-    ['inline', format['inline-n']],
-    ['spill-prefix', format['spill-prefix']],
-    ['max-segment', format['max-segment']],
-    ['frame-ceiling', format['frame-ceiling-factor']],
-    ['anchor-selector', format['anchor-selector']],
-    ['entry-overhead', format['entry-overhead']],
-    ['key-overhead', format['key-overhead']],
-    ['link-overhead', format['link-overhead']],
+  for (const [name, value, about] of [
+    ['version', format.version, 'The layout version, which says how the rest is read.'],
+    ['fanout', 2 ** format['fanout-exponent'], 'Children an index node is expected to have.'],
+    ['max-separator', format['max-separator'], 'Keys longer than this never become boundaries.'],
+    ['inline', format['inline-n'], 'Values longer than this spill out of the key into a blob.'],
+    ['spill-prefix', format['spill-prefix'], 'Leading bytes a spilled value’s key keeps, so it still sorts.'],
+    ['max-segment', format['max-segment'], 'The weight a segment is cut at; 0 for none.'],
+    ['frame-ceiling', format['frame-ceiling-factor'], 'The hard weight ceiling, as a multiple of max-segment.'],
+    ['anchor-selector', format['anchor-selector'], 'Which candidate boundary a forced cut lands on.'],
+    ['entry-overhead', format['entry-overhead'], 'Weight an entry costs beyond its key and value.'],
+    ['key-overhead', format['key-overhead'], 'Weight a key costs beyond its bytes, for the cut floor.'],
+    ['link-overhead', format['link-overhead'], 'Weight a child link costs beyond its separator and hash.'],
   ]) {
-    header.append(kv(name, value));
+    written.append(kv(name, value, null, about));
   }
 
   if (span) {
-    pane.append(element('h3', '', 'separator'));
+    pane.append(element('h3', '', 'Separator'));
     pane.append(self.chips(model.partsOf(span.separator)));
   }
 
   const entries = model.entries.get(selected) ?? [];
   const buffered = info.kind === 'index';
   if (buffered && info.novelty === 0) return pane;
-  pane.append(element('h3', '', buffered ? `${entries.length} buffered` : `${entries.length} entries`));
+  pane.append(element('h3', '', buffered ? `Novelty (${entries.length})` : `Entries (${entries.length})`));
   if (!entries.length) {
     pane.append(element('p', 'note', 'Reading…'));
     return pane;
