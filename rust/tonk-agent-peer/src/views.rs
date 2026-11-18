@@ -152,6 +152,7 @@ impl Views {
         ]
         .into_iter()
         .map(|tool| serde_json::from_value(tool).expect("view tool shape"))
+        .chain([crate::extension::tool()])
         .collect()
     }
 
@@ -227,6 +228,7 @@ impl Views {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str).unwrap_or("");
         let (space, document) = (text("space"), text("document"));
         Some(match name {
+            crate::extension::NAME => crate::extension::call(),
             "tonk_view_log" => match peer.call("tonk_view_log", json!({})).await {
                 Ok(log) => {
                     let lines = log["log"].as_array().cloned().unwrap_or_default();

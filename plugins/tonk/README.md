@@ -19,13 +19,20 @@ In Claude Desktop, add the `tonk-labs/tonk` marketplace under Customize →
 Plugins and install Tonk from it. macOS (Apple Silicon) and Linux (x86_64) are
 supported.
 
+That's all there is to install. The first time you ask Claude to show
+something from a space in Claude Desktop chat, it opens Desktop's install
+screen for the small Tonk extension that live views need there; choose
+Install, and start a new chat. See [Live views](#live-views) for why views
+need it.
+
 To try a pull request's build, use the one-line `claude --plugin-url …` from
 the **Agent peer preview** comment on the pull request.
 
 ## What this plugin runs and connects to
 
-The plugin itself is a launcher script, a skill and an MCP server declaration.
-Everything it runs, fetches or sends:
+The plugin itself is a launcher script and a skill. The optional Tonk extension
+(`tonk-peer.mcpb`, published with each release) holds only a copy of the same
+launcher. Everything they run, fetch or send:
 
 - **It downloads the Tonk peer.** On every start the launcher
   (`scripts/tonk-agent-peer`) fetches `checksums.txt` from the Tonk release it
@@ -33,7 +40,8 @@ Everything it runs, fetches or sends:
   a newer archive for your platform, downloads it, verifies its SHA-256
   against `checksums.txt`, and installs it in `~/.tonk/bin/<channel>`. The
   archive holds the `tonk-agent-peer` binary, built from this repository by
-  its CI, and the guest runtime that renders views. Offline, it runs the copy
+  its CI, the guest runtime that renders views, and the Tonk extension for
+  Claude Desktop (`tonk-peer.mcpb`). Offline, it runs the copy
   it already has. It then runs the binary as the plugin's stdio MCP server.
   Tagged releases are Developer ID signed and notarized; builds of `main`
   are not.
@@ -46,6 +54,12 @@ Everything it runs, fetches or sends:
   every few seconds while a session is open. It contacts no other service,
   sends nothing to Anthropic or to the plugin's authors, and joins only links
   you give it in the conversation.
+- **It opens Claude Desktop's extension installer when you ask to see
+  something.** On macOS, when you ask Claude to display or show something and
+  the Tonk extension isn't installed, `tonk_install_extension` opens that
+  verified `tonk-peer.mcpb` with Claude Desktop, which shows its own install
+  screen for you to confirm or cancel. It opens at most once per conversation,
+  changes nothing else, and does nothing when the extension is installed.
 - **It serves views on this computer only.** For live views in the
   conversation, the peer serves its own API on `127.0.0.1` at a random port.
   Every request must carry a random token that the peer creates when it
@@ -64,16 +78,24 @@ Everything it runs, fetches or sends:
 
 ## Live views
 
-Where the host renders MCP Apps (Claude Desktop chat), two tools show a
-space in the conversation:
+Two tools show a space in the conversation where the host renders MCP Apps:
 
 - `tonk_display` renders things with their concept's own display, through
   Tonk's guest runtime: the same `<tonk-display>` the web app uses, live and
   interactive.
 - `tonk_show` renders a query's result and keeps it current.
 
-Claude Code shows the results as text. `tonk_view_log` explains a view that
-stays blank.
+Claude Desktop renders these views only from servers it runs as extensions,
+not from a plugin's server, so in Desktop chat they need the Tonk extension,
+[`tonk-peer.mcpb`](https://github.com/tonk-labs/tonk/releases/download/tonk-agent-peer-dev/tonk-peer.mcpb).
+It runs the same self-updating launcher, as the same peer: one identity and
+one set of spaces whichever copy Claude calls. With only the plugin installed,
+the tools work and return their results as text. Claude Code always shows
+text. `tonk_view_log` explains a view that stays blank.
+
+The directory no longer lists extensions, which is why the extension is a
+separate download. Details in
+[docs/claude-desktop-plugin-internals.md](https://github.com/tonk-labs/tonk/blob/main/docs/claude-desktop-plugin-internals.md).
 
 ## Configuration
 
