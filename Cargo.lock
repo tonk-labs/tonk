@@ -5064,6 +5064,7 @@ dependencies = [
  "tonk-core",
  "tonk-library",
  "tonk-notation",
+ "tonk-render",
  "tonk-schema",
  "tonk-template",
  "wasm-bindgen-test",

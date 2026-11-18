@@ -42,5 +42,6 @@ dialog-notation = { workspace = true }
 dialog-peer = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tonk-library = { workspace = true }
+tonk-render = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

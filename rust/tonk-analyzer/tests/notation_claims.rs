@@ -31,12 +31,12 @@ const NOTEBOOK: &str = include_str!("../../tonk-core/assets/library/notebook.yam
 
 /// The notebook in the notation, read from the dialog checkout the
 /// workspace patches dialog to.
-const SKETCH: &str = "/home/claude/notation/design/macros/sketches/notebook.clj";
+const SKETCH: &str = "/home/claude/notation/rust/dialog-notation/sketches/notebook.clj";
 
 /// What the notebook reads of `core.yaml`, in the notation, from the
 /// same checkout: read in front of the notebook, as a component is
 /// read after core. Its claims are not measured.
-const CORE_SKETCH: &str = "/home/claude/notation/design/macros/sketches/core.clj";
+const CORE_SKETCH: &str = "/home/claude/notation/rust/dialog-notation/sketches/core.clj";
 
 type Triple = (String, String, String);
 
@@ -220,7 +220,7 @@ async fn yaml_forms(library: &str) -> anyhow::Result<Vec<Form>> {
         let head = expression.application().predicate.source.as_str();
         let kind = yaml_kind(head);
         let key = match (kind, expression) {
-            ("concept" | "command", tonk_notation::Expression::Claim(claim)) => claim
+            ("concept" | "command" | "event", tonk_notation::Expression::Claim(claim)) => claim
                 .anchor
                 .as_ref()
                 .map(|anchor| anchor.name.clone())
@@ -427,7 +427,11 @@ struct NotationLibrary {
 /// - an assert writes its facts, a command issued is dispatched, and
 ///   a write with a `when` writes once for each match on `branch`;
 /// - a view writes nothing: there is no back end for one yet.
-async fn notation_library_claims(core: &str, library: &str) -> anyhow::Result<NotationLibrary> {
+async fn notation_library_claims(
+    core: &str,
+    library: &str,
+    views: bool,
+) -> anyhow::Result<NotationLibrary> {
     let core = split(core);
     let library = split(library);
     let parts: Vec<(bool, &str)> = core
@@ -560,6 +564,41 @@ async fn notation_library_claims(core: &str, library: &str) -> anyhow::Result<No
                         }
                     }
                 }
+            }
+        }
+        // A view is a description the Dialog-DB back end refuses; tonk's
+        // back end lowers it from the description, whichever way the
+        // compile went.
+        let mut events: Vec<Form> = Vec::new();
+        if views
+            && kind == "view"
+            && let Some(view) = described_view(tree, &checked.declarations)
+        {
+            let written = view_claims(view, &concepts)
+                .map_err(|error| anyhow::anyhow!("view {}: {error}", view.concept))?;
+            for statement in written.view {
+                statement.assert(&mut changes);
+            }
+            for (name, statements) in written.events {
+                let mut rows = Changes::new();
+                for statement in statements {
+                    statement.assert(&mut rows);
+                }
+                all.merge(rows.clone());
+                events.push(Form {
+                    kind: "event",
+                    key: name,
+                    claims: Claims {
+                        durable: triples(rows),
+                        transient: BTreeSet::new(),
+                    },
+                    refused: None,
+                });
+            }
+        }
+        for event in events {
+            if !forms.iter().any(|known: &Form| known.key == event.key) {
+                forms.push(event);
             }
         }
         all.merge(changes.clone());
@@ -696,6 +735,325 @@ fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<(), St
     Ok(())
 }
 
+/// The `View` the notation describes for a `(view concept :name …)`
+/// form.
+fn described_view<'a>(tree: &Syntax, declarations: &'a [Declaration]) -> Option<&'a View> {
+    let items = &tree.operand()?.items;
+    let Some(Syntax::Reference(concept)) = items.first() else {
+        return None;
+    };
+    let name = items.get(1)?.keyword()?;
+    declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::View { view, .. } if &view.concept == concept && view.name == name => {
+                Some(view)
+            }
+            _ => None,
+        })
+}
+
+/// What a view lowers to: its own facts, and each event it binds, by
+/// the event's name, with its rows.
+struct ViewClaims {
+    view: Vec<dialog_query::AttributeStatement>,
+    events: Vec<(String, Vec<dialog_query::AttributeStatement>)>,
+}
+
+fn fact(
+    the: &str,
+    of: dialog_corpus::Entity,
+    is: Value,
+) -> Result<dialog_query::AttributeStatement, String> {
+    Ok(dialog_query::AttributeStatement {
+        the: the.parse().map_err(|error| format!("{the}: {error:?}"))?,
+        of,
+        is,
+        cause: None,
+        cardinality: None,
+        pick: Some(dialog_query::Pick::Last),
+    })
+}
+
+/// The managing session's opinion: an event's name is `on/` and its
+/// command's name with `/` turned into `-` (`block/edit` names
+/// `on/block-edit`).
+fn event_name(command: &str) -> String {
+    format!("on/{}", command.replace('/', "-"))
+}
+
+/// The slot each variable of a view fills, named as tonk's templates
+/// name them (`tonk-template/src/fields.rs:26` to `:33`, checked at
+/// `tonk-analyzer/src/analyzer/view.rs:442`): `this` for the entity
+/// rendered, the model's field label for a field's value, and
+/// `<field>/key` for the key of a keyed collection's entry.
+///
+/// The view's conditions come expanded to reads of attributes
+/// (`(xyz.tonk.notebook ?n title: (last (text ?title)) entry: …)`), not
+/// as the concept read they were written as, so each read's attribute
+/// is found among the concept's lines, and its label is the head label
+/// the line's variable has.
+fn slots(view: &View, concept: &Concept) -> Result<BTreeMap<String, String>, String> {
+    fn innermost(term: &Syntax) -> Option<&str> {
+        match term {
+            Syntax::Variable(variable) => Some(variable),
+            Syntax::Application(_, operand) => operand.items.first().and_then(innermost),
+            _ => None,
+        }
+    }
+    let domain = |attribute: &str| attribute.split('/').next().unwrap_or_default().to_string();
+    let label = |line: &dialog_notation::Line| -> Option<String> {
+        concept
+            .fields
+            .iter()
+            .find(|(_, variable)| *variable == line.is)
+            .map(|(label, _)| label.clone())
+    };
+    let mut slots = BTreeMap::new();
+    slots.insert(view.entity.clone(), "this".to_string());
+    for condition in &view.conditions {
+        let Syntax::Application(operator, operand) = condition else {
+            continue;
+        };
+        let Syntax::Reference(read) = operator.as_ref() else {
+            continue;
+        };
+        for (term_label, term) in &operand.terms {
+            if term_label == "entry" {
+                let line = concept
+                    .lines
+                    .iter()
+                    .find(|line| line.key.is_some() && domain(&line.attribute) == *read)
+                    .ok_or_else(|| format!("{} declares no collection in {read}", concept.name))?;
+                let field =
+                    label(line).ok_or_else(|| format!("no head label holds {}", line.attribute))?;
+                if let Some(value) = innermost(term) {
+                    slots.insert(value.to_string(), field.clone());
+                }
+                if let Syntax::Application(_, entry) = term
+                    && let Some(Syntax::Variable(key)) = entry.terms.get("key")
+                {
+                    slots.insert(
+                        key.clone(),
+                        format!("{field}{}", tonk_template::fields::KEY_SUFFIX),
+                    );
+                }
+                continue;
+            }
+            let attribute = format!("{read}/{term_label}");
+            let Some(variable) = innermost(term) else {
+                continue;
+            };
+            let line = concept
+                .lines
+                .iter()
+                .find(|line| line.attribute == attribute)
+                .ok_or_else(|| format!("{} has no line {attribute}", concept.name))?;
+            let field = label(line).ok_or_else(|| format!("no head label holds {attribute}"))?;
+            slots.insert(variable.to_string(), field);
+        }
+    }
+    Ok(slots)
+}
+
+fn slot(slots: &BTreeMap<String, String>, variable: &str) -> Result<String, String> {
+    slots
+        .get(variable)
+        .map(|slot| format!("{{{slot}}}"))
+        .ok_or_else(|| format!("?{variable} fills no slot"))
+}
+
+fn piece(
+    slots: &BTreeMap<String, String>,
+    piece: &dialog_notation::view::Piece,
+) -> Result<String, String> {
+    use dialog_notation::view::Piece;
+    match piece {
+        Piece::Text(text) => Ok(text.clone()),
+        Piece::Variable(variable) => slot(slots, variable),
+        Piece::Value(value) => Ok(spelled(value)),
+    }
+}
+
+fn spelled(value: &Syntax) -> String {
+    match value {
+        Syntax::Constant(Value::String(text)) => text.clone(),
+        other => other.spelled(false),
+    }
+}
+
+/// A template as tonk's renderer holds one (`tonk_render::Node`), so
+/// its serializer writes the text tonk stores.
+fn markup(
+    node: &dialog_notation::Node,
+    slots: &BTreeMap<String, String>,
+) -> Result<tonk_render::Node, String> {
+    use dialog_notation::{Attribute, Node};
+    Ok(match node {
+        Node::Text(text) => tonk_render::Node::Text(text.clone()),
+        Node::Value(value) => tonk_render::Node::Text(spelled(value)),
+        Node::Variable(variable) => tonk_render::Node::Text(slot(slots, variable)?),
+        Node::View(nested) => {
+            let mut attrs = Vec::new();
+            for (key, pieces) in &nested.entries {
+                let value: Result<String, String> =
+                    pieces.iter().map(|part| piece(slots, part)).collect();
+                attrs.push((key.clone(), value?));
+            }
+            if let Some(of) = &nested.of {
+                attrs.push(("entity".into(), slot(slots, of)?));
+            }
+            if let Some(model) = &nested.model {
+                attrs.push(("model".into(), model.clone()));
+            }
+            tonk_render::Node::Element(tonk_render::Element {
+                tag: "tonk-display".into(),
+                attrs,
+                children: Vec::new(),
+                void: false,
+            })
+        }
+        Node::Element(element) => {
+            let mut attrs = Vec::new();
+            for (name, value) in &element.attributes {
+                let value = match value {
+                    Attribute::Text(text) => text.clone(),
+                    Attribute::Value(value) => spelled(value),
+                    Attribute::Variable(variable) => slot(slots, variable)?,
+                    Attribute::Parts(pieces) => pieces
+                        .iter()
+                        .map(|part| piece(slots, part))
+                        .collect::<Result<String, String>>()?,
+                    Attribute::Present => String::new(),
+                };
+                attrs.push((name.clone(), value));
+            }
+            for event in &element.events {
+                let name = event_name(&event.command);
+                attrs.push((
+                    format!("on:{}", name.trim_start_matches("on/")),
+                    event.command.clone(),
+                ));
+            }
+            let children = element
+                .children
+                .iter()
+                .map(|child| markup(child, slots))
+                .collect::<Result<Vec<_>, String>>()?;
+            tonk_render::Node::Element(tonk_render::Element {
+                void: tonk_render::tree::is_void_tag(&element.tag),
+                tag: element.tag.clone(),
+                attrs,
+                children,
+            })
+        }
+    })
+}
+
+/// What tonk stores for a view, from the notation's description:
+/// - the facet text, `xyz.tonk.view/<name>`, on the model concept's
+///   entity, printed by tonk's renderer (`tonk_render::serialize_nodes`);
+/// - the `bindings` record of the events it binds
+///   (`tonk_template::bindings::Bindings`), when it binds any;
+/// - each event's rows, as an `event!:` stores them: `type`, one
+///   `where` per field, and the name `id:on/<name>`, on the entity
+///   tonk derives from that payload (`derive_this`).
+///
+/// No event flags are read: the notation has no spelling for
+/// `prevent-default` or `stop-propagation` (the managing session's
+/// opinion is to write both false).
+fn view_claims(view: &View, concepts: &BTreeMap<String, &Concept>) -> Result<ViewClaims, String> {
+    use tonk_template::event::{EventDescriptor, Source};
+
+    let concept = concepts
+        .get(&view.concept)
+        .ok_or_else(|| format!("{} is not declared", view.concept))?;
+    let [descriptor] = concept.descriptors.as_slice() else {
+        return Err(format!("{} reads more than one descriptor", view.concept));
+    };
+    let model = descriptor.this();
+    let slots = slots(view, concept)?;
+    let text = tonk_render::serialize_nodes(&[markup(&view.template, &slots)?]);
+    let mut statements = vec![fact(
+        &format!("xyz.tonk.view/{}", view.name),
+        model.clone(),
+        Value::String(text),
+    )?];
+
+    let mut descriptors = BTreeMap::new();
+    let mut events = Vec::new();
+    let event_concept = tonk_schema::builtin::lookup_concept("event")
+        .ok_or("tonk has no built-in `event`")?
+        .entity;
+    for event in view.events() {
+        let name = event_name(&event.command);
+        let mut sources = BTreeMap::new();
+        let mut payload = tonk_core::claim::ValueMap::new();
+        payload.insert("type".into(), Value::String(event.kind.clone()));
+        let mut rows = Vec::new();
+        for (field, input) in &event.fields {
+            let (source, written) = match input {
+                dialog_notation::Input::Path(steps) => (
+                    Source::Property(steps.clone()),
+                    format!(".{}", steps.join(".")),
+                ),
+                dialog_notation::Input::Variable(variable) => {
+                    let slot = slot(&slots, variable)?;
+                    (
+                        Source::Field(slot.trim_matches(['{', '}']).to_string()),
+                        slot,
+                    )
+                }
+                dialog_notation::Input::Value(value) => {
+                    let text = spelled(value);
+                    (Source::Literal(text.clone()), format!("{text:?}"))
+                }
+            };
+            sources.insert(field.clone(), source);
+            payload.insert(format!("where.{field}"), Value::String(written.clone()));
+            rows.push((format!("xyz.tonk.event.where/{field}"), written));
+        }
+        let entity = tonk_schema::transact::derive_this(&event_concept, &payload);
+        let mut written = vec![fact(
+            "xyz.tonk.event/type",
+            entity.clone(),
+            Value::String(event.kind.clone()),
+        )?];
+        for (the, value) in rows {
+            written.push(fact(&the, entity.clone(), Value::String(value))?);
+        }
+        written.push(fact(
+            "db.name/referent",
+            format!("id:{name}")
+                .parse()
+                .map_err(|error| format!("{error}"))?,
+            Value::Entity(entity),
+        )?);
+        events.push((name.clone(), written));
+        descriptors.insert(
+            name,
+            EventDescriptor {
+                event_type: event.kind.clone(),
+                prevent_default: false,
+                stop_propagation: false,
+                sources,
+            },
+        );
+    }
+    if !descriptors.is_empty() {
+        let record = tonk_template::bindings::Bindings::new(descriptors).encode()?;
+        statements.push(fact(
+            "xyz.tonk.view/bindings",
+            model,
+            Value::Record(record),
+        )?);
+    }
+    Ok(ViewClaims {
+        view: statements,
+        events,
+    })
+}
+
 /// How a YAML claim fares among the notation's.
 fn fate(claim: &Triple, notation: &BTreeSet<Triple>) -> &'static str {
     let (the, of, is) = claim;
@@ -711,6 +1069,13 @@ fn fate(claim: &Triple, notation: &BTreeSet<Triple>) -> &'static str {
     }
 }
 
+/// Whether the bar being drawn has the view back end on.
+static VIEWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn views_lowered() -> bool {
+    VIEWS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Why a YAML claim the notation does not store the same is not.
 fn difference(
     claim: &Triple,
@@ -721,6 +1086,13 @@ fn difference(
     let (the, of, is) = claim;
     let same_of = notation.iter().any(|(t, o, _)| t == the && o == of);
     let same_is = notation.iter().any(|(t, _, i)| t == the && i == is);
+    if the.starts_with("xyz.tonk.view") && counterpart.is_some() && views_lowered() {
+        return if same_of {
+            "view: the text differs as bytes (the templates compare below)".into()
+        } else {
+            "view: stored on the pinned concept's entity in the YAML".into()
+        };
+    }
     if the.starts_with("xyz.tonk.view") {
         return match counterpart.and_then(|form| form.refused.as_ref()) {
             Some(error) if error.contains("is a description") => {
@@ -992,6 +1364,100 @@ fn causes(yaml: &str, notation: &str) -> Vec<&'static str> {
     causes
 }
 
+/// The managing session's opinion of the bar for a view: template
+/// equivalence. Both texts are parsed with tonk's renderer's parser
+/// (`tonk_render::parse_fragment`) and compared as trees with each
+/// element's attributes sorted, comments dropped (the renderer drops
+/// them) and text trimmed, a text of whitespace alone dropped. The
+/// `bindings` records are compared as data.
+fn normalized(nodes: Vec<tonk_render::Node>) -> Vec<tonk_render::Node> {
+    nodes
+        .into_iter()
+        .filter_map(|node| match node {
+            tonk_render::Node::Comment(_) => None,
+            tonk_render::Node::Text(text) => {
+                let text = text.trim().to_string();
+                (!text.is_empty()).then_some(tonk_render::Node::Text(text))
+            }
+            tonk_render::Node::Element(mut element) => {
+                element.attrs.sort();
+                element.children = normalized(element.children);
+                Some(tonk_render::Node::Element(element))
+            }
+        })
+        .collect()
+}
+
+/// Per view: whether its facet claims are equal, whether the templates
+/// are equivalent, whether the bindings are equal as data.
+fn equivalence(yaml: &[Form], notation: &[Form]) -> (usize, usize, usize) {
+    println!("#### views: raw claims, equivalent templates, bindings as data");
+    let (mut raw, mut trees, mut bindings) = (0, 0, 0);
+    for form in yaml.iter().filter(|form| form.kind == "view") {
+        let Some(other) = notation.iter().find(|other| other.key == form.key) else {
+            continue;
+        };
+        let facets = |form: &Form| -> BTreeMap<String, String> {
+            form.claims
+                .durable
+                .iter()
+                .filter(|(the, _, _)| {
+                    the.starts_with("xyz.tonk.view/") && the != "xyz.tonk.view/bindings"
+                })
+                .map(|(the, _, is)| (the.clone(), text_of(is).unwrap_or_default()))
+                .collect()
+        };
+        let bound = |form: &Form| -> Option<String> {
+            let decoded = DECODED.lock().expect("decoded");
+            form.claims
+                .durable
+                .iter()
+                .find(|(the, _, _)| the == "xyz.tonk.view/bindings")
+                .and_then(|(_, _, is)| decoded.get(is).cloned())
+        };
+        let (ours, theirs) = (facets(form), facets(other));
+        let same_raw = !ours.is_empty() && ours == theirs;
+        let same_tree = !ours.is_empty()
+            && ours.len() == theirs.len()
+            && ours.iter().all(|(facet, text)| {
+                theirs.get(facet).is_some_and(|other| {
+                    normalized(tonk_render::parse_fragment(text))
+                        == normalized(tonk_render::parse_fragment(other))
+                })
+            });
+        let same_bindings = bound(form) == bound(other);
+        raw += usize::from(same_raw);
+        trees += usize::from(same_tree);
+        bindings += usize::from(same_bindings);
+        println!(
+            "== {} raw {same_raw} equivalent {same_tree} bindings {same_bindings}",
+            form.key
+        );
+        if !same_tree {
+            for (facet, text) in &ours {
+                println!(
+                    "  yaml     {facet} {}",
+                    tonk_render::serialize_nodes(&normalized(tonk_render::parse_fragment(text)))
+                );
+                if let Some(other) = theirs.get(facet) {
+                    println!(
+                        "  notation {facet} {}",
+                        tonk_render::serialize_nodes(&normalized(tonk_render::parse_fragment(
+                            other
+                        )))
+                    );
+                }
+            }
+        }
+        if !same_bindings {
+            println!("  yaml     bindings {:?}", bound(form));
+            println!("  notation bindings {:?}", bound(other));
+        }
+    }
+    println!("## views: raw {raw}, equivalent {trees}, bindings {bindings}");
+    (raw, trees, bindings)
+}
+
 /// For each view, what the YAML stores, and what the notation
 /// describes.
 fn views(yaml: &[Form], declarations: &[Declaration]) {
@@ -1044,24 +1510,42 @@ fn describe(view: &View) {
 
 #[dialog_common::test]
 async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
-    let sketch = std::fs::read_to_string(SKETCH)?;
+    // A sketch other than the checkout's, for telling apart what moves
+    // the numbers: the bar is printed and the pins are not checked.
+    let other = std::env::var("NOTEBOOK_BAR_SKETCH").ok();
+    let sketch = std::fs::read_to_string(other.as_deref().unwrap_or(SKETCH))?;
     let core = std::fs::read_to_string(CORE_SKETCH)?;
     let yaml = yaml_forms(NOTEBOOK).await?;
-    let notation = notation_library_claims(&core, &sketch).await?;
+    let notation = notation_library_claims(&core, &sketch, true).await?;
+    VIEWS.store(true, std::sync::atomic::Ordering::Relaxed);
     let as_it_is = bar("the notation as it is", &yaml, &notation.forms);
 
     // The adjustment, on the text and not the notation's behaviour:
     // a line of a concept or a command with no `cardinality:` reads
     // `cardinality: :one`, the pick the YAML's fields get by default.
     let adjusted: String = split(&sketch).iter().map(|form| read_one(form)).collect();
-    let adjusted = notation_library_claims(&core, &adjusted).await?;
+    let adjusted = notation_library_claims(&core, &adjusted, true).await?;
     let read_one = bar(
         "ADJUSTED: lines with no `cardinality:` read as `:one`",
         &yaml,
         &adjusted.forms,
     );
 
+    // The same two rows without the view back end, to tell what it
+    // moves from what a change of the notation moves.
+    let plain = notation_library_claims(&core, &sketch, false).await?;
+    VIEWS.store(false, std::sync::atomic::Ordering::Relaxed);
+    let without_views = bar("WITHOUT VIEWS: the notation as it is", &yaml, &plain.forms);
+    let adjusted_text: String = split(&sketch)
+        .iter()
+        .map(|form| crate::read_one(form))
+        .collect();
+    let plain_adjusted = notation_library_claims(&core, &adjusted_text, false).await?;
+    let without_views_read_one = bar("WITHOUT VIEWS: ADJUSTED", &yaml, &plain_adjusted.forms);
+    println!("## without views {without_views:?} {without_views_read_one:?}");
+
     rules(&yaml, &adjusted.forms);
+    let viewed = equivalence(&yaml, &notation.forms);
     views(&yaml, &notation.declarations);
     println!("#### decoded records");
     for (hash, decoded) in DECODED.lock().expect("decoded").iter() {
@@ -1075,26 +1559,33 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         notation.transient.len()
     );
 
+    if other.is_some() {
+        println!("## pins not checked: another sketch");
+        return Ok(());
+    }
     // Pinned: a change to either side has to move these on purpose.
     assert_eq!(
         as_it_is,
         Headline {
             yaml: 376,
-            identical: 87,
-            differently: 206,
-            not_at_all: 83,
-            only_notation: 263,
+            identical: 107,
+            differently: 210,
+            not_at_all: 59,
+            only_notation: 269,
         }
     );
     assert_eq!(
         read_one,
         Headline {
             yaml: 376,
-            identical: 202,
-            differently: 113,
-            not_at_all: 61,
-            only_notation: 148,
+            identical: 231,
+            differently: 110,
+            not_at_all: 35,
+            only_notation: 145,
         }
     );
+    // Of the five views: facet claims equal as bytes, templates
+    // equivalent, bindings equal as data.
+    assert_eq!(viewed, (0, 5, 5));
     Ok(())
 }
