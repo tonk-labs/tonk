@@ -44,7 +44,10 @@
 
     const ordering = of(parts, 'index')?.text ?? 'unknown';
     const index = element('td', 'col-index');
-    index.append(element('span', `ordering ordering-${ordering}`, ordering));
+    // The ordering as the outline shows it: one letter, its name on hover.
+    const letter = element('span', `ordering ordering-${ordering}`, (ordering[0] ?? '?').toUpperCase());
+    letter.title = `${ordering} index`;
+    index.append(letter);
     const origin = of(parts, 'origin');
     const edition = of(parts, 'edition');
     if ((ordering === 'history' || ordering === 'coverage') && edition) {
@@ -67,7 +70,7 @@
     const shownValue = of(parts, 'value');
     if (removed) value.textContent = '(retracted)';
     else if (shownValue) {
-      const text = element('span', 'val', trunc(shownValue.text, 40));
+      const text = element('span', 'val part--value', trunc(shownValue.text, 40));
       text.title = shownValue.text;
       value.append(text);
     } else {

@@ -3,6 +3,13 @@
 // its outline of nodes and the selected node's detail.
 (self) => {
   const state = self.__tree;
+  // The element's methods are replaced live when the component is
+  // upgraded, but the stylesheet is written once: write it again when the
+  // `sheet` method has changed.
+  const style = state.style ?? state.shadow.querySelector('style');
+  const sheet = self.sheet();
+  if (style && style.textContent !== sheet) style.textContent = sheet;
+  state.style = style;
   const model = state.model;
   if (!model) {
     state.shell.replaceChildren(Object.assign(document.createElement('p'), { className: state.error ? 'note note--error' : 'note', textContent: state.error ?? 'Reading…' }));

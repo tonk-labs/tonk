@@ -8,7 +8,7 @@
     const shell = document.createElement('div');
     shell.className = 'shell';
     shadow.append(style, shell);
-    self.__tree = { shadow, shell, selected: null, pending: new Map(), frame: 0, asked: new Set(), model: null, watches: null };
+    self.__tree = { shadow, shell, style, selected: null, pending: new Map(), frame: 0, asked: new Set(), model: null, watches: null };
     shell.addEventListener('click', (event) => self.act(event));
     shell.addEventListener('keydown', (event) => self.keys(event));
   }

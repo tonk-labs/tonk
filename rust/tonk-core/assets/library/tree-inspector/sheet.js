@@ -109,7 +109,7 @@
 
 /* A separator in the outline: its parts as coloured text, a thin gap
    between, the tail past the routing pivot dimmed. */
-.key { display: inline-flex; align-items: baseline; gap: 0.6ch; min-width: 0; overflow: hidden; }
+.key { display: inline-flex; align-items: baseline; gap: 0.5ch; min-width: 0; overflow: hidden; }
 .key .part { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; min-width: 2ch; }
 .key .part--index { flex: none; font-weight: 600; }
 .key .part--min { color: var(--text); }
@@ -118,7 +118,8 @@
 .part--value { color: var(--square); }
 .part--vtype { color: var(--square); opacity: 0.7; }
 .part--index { color: var(--text); }
-.part--origin, .part--edition, .part--opaque, .part--prefix, .part--pending { color: var(--closure); }
+.part--origin, .part--edition, .part--opaque, .part--prefix, .part--pending, .part--padding { color: var(--closure); }
+.key .part--padding { opacity: 0.6; }
 .key .part.dim { opacity: 0.55; }
 
 /* Value columns, right-packed so they line up at every depth. */
@@ -195,10 +196,9 @@ table.entries tr.removed td { color: var(--quiet); text-decoration: line-through
 .col-ent { color: var(--circle); text-decoration: underline; }
 .col-attr { color: var(--triangle); }
 .col-span { color: var(--quiet); text-align: right; }
-.ordering { display: inline-block; padding: 1px 6px; font-size: 0.9em; background: var(--fill); color: var(--quiet); }
-.ordering-entity { color: var(--circle); }
-.ordering-attribute { color: var(--triangle); }
-.ordering-value { color: var(--square); }
+table.entries .col-index { width: 1%; }
+.col-val .part--value { color: var(--square); }
+.ordering { display: inline-block; font-weight: 600; color: var(--text); }
 .version { margin-left: 6px; color: var(--closure); }
 tr.unfolded td { white-space: normal; max-width: none; background: var(--fill); padding: 8px; }
 .entry-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 16px; row-gap: 2px; }
