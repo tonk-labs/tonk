@@ -161,6 +161,7 @@ pub struct SpaceWriterObject {
     /// where it opened, rather than on every request.
     opened_at: Cell<usize>,
     high_water: usize,
+    provisioner: Option<url::Url>,
     /// Requests being answered. The object recycles only at none.
     in_flight: Cell<usize>,
     /// A recycle alarm is set.
@@ -184,6 +185,7 @@ impl DurableObject for SpaceWriterObject {
             writer: Mutex::new(None),
             opened_at: Cell::new(0),
             high_water,
+            provisioner: crate::remote(&env).and_then(|url| url.parse().ok()),
             in_flight: Cell::new(0),
             recycling: Cell::new(false),
             step: Cell::new(("idle", 0.0)),
@@ -350,6 +352,21 @@ impl SpaceWriterObject {
             return match writer.join_link(&body).await {
                 Ok(answer) => worker::Response::from_json(&answer),
                 Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error),
+            };
+        }
+        if method == worker::Method::Post
+            && path == tonk_worker::agent_create::CREATE_ROUTE.trim_start_matches('/')
+        {
+            let body = request.json().await?;
+            let Some(provider) = &self.provisioner else {
+                return failure(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "space provisioning is unavailable",
+                );
+            };
+            return match writer.create_space(provider, body).await {
+                Ok(answer) => worker::Response::from_json(&answer),
+                Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
             };
         }
         // The grants the front found for this space: one new to the

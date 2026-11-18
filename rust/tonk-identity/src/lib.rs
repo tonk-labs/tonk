@@ -39,3 +39,4 @@ pub mod webcrypto_kek;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use install::install;
+pub mod created_space;

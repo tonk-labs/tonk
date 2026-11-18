@@ -18,6 +18,10 @@ A write to a `read` space is refused: ask the person to grant read and write
 rather than retrying or writing somewhere else. If you need a space that is not
 listed, ask the person to grant it to you.
 
+## Creating a space
+
+Call `tonk_create_space` with the requested name. The person confirms in the chat card. Wait for its receipt before using the new space. The person owns it and can revoke your read and write access in Tonk.
+
 ## Joining a space from a link
 
 When the person gives you a Tonk invite link (`/space/...#...`, `/@/...`, or

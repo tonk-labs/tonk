@@ -150,6 +150,7 @@ export async function showCard({
     calls.push({ name, arguments: args });
     // As a host's round trip does, so the card shows that it is saving.
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (typeof answers[name] === 'function') return answers[name](args);
     return answers[name] ?? { isError: true, content: [{ type: 'text', text: `no ${name}` }] };
   });
   const violations = [];

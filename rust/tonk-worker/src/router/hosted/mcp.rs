@@ -450,6 +450,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "tools/list" => {
                 let mut tools = tools();
                 tools.extend(super::view::tools());
+                tools.extend(super::creation::tools());
                 tools.extend(super::join::tools());
                 tools.extend(super::propose::tools());
                 Ok(json!({ "tools": tools }))
@@ -700,6 +701,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
             }
             super::propose::APPLY | super::propose::DISMISS => {
                 self.answer_proposal(name, arguments, verified, bearer, session, call)
+                    .await
+            }
+            super::creation::CREATE | super::creation::CONFIRM => {
+                super::creation::call(name, arguments, verified, self.writers, bearer, session)
                     .await
             }
             super::join::JOIN | super::join::ACCEPT => super::join::call(

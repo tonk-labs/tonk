@@ -29,6 +29,7 @@ import {
   approve,
   revoke,
 } from './lib/browser.mjs';
+import { showCard } from './lib/card-host.mjs';
 import { showView } from './lib/view-host.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
@@ -331,6 +332,53 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       for (const name of ['access', 'writer', 'writer.pull', 'writer.eval', 'total']) {
         assert.ok(steps.includes(name), `${name} missing from ${timing}`);
       }
+    });
+
+    await step('the person approves a space requested by the agent and retains it after revocation', async () => {
+      const name = `Research / ${run}`;
+      const client = await connect();
+      const proposal = await call(client, 'tonk_create_space', { name });
+      assert.equal(proposal.structuredContent.card.kind, 'ask');
+      const before = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.ok(!before.some((space) => space.name === name));
+      let subject;
+      const card = await showCard({
+        result: proposal,
+        answers: {
+          tonk_create_space_confirm: async (args) => {
+            const result = await call(client, 'tonk_create_space_confirm', args);
+            subject = result.structuredContent.space;
+            return result;
+          },
+        },
+      });
+      try {
+        await card.card().getByRole('button', { name: 'Create space', exact: true }).click();
+        await card.card().getByRole('status').filter({ hasText: 'You own it' }).waitFor();
+        assert.ok(subject);
+      } finally {
+        await card.close();
+      }
+      await boot(person.page, origin);
+      assert.equal((await syncedSpaces(person.page, [name]))[name], subject);
+      const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.equal(listed.find((space) => space.subject === subject)?.access, 'write');
+      await call(client, 'tonk_evaluate', { space: subject, document: NOTE });
+      await revoke(person.page, { agent, space: subject });
+      await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
+        since: Date.now(), budget: REVOKE_BUDGET,
+      });
+      await person.page.evaluate(async ([space, document]) => {
+        const branch = `/api/repository/${encodeURIComponent(space)}/branch/main`;
+        const pull = await fetch(branch + '/sync/pull', { method: 'POST' });
+        if (!pull.ok) throw new Error(await pull.text());
+        const write = await fetch(branch + '/evaluate?transact=true', {
+          method: 'POST', headers: { 'content-type': 'application/yaml' }, body: document,
+        });
+        if (!write.ok) throw new Error(await write.text());
+        const push = await fetch(branch + '/sync/push', { method: 'POST' });
+        if (!push.ok) throw new Error(await push.text());
+      }, [subject, note('owner after revocation')]);
     });
 
     // A link the person shares in the chat, joined as the card joins it:

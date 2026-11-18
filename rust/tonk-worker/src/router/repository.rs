@@ -3554,7 +3554,7 @@ async fn run_pause_sync(
 ///
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
-fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
+pub(super) fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
@@ -5392,7 +5392,7 @@ fn claim_identity(claim: &super::claim::RawClaim) -> (String, String, String) {
 
 /// The claims naming a new space, which ride its first install's record
 /// commit rather than the install commit an upgrade reverts.
-fn repository_name_claims(
+pub(super) fn repository_name_claims(
     subject: &Did,
     display_name: &str,
     description: Option<&str>,
