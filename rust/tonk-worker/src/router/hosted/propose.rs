@@ -489,7 +489,7 @@ pub fn dismissed(context: &Context) -> Card {
     Card::strip(
         Some(context.place.clone()),
         context.role,
-        format!("nothing changed · {} stays as it is", context.place.label()),
+        format!("nothing changed in {}", context.place.label()),
         context.agent.clone(),
     )
 }
@@ -509,7 +509,7 @@ pub fn not_saved(context: &Context) -> Card {
     .answer_saying(
         "drop it",
         Look::Link,
-        format!("dropped · nothing changed in {space}"),
+        format!("dropped the change, and nothing changed in {space}"),
         "The person dropped the change that was not saved. Do not try it again unless they ask.",
     )
     .answer_saying(
@@ -608,7 +608,7 @@ fn fields(evaluation: &Value, key: &str, this: &str) -> Option<serde_json::Map<S
 }
 
 /// The fields that differ between `theirs` and `yours`, each side's
-/// values in words: "4 nights · needs parking". All of a side's fields
+/// values in words: "4 nights, needs parking". All of a side's fields
 /// where the other has none.
 fn differing(
     theirs: Option<&serde_json::Map<String, Value>>,
@@ -628,9 +628,9 @@ fn differing(
             .map(|(_, value)| words(value))
             .collect();
         Some(if shown.is_empty() {
-            this.values().map(words).collect::<Vec<_>>().join(" · ")
+            this.values().map(words).collect::<Vec<_>>().join(", ")
         } else {
-            shown.join(" · ")
+            shown.join(", ")
         })
     };
     (side(theirs, yours), side(yours, theirs))
@@ -690,12 +690,12 @@ pub fn read_only(context: &Context) -> Card {
         format!("I can only read {space}, so I didn’t change it. You can make the change in Tonk, or let me write from your agents."),
         context.agent.clone(),
     )
-    .entry("this agent", "read · sees and searches only")
+    .entry("this agent", "can read and search only")
     .entry("to let it write", "your agents in Tonk")
     .answer_saying(
         "skip",
         Look::Ring,
-        format!("nothing changed · {space} stays as it is"),
+        format!("nothing changed in {space}"),
         "The person skipped the change: this connection may only read the space. Do not try \
          to write it again unless they grant write access.",
     )
