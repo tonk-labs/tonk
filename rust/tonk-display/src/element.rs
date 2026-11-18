@@ -5103,7 +5103,7 @@ mod tests {
         view.set_inner_html(concat!(
             "<ui-sync-status></ui-sync-status>",
             "<tonk-inspector></tonk-inspector>",
-            r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+            r#"<tonk-notebook with="main@did:key:zOther"></tonk-notebook>"#,
             "<span>plain</span>",
         ));
         host.append_child(&view).unwrap();
@@ -5128,7 +5128,7 @@ mod tests {
             Some("main@did:key:zSpace"),
         );
         assert_eq!(
-            view.query_selector("tonk-inspector")
+            view.query_selector("tonk-notebook")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
@@ -5226,7 +5226,7 @@ mod tests {
             &mut inner,
             concat!(
                 "<tonk-inspector></tonk-inspector>",
-                r#"<tonk-inspector with="main@did:key:zOther"></tonk-inspector>"#,
+                r#"<tonk-notebook with="main@did:key:zOther"></tonk-notebook>"#,
             ),
             "tonk:test",
             "ui",
@@ -5253,7 +5253,7 @@ mod tests {
         );
         assert_eq!(
             content
-                .query_selector("tonk-inspector")
+                .query_selector("tonk-notebook")
                 .unwrap()
                 .unwrap()
                 .get_attribute("with")
