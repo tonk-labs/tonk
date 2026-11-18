@@ -10,8 +10,8 @@
 //! transaction is handed: `Transaction::assert` asserts into its
 //! changes and `Transaction::dispatch` into its transients.
 //!
-//! The bar runs tonk's `notebook.yaml` and the notebook sketch of the
-//! dialog repository (`design/macros/sketches/notebook.clj`) and pins
+//! The bar runs tonk's `notebook.yaml` and the notebook sketch copied
+//! from the dialog repository (`notebook.clj` beside it) and pins
 //! how many of the YAML's claims the notation stores the same.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,14 +26,13 @@ use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 const CORE: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 const NOTEBOOK: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
 
-/// The notebook in the notation, read from the dialog checkout the
-/// workspace patches dialog to.
-const SKETCH: &str = "/home/claude/notation/rust/dialog-notation/sketches/notebook.clj";
+/// The notebook in the notation, copied from `dialog-notation`'s sketches.
+const SKETCH: &str = include_str!("../../tonk-core/assets/library/notebook.clj");
 
-/// What the notebook reads of `core.yaml`, in the notation, from the
-/// same checkout: read in front of the notebook, as a component is
+/// What the notebook reads of `core.yaml`, in the notation, copied from
+/// the same place: read in front of the notebook, as a component is
 /// read after core. Its claims are not measured.
-const CORE_SKETCH: &str = "/home/claude/notation/rust/dialog-notation/sketches/core.clj";
+const CORE_SKETCH: &str = include_str!("../../tonk-core/assets/library/core.clj");
 
 type Triple = (String, String, String);
 
@@ -829,8 +828,11 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // A sketch other than the checkout's, for telling apart what moves
     // the numbers: the bar is printed and the pins are not checked.
     let other = std::env::var("NOTEBOOK_BAR_SKETCH").ok();
-    let sketch = std::fs::read_to_string(other.as_deref().unwrap_or(SKETCH))?;
-    let core = std::fs::read_to_string(CORE_SKETCH)?;
+    let sketch = match other.as_deref() {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => SKETCH.to_owned(),
+    };
+    let core = CORE_SKETCH.to_owned();
     let yaml = yaml_forms(NOTEBOOK).await?;
     let notation = notation_library_claims(&core, &sketch, true).await?;
     VIEWS.store(true, std::sync::atomic::Ordering::Relaxed);
