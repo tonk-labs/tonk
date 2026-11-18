@@ -31,6 +31,18 @@ struct Definition {
     name: &'static str,
     yaml: &'static str,
     notation: &'static str,
+    /// What the definition declares, for the mapping that writes
+    /// tonk's declaration claims around the notation's output.
+    declares: Option<Declaration>,
+}
+
+/// A concept the notation declares: its name, a read of it, which the
+/// notation compiles to a query whose predicate is the concept's
+/// descriptor, and whether it is a command.
+struct Declaration {
+    name: &'static str,
+    read: &'static str,
+    command: bool,
 }
 
 const DEFINITIONS: &[Definition] = &[
@@ -55,6 +67,11 @@ const DEFINITIONS: &[Definition] = &[
   ; The block's markdown source.
   (xyz.tonk.notebook.block/source of: ?b is: ?s as: :text cardinality: :one))
 "#,
+        declares: Some(Declaration {
+            name: "notebook/block",
+            read: "(query (notebook/block ?b notebook: ?n source: ?s))",
+            command: false,
+        }),
     },
     Definition {
         name: "command block/edit",
@@ -87,6 +104,11 @@ const DEFINITIONS: &[Definition] = &[
   ; The notebook the block belongs to.
   (xyz.tonk.block.edit/notebook of: ?c is: ?n as: :entity in: :control))
 "#,
+        declares: Some(Declaration {
+            name: "block/edit",
+            read: "(query (block/edit subject: ?b source: ?s notebook: ?n))",
+            command: true,
+        }),
     },
     Definition {
         name: "rule persist a block edit",
@@ -104,6 +126,7 @@ const DEFINITIONS: &[Definition] = &[
 (rule (assert (notebook/block ?b notebook: ?n source: ?s))
   (block/edit subject: ?b source: ?s notebook: ?n))
 "#,
+        declares: None,
     },
     Definition {
         name: "assert route /notebook",
@@ -114,8 +137,21 @@ const DEFINITIONS: &[Definition] = &[
         notation: r#"(assert (route ?r path: "/notebook" concept: tonk:notebook/index-route)
   (when (id ?r path: "/notebook" concept: tonk:notebook/index-route)))
 "#,
+        declares: None,
     },
 ];
+
+/// The command of [`DEFINITIONS`] with each line read
+/// `cardinality: :one`, the pick the YAML's fields get by default.
+const COMMAND_READ_ONE: &str = r#"; Write one notebook block's source.
+(concept (block/edit subject: ?b source: ?s notebook: ?n)
+  ; The block entity, stamped on the element's data-subject.
+  (xyz.tonk.block.edit/subject of: ?c is: ?b as: :entity cardinality: :one in: :control)
+  ; The block's new markdown source.
+  (xyz.tonk.block.edit/source of: ?c is: ?s as: :text cardinality: :one in: :control)
+  ; The notebook the block belongs to.
+  (xyz.tonk.block.edit/notebook of: ?c is: ?n as: :entity cardinality: :one in: :control))
+"#;
 
 /// What the notation side needs of `core.yaml` and does not compare:
 /// the `route` concept a route asserts, written as `core.yaml` declares
@@ -283,7 +319,10 @@ async fn yaml_claims(definitions: &[&str]) -> anyhow::Result<Vec<Claims>> {
 /// asserted as `examples/notebook/session.rs` asserts them: a write,
 /// a rule and a transient mark into the changes, an issue into the
 /// transients.
-async fn notation_claims(definitions: &[&str]) -> anyhow::Result<Vec<Result<Claims, String>>> {
+async fn notation_claims(
+    definitions: &[Definition],
+    mapped: bool,
+) -> anyhow::Result<Vec<Result<Claims, String>>> {
     // A write with a `when` asserts what its `when` matches, so it is
     // run against a branch: an empty one, as a library installed into
     // a new space finds it but for core.
@@ -299,7 +338,7 @@ async fn notation_claims(definitions: &[&str]) -> anyhow::Result<Vec<Result<Clai
     );
     let mut per = Vec::new();
     for definition in definitions {
-        let checked = check(&mut analyzer, definition);
+        let checked = check(&mut analyzer, definition.notation);
         let refusals: Vec<String> = checked
             .refusals()
             .map(|diagnostic| format!("{diagnostic:?}"))
@@ -348,12 +387,100 @@ async fn notation_claims(definitions: &[&str]) -> anyhow::Result<Vec<Result<Clai
             per.push(Err(format!("compiles to {}", unsubmitted.join(", "))));
             continue;
         }
+        if mapped && let Some(declaration) = &definition.declares {
+            // A read of the declaration resolves in the analyzer that
+            // has it; the read itself is kept from the measured one.
+            let mut reads = analyzer.clone();
+            declaration_claims(&mut reads, definition.notation, declaration, &mut changes)?;
+        }
         per.push(Ok(Claims {
             durable: triples(changes),
             transient: triples(transients),
         }));
     }
     Ok(per)
+}
+
+/// The mapping: what tonk's analyzer writes for a `concept!:` or a
+/// `command!:`, written around the notation's output from what the
+/// notation declares. The concept's descriptor is the predicate of the
+/// query the notation compiles a read of it to; the descriptions are
+/// the comments above the form and above each of its lines. Each field
+/// gets tonk's attribute facts (`attribute_statements`), the concept
+/// its `db.concept.with/*` facts and marker (`AnonymousConcept`, or
+/// `TransientConcept` for a command), and its name the
+/// `db.name/referent` an `&anchor` writes.
+fn declaration_claims(
+    analyzer: &mut Analyzer,
+    text: &str,
+    declaration: &Declaration,
+    changes: &mut Changes,
+) -> anyhow::Result<()> {
+    use dialog_notation::{Segment, Syntax, parse_written};
+    use tonk_schema::concept::{AnonymousConcept, TransientConcept, attribute_statements};
+
+    let read = check(analyzer, declaration.read);
+    let descriptor = read
+        .steps
+        .into_iter()
+        .find_map(|step| match step {
+            Step::Query(query) => Some(query.select.predicate),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("a read of {} compiles to no query", declaration.name))?;
+
+    let (trees, written) = parse_written(text)?;
+    let said = |path: &[Segment]| -> Option<String> {
+        let said: Vec<&str> = written
+            .comments(path)
+            .into_iter()
+            .map(|comment| comment.said())
+            .filter(|said| !said.is_empty())
+            .collect();
+        (!said.is_empty()).then(|| said.join("\n"))
+    };
+    let mut lines: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(Syntax::Application(_, operand)) = trees.first() {
+        for (index, line) in operand.items.iter().enumerate().skip(1) {
+            if let Syntax::Application(operator, _) = line
+                && let Syntax::Reference(the) = operator.as_ref()
+                && let Some(description) = said(&[Segment::Item(0), Segment::Item(index)])
+            {
+                lines.insert(the.clone(), description);
+            }
+        }
+    }
+
+    for (_, field) in descriptor.with().iter() {
+        let mut attribute = serde_json::to_value(field.descriptor())?;
+        if let Some(description) = lines.get(&field.descriptor().the().to_string()) {
+            attribute["description"] = serde_json::Value::String(description.clone());
+        }
+        let attribute: dialog_query::AttributeDescriptor = serde_json::from_value(attribute)?;
+        for statement in attribute_statements(&attribute).map_err(anyhow::Error::msg)? {
+            statement.assert(changes);
+        }
+    }
+    let concept = match said(&[Segment::Item(0)]) {
+        Some(description) => descriptor.with_description(description),
+        None => descriptor,
+    };
+    let this = concept.this();
+    if declaration.command {
+        TransientConcept::new(concept).assert(changes);
+    } else {
+        AnonymousConcept::new(concept).assert(changes);
+    }
+    dialog_query::AttributeStatement {
+        the: dialog_query::the!("db.name/referent"),
+        of: format!("id:{}", declaration.name).parse()?,
+        is: Value::Entity(this),
+        cause: None,
+        cardinality: None,
+        pick: Some(dialog_query::Pick::Last),
+    }
+    .assert(changes);
+    Ok(())
 }
 
 /// How a YAML claim fares on the notation side.
@@ -383,15 +510,12 @@ fn print(side: &str, claims: &Claims) {
     }
 }
 
-#[dialog_common::test]
-async fn it_measures_the_claims_of_a_library_in_two_notations() -> anyhow::Result<()> {
-    let yaml: Vec<&str> = DEFINITIONS.iter().map(|d| d.yaml).collect();
-    let notation: Vec<&str> = DEFINITIONS.iter().map(|d| d.notation).collect();
-    let yaml = yaml_claims(&yaml).await?;
-    let notation = notation_claims(&notation).await?;
-
+/// Print each definition's claims both ways and how each YAML claim
+/// fares, and count the fates per definition and in all.
+fn compare(heading: &str, yaml: &[Claims], notation: &[Result<Claims, String>]) {
+    println!("#### {heading}");
     let mut totals: BTreeMap<&str, usize> = BTreeMap::new();
-    for ((definition, yaml), notation) in DEFINITIONS.iter().zip(&yaml).zip(&notation) {
+    for ((definition, yaml), notation) in DEFINITIONS.iter().zip(yaml).zip(notation) {
         println!("== {}", definition.name);
         print("yaml    ", yaml);
         let compiled = match notation {
@@ -404,27 +528,72 @@ async fn it_measures_the_claims_of_a_library_in_two_notations() -> anyhow::Resul
                 BTreeSet::new()
             }
         };
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         let yaml_all = yaml.all();
         for claim in &yaml_all {
             let fate = fate(claim, &compiled);
-            *totals.entry(fate).or_default() += 1;
+            *counts.entry(fate).or_default() += 1;
             println!("  fate {fate:28} ({}, {}, {})", claim.0, claim.1, claim.2);
         }
         for claim in compiled.difference(&yaml_all) {
-            *totals.entry("only the notation writes").or_default() += 1;
+            *counts.entry("only the notation writes").or_default() += 1;
             println!(
                 "  fate {:28} ({}, {}, {})",
                 "only the notation writes", claim.0, claim.1, claim.2
             );
         }
-    }
-    println!("== rule bodies");
-    for (hash, body) in BODIES.lock().expect("bodies").iter() {
-        println!("  {hash}\n    {body}");
+        println!("  counts {counts:?}");
+        for (fate, count) in counts {
+            *totals.entry(fate).or_default() += count;
+        }
     }
     println!("== totals");
     for (fate, count) in &totals {
         println!("  {fate:28} {count}");
+    }
+}
+
+#[dialog_common::test]
+async fn it_measures_the_claims_of_a_library_in_two_notations() -> anyhow::Result<()> {
+    let texts: Vec<&str> = DEFINITIONS.iter().map(|d| d.yaml).collect();
+    let yaml = yaml_claims(&texts).await?;
+    let notation = notation_claims(DEFINITIONS, false).await?;
+    compare("the notation's output as it is", &yaml, &notation);
+    let mapped = notation_claims(DEFINITIONS, true).await?;
+    compare(
+        "with tonk's declaration claims written around it",
+        &yaml,
+        &mapped,
+    );
+    // What moves the command's and the rule's identities: the same
+    // definitions with the command's lines read `cardinality: :one`,
+    // as the YAML's are.
+    let variant: Vec<Definition> = DEFINITIONS
+        .iter()
+        .map(|definition| Definition {
+            name: definition.name,
+            yaml: definition.yaml,
+            notation: if definition.name == "command block/edit" {
+                COMMAND_READ_ONE
+            } else {
+                definition.notation
+            },
+            declares: definition.declares.as_ref().map(|declaration| Declaration {
+                name: declaration.name,
+                read: declaration.read,
+                command: declaration.command,
+            }),
+        })
+        .collect();
+    let variant = notation_claims(&variant, true).await?;
+    compare(
+        "mapped, with the command's lines read `cardinality: :one`",
+        &yaml,
+        &variant,
+    );
+    println!("== rule bodies");
+    for (hash, body) in BODIES.lock().expect("bodies").iter() {
+        println!("  {hash}\n    {body}");
     }
     assert!(yaml.iter().all(|claims| !claims.all().is_empty()));
     Ok(())
