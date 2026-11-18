@@ -7,7 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test --test-timeout=600000 agent.test.mjs"
+    "test": "node --test --test-timeout=600000 agent.test.mjs",
+    "test:relay": "node --test --test-timeout=60000 relay.test.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.0",
