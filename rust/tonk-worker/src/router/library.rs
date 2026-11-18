@@ -116,6 +116,72 @@ pub(super) async fn parse(text: &str) -> Result<Syntax, TonkWorkerError> {
     Ok(syntax)
 }
 
+/// The version a library document is recorded under when installed:
+/// `seed:` and blake3 of its text and, when it includes files, of each
+/// file it includes, path and bytes, so a change to an included file
+/// moves the version as a change to the document does and a space
+/// upgrades to it. A document that includes nothing, or one with no
+/// location to include from, keeps the version of its text alone, which
+/// is what every release recorded before included files counted.
+///
+/// The hash is the identity, so two devices installing the same seed derive
+/// the same entity and converge. It is taken over what was fetched rather
+/// than read from a build manifest, so it cannot disagree with the bytes
+/// that were installed. The source it came from rides
+/// `xyz.tonk.seed/source` alongside, since a custom seed is a different URL
+/// at the same shape.
+pub(super) async fn version(text: &str) -> String {
+    let alone = || format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+    let Some(root) = location() else {
+        return alone();
+    };
+    let parsed = parse_at(root.clone(), text);
+    let Some(mut syntax) = parsed.syntax else {
+        return alone();
+    };
+    let recording = Recording {
+        library: Library::new(root),
+        read: std::sync::Mutex::new(Vec::new()),
+    };
+    // A file that fails to load is left out here and refused by the
+    // install, which reads the same files.
+    let _ = expand(&mut syntax, &recording).await;
+    let mut read = recording
+        .read
+        .into_inner()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if read.is_empty() {
+        return alone();
+    }
+    read.sort();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(text.as_bytes());
+    for (path, bytes) in &read {
+        hasher.update(&(path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    format!("seed:{}", hasher.finalize().to_hex())
+}
+
+/// A [`Library`] loader that keeps what it read, path and bytes.
+struct Recording {
+    library: Library,
+    read: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl Load for Recording {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        let bytes = self.library.load(uri).await?;
+        self.read
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((uri.path().to_owned(), bytes.clone()));
+        Ok(bytes)
+    }
+}
+
 fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
     if let Some(first) = parsed.diagnostics.first() {
         return Err(TonkWorkerError::Internal(format!(
@@ -217,6 +283,26 @@ mod tests {
 
     fn library() -> Library {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())
+    }
+
+    /// A document that includes nothing keeps the version of its text, the
+    /// one every space recorded before included files counted, so it is
+    /// not reinstalled. One that includes files is versioned over them
+    /// too, so an edit to an included file alone reaches the spaces that
+    /// installed it.
+    #[dialog_common::test]
+    async fn it_versions_a_document_over_what_it_includes() {
+        let alone = |text: &str| format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+        let plain = "concept!: &a\n  description: A.\n";
+        assert_eq!(version(plain).await, alone(plain));
+
+        let component = include_str!("../../../tonk-core/assets/library/tree-inspector.yaml");
+        assert_ne!(
+            version(component).await,
+            alone(component),
+            "the included methods are part of its version"
+        );
+        assert_eq!(version(component).await, version(component).await);
     }
 
     #[dialog_common::test]
