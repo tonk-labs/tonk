@@ -694,6 +694,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
+            super::propose::LEAVE => {
+                self.leave_space(arguments, verified, bearer, session, call)
+                    .await
+            }
             super::propose::APPLY | super::propose::DISMISS => {
                 self.answer_proposal(name, arguments, verified, bearer, session, call)
                     .await
@@ -743,7 +747,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
         confirm: bool,
         call: &mut Call,
     ) -> Value {
-        let reached = match self.reach(verified, bearer, session, space, call).await {
+        let reached = match self
+            .reach(verified, bearer, session, space, true, call)
+            .await
+        {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
@@ -859,6 +866,78 @@ impl<W: Writers> McpEndpoint<'_, W> {
         })
     }
 
+    /// `tonk_leave_space`: hold leaving a granted space on the agent
+    /// space's writer and answer the ask. Nothing changes until the person
+    /// applies it in the card.
+    async fn leave_space(
+        &self,
+        arguments: &Value,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        call: &mut Call,
+    ) -> Value {
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            call.end(Outcome::Invalid, "bad_space");
+            return tool_result(
+                json!("`space` is required: an exact subject from tonk_list_spaces."),
+                true,
+            );
+        };
+        call.space = Some(space.clone());
+        if &space == verified.agent() {
+            call.end(Outcome::Invalid, "own_space");
+            return tool_result(
+                json!("This is your own space; it cannot be left. Leave a space granted to you."),
+                true,
+            );
+        }
+        let reached = match self
+            .reach(verified, bearer, session, &space, false, call)
+            .await
+        {
+            Ok(reached) => reached,
+            Err(refused) => return refused,
+        };
+        let body = json!({ "space": space.to_string() }).to_string();
+        let Some(request) =
+            space_request(super::propose::LEAVE_ROUTE, None, "application/json", &body)
+        else {
+            return tool_result(json!("The request is malformed."), true);
+        };
+        let agent = verified.agent().clone();
+        let (status, body) = self
+            .send(verified, bearer, session, &agent, request, call)
+            .await;
+        let held = parsed(&body);
+        let Some(id) = held["proposal"]["id"]
+            .as_str()
+            .filter(|_| status.is_success())
+        else {
+            return tool_result(
+                json!(format!("Could not ask to leave: {}", reason(&held))),
+                true,
+            );
+        };
+        let context = &reached.context;
+        let ask = super::propose::leave_ask(context, id, agent.as_ref());
+        json!({
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "Asked the person to confirm in a card: {}. Nothing changes unless they \
+                     confirm there; the card tells you when they answer.",
+                    ask.say
+                ),
+            }],
+            "structuredContent": { "card": ask.to_value() },
+            "isError": false,
+        })
+    }
+
     /// `tonk_proposal_apply` and `tonk_proposal_dismiss`, which the card
     /// calls with the person's answer.
     async fn answer_proposal(
@@ -880,9 +959,29 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let Some(id) = arguments["id"].as_str().filter(|id| !id.is_empty()) else {
             return tool_result(json!("Name the proposal."), true);
         };
-        let reached = match self.reach(verified, bearer, session, &space, call).await {
+        let reached = match self
+            .reach(verified, bearer, session, &space, true, call)
+            .await
+        {
             Ok(reached) => reached,
             Err(refused) => return refused,
+        };
+        // A held leave names the space it leaves; read it while the agent
+        // still holds it, so the answer can name it.
+        let leaving = match arguments["leave"].as_str() {
+            None => None,
+            Some(target) => {
+                let Ok(target) = target.parse::<Did>() else {
+                    return tool_result(json!("Name the space being left."), true);
+                };
+                match self
+                    .reach(verified, bearer, session, &target, false, call)
+                    .await
+                {
+                    Ok(target) => Some(target.context),
+                    Err(refused) => return refused,
+                }
+            }
         };
         let route = if apply {
             super::propose::APPLY_ROUTE
@@ -942,6 +1041,29 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 true,
             );
         }
+        if let (Some(target), true) = (&leaving, status.is_success()) {
+            let name = target.place.label();
+            let space = &target.place.did;
+            return if apply {
+                card(
+                    super::propose::left(target),
+                    format!(
+                        "The person confirmed: you left {name} (space {space}). It is no longer \
+                         in tonk_list_spaces; what you added stays in it."
+                    ),
+                    false,
+                )
+            } else {
+                card(
+                    super::propose::stayed(target),
+                    format!(
+                        "The person chose to keep you in {name}. Nothing changed. Do not ask \
+                         again unless they bring it up."
+                    ),
+                    false,
+                )
+            };
+        }
         if !status.is_success() {
             let reason = reason(&parsed(&body));
             let shown = if unreachable(status) {
@@ -996,6 +1118,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
         bearer: &str,
         session: &str,
         space: &Did,
+        write: bool,
         call: &mut Call,
     ) -> Result<Reached, Value> {
         let access = match self.access(verified, bearer, session, call).await {
@@ -1039,7 +1162,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 context,
             });
         }
-        if let Some((kind, refusal)) = refusal(held, space, true) {
+        if let Some((kind, refusal)) = refusal(held, space, write) {
             call.end(Outcome::Refused, kind);
             // The model reads the refusal; the card says it for the person.
             let card = match held {
