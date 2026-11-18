@@ -16,7 +16,9 @@
 //! held change lives in the writer's memory: a writer that is evicted or
 //! recycled forgets it, and the person is told to ask again.
 //!
-//! `tonk_evaluate` with `confirm: true` is the one proposer today.
+//! `tonk_evaluate` with `confirm: true` is the one proposer today. A
+//! document that runs a [key command](KEY_COMMANDS) is proposed whatever
+//! the agent sends: the person confirms it, alone, before it runs.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -64,6 +66,8 @@ struct Held {
     revision: Value,
     /// What the preview showed the person: its matches before and after.
     seen: Value,
+    /// Whether it is a key command, applied as a plain write.
+    command: bool,
     expires: u64,
 }
 
@@ -76,6 +80,11 @@ pub struct Taken {
     pub revision: Value,
     /// What its preview showed: [`seen`] of the preview's evaluation.
     pub seen: Value,
+    /// Whether it is a [key command](KEY_COMMANDS), alone in its
+    /// document: applied as a plain write, since a revision-checked one
+    /// refuses commands. The person confirmed the command and the inputs
+    /// the document spells out, so nothing else can come along with it.
+    pub command: bool,
 }
 
 /// What a preview `evaluation` shows the person: its matches before and
@@ -93,8 +102,16 @@ pub struct Gone;
 
 impl Proposals {
     /// Hold `document`, previewed at `revision` and showing `seen`, until
-    /// `now + LIFETIME`. Answers its id and when it lapses.
-    pub fn hold(&self, document: String, revision: Value, seen: Value, now: u64) -> (String, u64) {
+    /// `now + LIFETIME`; `command` when it is a key command alone. Answers
+    /// its id and when it lapses.
+    pub fn hold(
+        &self,
+        document: String,
+        revision: Value,
+        seen: Value,
+        command: bool,
+        now: u64,
+    ) -> (String, u64) {
         let id = B64.encode(rand::random::<[u8; 16]>());
         let expires = now + LIFETIME;
         let mut held = self.held.lock();
@@ -107,6 +124,7 @@ impl Proposals {
             document,
             revision,
             seen,
+            command,
             expires,
         });
         (id, expires)
@@ -128,7 +146,118 @@ impl Proposals {
             document: held.document,
             revision: held.revision,
             seen: held.seen,
+            command: held.command,
         })
+    }
+}
+
+/// Commands that change who may use a space or what it is called. A
+/// document that runs one is asked first, whatever the agent sends, and
+/// is held only when the command is all it does.
+pub const KEY_COMMANDS: &[&str] = &["tonk/invite", "member/expel", "tonk/rename-repository"];
+
+/// Whether `document` names a [key command](KEY_COMMANDS) as a head
+/// (`tonk/invite!`), so it is proposed at once. A shortcut only: the
+/// writer refuses a key command a plain write runs, however the document
+/// spells it, and the endpoint then proposes the document instead.
+pub fn names_key_command(document: &str) -> bool {
+    KEY_COMMANDS
+        .iter()
+        .any(|name| document.contains(&format!("{name}!")))
+}
+
+/// A [key command](KEY_COMMANDS) an evaluation runs, with its inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyCommand {
+    /// Its name, as [`KEY_COMMANDS`] lists it.
+    pub name: &'static str,
+    /// Its fields, as the evaluation matched them.
+    fields: Value,
+}
+
+/// The first [key command](KEY_COMMANDS) `evaluation` runs (a transient
+/// match under its label), if any.
+pub fn key_command(evaluation: &Value) -> Option<KeyCommand> {
+    evaluation["matches_after"]
+        .as_array()?
+        .iter()
+        .find_map(|block| {
+            let label = block["label"].as_str()?.trim_end_matches('!');
+            let name = KEY_COMMANDS.iter().find(|name| **name == label)?;
+            let result = block["results"]
+                .as_array()?
+                .iter()
+                .find(|result| result["transient"].as_bool().unwrap_or(false))?;
+            Some(KeyCommand {
+                name,
+                fields: result["fields"].clone(),
+            })
+        })
+}
+
+/// What a key command does, in a person's words.
+struct Said {
+    ask: String,
+    act: &'static str,
+    decline: &'static str,
+    done: String,
+}
+
+impl KeyCommand {
+    fn field(&self, name: &str) -> Option<&str> {
+        self.fields[name].as_str().filter(|value| !value.is_empty())
+    }
+
+    /// Its words, about `space` (the space's name, as a card says it).
+    fn said(&self, space: &str) -> Said {
+        match self.name {
+            "tonk/rename-repository" => {
+                let name = self.field("name").unwrap_or("a new name");
+                Said {
+                    ask: format!("rename {space} to {name}"),
+                    act: "rename it",
+                    decline: "keep the name",
+                    done: format!("renamed {space} to {name}"),
+                }
+            }
+            "member/expel" => {
+                let member = self.field("member").map_or("a member".to_owned(), short);
+                Said {
+                    ask: format!("remove {member} from {space}"),
+                    act: "remove them",
+                    decline: "keep them",
+                    done: format!("removed {member} from {space}"),
+                }
+            }
+            _ => Said {
+                ask: format!("make an invite to {space}"),
+                act: "make the invite",
+                decline: "not now",
+                done: format!("made an invite to {space}"),
+            },
+        }
+    }
+
+    /// What the person is told it gives or takes away, beside its ask.
+    fn ledger(&self, space: &str) -> (&'static str, String) {
+        match self.name {
+            "tonk/rename-repository" => ("who sees it", format!("everyone in {space}")),
+            "member/expel" => ("they lose", format!("their access to {space}")),
+            _ => ("it gives", format!("a link that lets someone join {space}")),
+        }
+    }
+}
+
+/// A DID or URI short enough for a card: its last part, cut at 12.
+fn short(uri: &str) -> String {
+    let tail = uri
+        .rsplit([':', '/', '#'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(uri);
+    if tail.chars().count() > 16 {
+        format!("{}…", tail.chars().take(12).collect::<String>())
+    } else {
+        tail.to_owned()
     }
 }
 
@@ -418,8 +547,22 @@ impl Summary {
 
 /// The ask for a change held as `id`, from its preview `evaluation`.
 pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
-    let changes = changed(evaluation);
     let space = context.place.label().to_owned();
+    if let Some(key) = key_command(evaluation) {
+        let said = key.said(&space);
+        let (term, value) = key.ledger(&space);
+        let arguments = json!({ "space": context.place.did, "id": id });
+        return Card::ask(
+            context.place.clone(),
+            context.role,
+            said.ask,
+            context.agent.clone(),
+        )
+        .entry(term, value)
+        .answer(said.decline, Look::Ring, DISMISS, arguments.clone())
+        .answer(said.act, Look::Main, APPLY, arguments);
+    }
+    let changes = changed(evaluation);
     let summary = Summary::of(&changes);
     let (say, act, decline) = match &summary {
         Some(summary) => (summary.ask(&space), summary.act(), summary.decline()),
@@ -449,8 +592,7 @@ pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     } else {
         card.entry("who sees it", format!("everyone in {space}"))
     };
-    card.entry("undo", "from the receipt")
-        .answer(decline, Look::Ring, DISMISS, arguments.clone())
+    card.answer(decline, Look::Ring, DISMISS, arguments.clone())
         .answer(act, Look::Main, APPLY, arguments)
 }
 
@@ -466,6 +608,9 @@ pub fn receipt(context: &Context, evaluation: &Value, moved: bool) -> Card {
             context.agent.clone(),
         )
     };
+    if let Some(key) = key_command(evaluation) {
+        return strip(key.said(space).done).by_agent();
+    }
     match Summary::of(&changed(evaluation)) {
         Some(summary) => strip(summary.done(space)).by_agent(),
         // A write the matches do not show, such as a rule or a schema.

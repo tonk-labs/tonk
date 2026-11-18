@@ -46,14 +46,15 @@ fn evaluation() -> Value {
 #[dialog_common::test]
 fn it_answers_a_held_change_once() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), json!({}), 100);
+    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), json!({}), false, 100);
     assert_eq!(expires, 100 + LIFETIME);
     assert_eq!(
         proposals.take(&id, 101),
         Ok(Taken {
             document: "note!: {}".to_owned(),
             revision: json!(null),
-            seen: json!({})
+            seen: json!({}),
+            command: false,
         })
     );
     assert_eq!(proposals.take(&id, 101), Err(Gone));
@@ -62,14 +63,14 @@ fn it_answers_a_held_change_once() {
 #[dialog_common::test]
 fn it_forgets_a_change_once_it_lapses() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("a".into(), json!(null), json!({}), 100);
+    let (id, expires) = proposals.hold("a".into(), json!(null), json!({}), false, 100);
     assert_eq!(proposals.take(&id, expires), Err(Gone));
 }
 
 #[dialog_common::test]
 fn it_never_answers_an_id_it_did_not_mint() {
     let proposals = Proposals::default();
-    let (id, _) = proposals.hold("a".into(), json!(null), json!({}), 100);
+    let (id, _) = proposals.hold("a".into(), json!(null), json!({}), false, 100);
     assert_eq!(proposals.take("guessed", 101), Err(Gone));
     // Another writer (another session) holds nothing under this id.
     assert_eq!(Proposals::default().take(&id, 101), Err(Gone));
@@ -80,12 +81,12 @@ fn it_never_answers_an_id_it_did_not_mint() {
 fn it_holds_at_most_a_few_dropping_the_oldest() {
     let proposals = Proposals::default();
     let first = proposals
-        .hold("first".into(), json!(null), json!({}), 100)
+        .hold("first".into(), json!(null), json!({}), false, 100)
         .0;
     let mut last = String::new();
     for _ in 0..MOST {
         last = proposals
-            .hold("later".into(), json!(null), json!({}), 100)
+            .hold("later".into(), json!(null), json!({}), false, 100)
             .0;
     }
     assert_eq!(proposals.take(&first, 101), Err(Gone));
@@ -172,11 +173,7 @@ fn the_ask_says_what_it_does_and_leads_with_the_main_answer() {
         .collect();
     assert_eq!(
         ledger,
-        [
-            ("in", "Launch"),
-            ("who sees it", "everyone in Launch"),
-            ("undo", "from the receipt")
-        ]
+        [("in", "Launch"), ("who sees it", "everyone in Launch")]
     );
     assert!(card.fine.is_none());
     let answers: Vec<(&str, Look)> = card
@@ -317,4 +314,72 @@ fn a_space_out_of_reach_offers_to_grant_it_in_tonk() {
         }
     );
     assert_eq!(read.answers[0].label, "skip");
+}
+
+/// An evaluation that runs `name` once, with `fields`.
+fn running(name: &str, fields: Value) -> Value {
+    json!({
+        "matches_before": [{ "label": name, "results": [] }],
+        "matches_after": [{
+            "label": name,
+            "results": [{ "this": "did:key:zCommand", "fields": fields, "transient": true }],
+        }],
+        "commits": { "claims": 2, "entities": {} },
+    })
+}
+
+#[dialog_common::test]
+fn a_document_naming_a_key_command_is_asked_first() {
+    assert!(names_key_command(
+        "tonk/rename-repository!:\n  subject: did:key:zLaunch\n  name: \"Launch 2\"\n"
+    ));
+    assert!(names_key_command(
+        "member/expel!:\n  member: did:key:zSam\n"
+    ));
+    assert!(names_key_command("tonk/invite!:\n  time: 1\n"));
+    assert!(!names_key_command("note!:\n  title: \"tonk/invite\"\n"));
+    assert!(!names_key_command("tonk/repository:\n  name: ?name\n"));
+}
+
+#[dialog_common::test]
+fn a_key_command_is_asked_and_receipted_in_words() {
+    let rename = running(
+        "tonk/rename-repository",
+        json!({ "subject": "did:key:zLaunch", "name": "Launch 2" }),
+    );
+    let card = ask(&context(false), "id-1", &rename);
+    assert_eq!(card.say, "rename Launch to Launch 2");
+    assert!(card.changes.is_empty(), "a key command lists no changes");
+    let answers: Vec<(&str, Look)> = card
+        .answers
+        .iter()
+        .map(|answer| (answer.label.as_str(), answer.kind))
+        .collect();
+    assert_eq!(
+        answers,
+        [("keep the name", Look::Ring), ("rename it", Look::Main)]
+    );
+    assert_eq!(
+        receipt(&context(false), &rename, true).say,
+        "renamed Launch to Launch 2"
+    );
+
+    let expel = running(
+        "member/expel",
+        json!({ "member": "did:key:z6MkSamSamSamSamSam" }),
+    );
+    let card = ask(&context(false), "id-2", &expel);
+    assert_eq!(card.say, "remove z6MkSamSamSa… from Launch");
+    assert_eq!(card.ledger[0].term, "they lose");
+
+    let invite = running("tonk/invite", json!({ "time": 1.0 }));
+    assert_eq!(
+        ask(&context(false), "id-3", &invite).say,
+        "make an invite to Launch"
+    );
+    assert_eq!(key_command(&invite).unwrap().name, "tonk/invite");
+    assert!(
+        key_command(&evaluation()).is_none(),
+        "a plain write runs no key command"
+    );
 }

@@ -853,6 +853,38 @@ mod against_a_service {
     /// An address on another origin than the configured service.
     const FOREIGN: &str = "https://elsewhere.example/ucan/";
 
+    /// What `core.yaml` declares for `tonk/rename-repository`.
+    const RENAME_SCHEMA: &str = "concept!: &tonk/repository
+  this: tonk:repository
+  description: A repository
+  with:
+    name:
+      description: The name
+      the: xyz.tonk.repo/name
+      as: text
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+command!: &tonk/rename-repository
+  description: Rename the repository.
+  with:
+    subject: rename-repository/subject
+    name: rename-repository/name
+rule!:
+  description: Renames the repository from a rename-repository command
+  assert!: tonk/repository
+  when:
+    - assert: tonk/rename-repository
+      where:
+        subject: ?this
+        name: ?name
+";
+
     const SCHEMA: &str = "attribute!: &mcp-note-title
   description: Title
   the: mcp.note/title
@@ -1471,6 +1503,141 @@ concept!: &mcp-note
         drop(open);
         service.stop().await.unwrap();
         other.stop().await.unwrap();
+    }
+
+    /// A command that changes who has access to a space or what it is
+    /// called is asked first, whatever the agent sends: `tonk_evaluate`
+    /// holds it and answers an ask, and only the person's answer runs it.
+    #[dialog_common::test]
+    async fn a_key_command_is_asked_first_even_without_confirm() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        // The part of the core library a rename needs, as every space is
+        // seeded with it.
+        let seeded = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": RENAME_SCHEMA }),
+            )
+            .await;
+        assert_eq!(seeded["isError"], false, "{seeded}");
+        let run: u64 = rand::random();
+        let name = format!("Renamed {run}");
+        let rename = format!("tonk/rename-repository!:\n  subject: {space}\n  name: \"{name}\"\n");
+        let renamed = || {
+            let find = format!("tonk/repository:\n  this: {space}\n  name: ?name\n");
+            let client = &client;
+            let space = space.clone();
+            let name = name.clone();
+            async move {
+                let (found, error) = client
+                    .call("tonk_query", json!({ "space": space, "document": find }))
+                    .await;
+                assert!(!error, "{found}");
+                found.to_string().contains(&name)
+            }
+        };
+
+        // Sent as a plain write: held and asked, and nothing renamed.
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": rename }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        let say = ask["say"].as_str().unwrap();
+        assert!(say.starts_with("rename "), "{say}");
+        assert!(say.contains(&name), "{say}");
+        assert!(
+            !renamed().await,
+            "the rename ran before the person answered"
+        );
+
+        // Applied: the rename runs once.
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply", "{ask}");
+        let applied = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(applied["isError"], false, "{applied}");
+        assert_eq!(applied["structuredContent"]["card"]["kind"], "strip");
+        assert!(renamed().await, "the confirmed rename did not run");
+
+        // With another write beside it, it is refused: the person confirms
+        // the command alone.
+        let mixed =
+            format!("{rename}mcp-note!:\n  this: urn:mcp:{run}:beside\n  title: \"beside\"\n");
+        let (refused, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": SCHEMA.to_owned() + &mixed }),
+            )
+            .await;
+        assert!(error, "{refused}");
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+
+        // Spelled so the source does not name it: the worker still finds
+        // the command, nothing runs, and the person is asked.
+        let other = format!("Escaped {run}");
+        let escaped = format!(
+            "\"tonk/rename-repository\\u0021\":\n  subject: {space}\n  name: \"{other}\"\n"
+        );
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": escaped }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        assert_eq!(asked["structuredContent"]["card"]["kind"], "ask", "{asked}");
+        let (found, _) = client
+            .call(
+                "tonk_query",
+                json!({ "space": space, "document": format!("tonk/repository:\n  this: {space}\n  name: ?name\n") }),
+            )
+            .await;
+        assert!(
+            !found.to_string().contains(&other),
+            "an escaped rename ran unasked: {found}"
+        );
+
+        // A query beside it could bind its inputs to other values by the
+        // time the person answers: refused, and nothing runs.
+        let queried = format!("tonk/repository:\n  this: {space}\n  name: ?name\n{rename}");
+        let (refused, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": queried }),
+            )
+            .await;
+        assert!(error, "{refused}");
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+
+        service.stop().await.unwrap();
     }
 
     #[dialog_common::test]

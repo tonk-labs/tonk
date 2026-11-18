@@ -42,6 +42,11 @@ you which. Use it for many changes at once, for changes others will see that
 are hard to undo, or when the person asked to confirm first. Wait for their
 answer; do not write the same change again meanwhile.
 
+Renaming a space (`tonk/rename-repository`), making an invite (`tonk/invite`)
+and removing a member (`member/expel`) are always confirmed this way, with or
+without `confirm`: nothing runs until the person applies it. Send each in a
+document of its own, with no other changes beside it.
+
 Read only what the task needs. Discover a space's schema by querying
 `concept:`; inspect a concept's `source` descriptors for exact attribute
 domains, field types and commands. Schema presence does not prove records

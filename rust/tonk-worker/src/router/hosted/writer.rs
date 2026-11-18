@@ -300,7 +300,16 @@ impl SpaceWriter {
     /// Every answer carries the time of each step in `Server-Timing`:
     /// `lock` (waiting for the write before it), `reopen`, `pull`, `eval`,
     /// `push` and `landed`, each when it ran.
+    ///
+    /// An `/evaluate` that runs a [key command](super::propose::KEY_COMMANDS)
+    /// is refused before it commits (`403` `KEY_COMMAND_NOT_CONFIRMED`):
+    /// only [`Self::apply`] runs one, once the person confirmed it.
     pub async fn write(&self, request: Request<Body>) -> Response<Body> {
+        self.write_any(refusing_key_commands(request)).await
+    }
+
+    /// [`Self::write`], key commands included: for a confirmed one.
+    async fn write_any(&self, request: Request<Body>) -> Response<Body> {
         let mut steps = Steps::start();
         let mut response = self.write_timed(request, &mut steps).await;
         steps.insert(response.headers_mut());
@@ -428,8 +437,12 @@ impl SpaceWriter {
     /// write something. Answers [`super::propose::held`]; a document that
     /// does not evaluate is answered as its read is, and not held.
     ///
-    /// A document that runs a command is not held: its effects are not
-    /// in the preview, and a revision-checked write refuses commands.
+    /// A document that runs a command is not held (its effects are not in
+    /// the preview, and a revision-checked write refuses commands), unless
+    /// the command is a [key command](super::propose::KEY_COMMANDS) and
+    /// the document does nothing else: the person confirms that command
+    /// and its spelled-out inputs. Beside other changes, a key command is
+    /// refused (`KEY_COMMAND_NOT_ALONE`).
     pub async fn propose(&self, document: String) -> Response<Body> {
         let request = Request::builder()
             .method(Method::POST)
@@ -469,17 +482,39 @@ impl SpaceWriter {
             .flatten()
             .any(|result| result["transient"].as_bool().unwrap_or(false));
         if runs_a_command {
-            return failure(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "COMMAND_NOT_CONFIRMABLE",
-                "this document runs a command, whose effects a preview cannot show, so it \
-                 cannot be confirmed first: write it without confirm",
+            let Some(key) = super::propose::key_command(&evaluation) else {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "COMMAND_NOT_CONFIRMABLE",
+                    "this document runs a command, whose effects a preview cannot show, so it \
+                     cannot be confirmed first: write it without confirm",
+                );
+            };
+            // The command must be the document's one expression: no query
+            // beside it can bind its inputs to other values by the time
+            // the person answers, and no write beside it can come along.
+            let alone = matches!(
+                evaluation["matches_after"].as_array().map(Vec::as_slice),
+                Some([block]) if block["results"].as_array().is_some_and(|results| results.len() == 1)
             );
+            if !alone {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KEY_COMMAND_NOT_ALONE",
+                    &format!(
+                        "this document runs {}, which the person confirms on its own: send it \
+                         alone, and the other changes in a write of their own",
+                        key.name
+                    ),
+                );
+            }
         }
         let revision = evaluation["revision_before"].clone();
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         let seen = super::propose::seen(&evaluation);
-        let (id, expires) = self.proposals.hold(document, revision, seen, now);
+        let (id, expires) = self
+            .proposals
+            .hold(document, revision, seen, runs_a_command, now);
         json_answer(super::propose::held(&id, expires, evaluation))
     }
 
@@ -506,6 +541,17 @@ impl SpaceWriter {
         let Ok(taken) = self.proposals.take(id, now) else {
             return proposal_gone();
         };
+        if taken.command {
+            // A key command alone: what the person confirmed is the command
+            // and its inputs, which a moved space does not change.
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/evaluate?transact=true")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(taken.document))
+                .expect("static request");
+            return self.write_any(request).await;
+        }
         let body = serde_json::json!({
             "document": taken.document,
             "expected_revision": taken.revision,
@@ -952,6 +998,22 @@ fn json_answer(value: serde_json::Value) -> Response<Body> {
         header::HeaderValue::from_static("application/json"),
     );
     response
+}
+
+/// `request` with `refuse_key_commands=true` when it is an `/evaluate`
+/// that may commit, so the worker refuses a key command it runs.
+fn refusing_key_commands(mut request: Request<Body>) -> Request<Body> {
+    if request.uri().path() != "/evaluate" {
+        return request;
+    }
+    let refusing = match request.uri().query() {
+        Some(query) => format!("/evaluate?{query}&refuse_key_commands=true"),
+        None => "/evaluate?refuse_key_commands=true".to_owned(),
+    };
+    if let Ok(uri) = refusing.parse() {
+        *request.uri_mut() = uri;
+    }
+    request
 }
 
 fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
