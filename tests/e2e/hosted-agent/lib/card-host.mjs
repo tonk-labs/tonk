@@ -104,6 +104,7 @@ async function cardResource(origin) {
  */
 export async function showCard({
   result,
+  resource: deployedResource,
   answers = {},
   context = { theme: 'light' },
   width = 520,
@@ -126,7 +127,7 @@ export async function showCard({
   });
   await new Promise((resolve) => fonts.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${fonts.address().port}`;
-  const resource = await cardResource(origin);
+  const resource = deployedResource ?? await cardResource(origin);
   const server = createServer((request, response) => {
     const { pathname } = new URL(request.url, 'http://host');
     if (pathname === '/sandbox') {
