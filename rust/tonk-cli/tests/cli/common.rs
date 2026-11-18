@@ -48,7 +48,7 @@ impl TestSite {
             .ok_or_else(|| anyhow::anyhow!("branch has no revision yet"))?;
         // A resolver takes a node by its `node:` entity, the one
         // `dialog.branch/tree` names the root by.
-        Ok(dialog_capability::Entity::from_node(revision.tree.hash())?.to_string())
+        Ok(dialog_corpus::Entity::from_node(revision.tree.hash())?.to_string())
     }
 
     pub async fn eval_inline(&self, doc: &str) -> Result<eval::Outcome, eval::EvalError> {
