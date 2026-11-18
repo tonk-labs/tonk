@@ -2,7 +2,8 @@
 //!
 //! A query is the body of a `/query` request and the canonical input
 //! to the subscription hash: term bindings plus a predicate (a concept
-//! descriptor object, or a formula name string). The real type
+//! descriptor object; a bare name string parses, and the worker refuses
+//! it). The real type
 //! (`tonk-schema`) types these fields with `dialog_query::{Parameters,
 //! ConceptDescriptor}`, which pulls the datalog engine.
 //!
@@ -15,8 +16,8 @@
 //!   serializes as a JSON object. `IndexMap<String, Value>` matches
 //!   that shape and additionally preserves author insertion order.
 //! - `predicate` mirrors the untagged `Predicate` enum (a descriptor
-//!   object or a formula string) as an opaque `Value`, which holds
-//!   either losslessly.
+//!   object, or the bare name string the worker refuses) as an opaque
+//!   `Value`, which holds either losslessly.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ use serde_json::Value;
 pub struct Query {
     /// Term bindings for the query, keyed by variable name.
     pub terms: IndexMap<String, Value>,
-    /// What the query selects: a concept descriptor object, or a
-    /// formula name string.
+    /// What the query selects: a concept descriptor object. A bare name
+    /// string is carried as given, and refused by the worker.
     pub predicate: Value,
 }
