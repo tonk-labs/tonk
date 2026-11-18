@@ -1,4 +1,7 @@
 #![warn(missing_docs)]
+// Tests commit with the one-step publish, which fails on a lost race:
+// a test's branch has no other writer to lose one to.
+#![cfg_attr(test, allow(deprecated))]
 //! Typed schema for facts stored on a repository's meta branch.
 //!
 //! Each Tonk repository has a `meta` branch alongside its content branches.
@@ -31,7 +34,7 @@
 //! The URI scheme is the same in both cases; the difference lives in how
 //! the bytes are produced, not in how they are formatted. For
 //! content-derived entities, import [`prelude::EntityExt`] and call
-//! [`Entity::of`][dialog_artifacts::Entity] with any serializable
+//! [`Entity::of`][dialog_corpus::Entity] with any serializable
 //! value.
 
 pub mod prelude;

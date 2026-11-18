@@ -219,7 +219,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
         .reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
-        .pull()
+        .pull(dialog_repository::Download::MinimalRanges)
         .perform(&tonk.operator)
         .await
     {
@@ -239,8 +239,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
 ///
 /// Target-agnostic: every host that can mount a space can run this, and
 /// the mount itself is already portable.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     for crate::router::CommandEnv
 {
@@ -312,7 +311,7 @@ impl SeedUpgrades {
 /// worker to try again. On wasm the task is not tied to the fetch
 /// lifetime, so an idling worker may cut it short — the same next-boot
 /// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
+/// same as `run_commands_detached`) runs it inline instead.
 pub(crate) async fn schedule_seed_upgrade(
     tonk: &TonkState,
     state: crate::router::AppState,
@@ -845,9 +844,10 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
+        let stack = stale.stack().perform(&tonk.operator).await.unwrap();
         cached.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(stale, stack)),
         );
         assert!(
             !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
@@ -1001,9 +1001,10 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
+        let stack = unrelated.stack().perform(&tonk.operator).await.unwrap();
         repo.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated, stack)),
         );
         assert!(!entry.valid(&tonk, &key));
     }
@@ -1631,7 +1632,7 @@ mod tests {
     /// must still restore the upstream and enter the sync sweep.
     #[dialog_common::test]
     async fn it_recovers_a_mounted_space_from_old_directory_branch_facts() {
-        use dialog_artifacts::Entity;
+        use dialog_corpus::Entity;
         use dialog_repository::SiteAddress;
         use tonk_schema::domain::branch::{Name, Origin, Upstream};
         use tonk_schema::domain::remote::Address;

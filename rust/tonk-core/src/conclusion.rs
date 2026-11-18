@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use dialog_artifacts::Value;
+use dialog_corpus::Value;
 use dialog_query::{Any, ConceptConclusion, Parameters, Term};
 use ipld_core::ipld::Ipld;
 use ipld_core::serde::to_ipld;

@@ -333,6 +333,37 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   return cost;
 }
 
+/**
+ * Withdraw the access the agent named `agent` holds to `space`, as the
+ * person does from their agents list: `POST /api/agents/{key}/revoke` on
+ * their own page. When no agent has that name, the one agent holding
+ * `space` is taken.
+ */
+export async function revoke(page, { agent, space }) {
+  await page.evaluate(
+    async ({ agent, space }) => {
+      const listed = await fetch('/api/agents');
+      if (!listed.ok) throw new Error(`agents answered ${listed.status}: ${await listed.text()}`);
+      const holding = (await listed.json()).filter((candidate) =>
+        candidate.spaces.some((reached) => reached.subject === space),
+      );
+      const found =
+        holding.find((candidate) => candidate.name === agent) ??
+        (holding.length === 1 ? holding[0] : undefined);
+      if (!found)
+        throw new Error(`no agent ${agent} holds ${space}: ${JSON.stringify(holding)}`);
+      const response = await fetch(`/api/agents/${found.key}/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ space }),
+      });
+      if (!response.ok)
+        throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+    },
+    { agent, space },
+  );
+}
+
 /** A full-page screenshot into TONK_E2E_SCREENSHOTS, when it is set. */
 export async function snap(page, name) {
   const dir = process.env.TONK_E2E_SCREENSHOTS;

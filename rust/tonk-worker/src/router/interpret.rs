@@ -17,7 +17,7 @@
 
 use std::collections::BTreeSet;
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use tonk_common::log;
 
 use crate::router::CommandEnv;
@@ -31,7 +31,7 @@ fn claim(the: &str, of: &Entity, is: Value) -> Option<RawClaim> {
         the: the.parse().ok()?,
         of: of.clone(),
         is,
-        policy: dialog_artifacts::Pick::Last,
+        policy: dialog_corpus::Pick::Last,
     })
 }
 
@@ -43,8 +43,7 @@ fn intent(expression: &Entity, command: &str) -> Option<Entity> {
     format!("intent:{}", digest.to_hex()).parse().ok()
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Interpret) {
         let expression = command.expression.0;
@@ -94,7 +93,7 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
                 attribute.to_string() == INTENT_EXPRESSION
                     && matches!(
                         change,
-                        dialog_artifacts::Change::Assert(Value::Entity(of), _)
+                        dialog_corpus::Change::Assert(Value::Entity(of), _)
                             if *of == expression
                     )
             })

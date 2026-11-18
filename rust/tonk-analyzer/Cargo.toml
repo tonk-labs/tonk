@@ -19,7 +19,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 async-trait = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-corpus = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-effects = { workspace = true }
@@ -40,5 +40,6 @@ anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-peer = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+tonk-library = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

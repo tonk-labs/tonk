@@ -40,7 +40,10 @@ use web_sys::{
     CustomEvent, Element, Event, HtmlElement, MutationObserver, MutationObserverInit, window,
 };
 
-use crate::blocks::{Block, commit_notation, moves, project, reconcile, respell, split, title_of};
+use crate::blocks::{
+    Block, carry_keys, commit_notation, landed_inserts, moves, project, reconcile, respell,
+    sort_by_key, split, title_of,
+};
 use crate::cell_output::render as render_result;
 use crate::element::{evaluate, reflect_string, resolve_context};
 
@@ -1016,9 +1019,13 @@ impl Notebook {
     /// edit still lands, and nothing waits for the author to leave the
     /// block they are in.
     fn project_blocks(self: &Rc<Self>) {
-        let Some(rows) = self.read_rows() else {
+        let Some(mut rows) = self.read_rows() else {
             return;
         };
+        // A block whose entry did not render this time keeps the key it
+        // had, rather than dropping to the end and being placed there.
+        carry_keys(&mut rows, &self.blocks.borrow());
+        sort_by_key(&mut rows);
         // A commit's inserted blocks have not reached the rows. Projecting
         // now would show the document without them, and diffing against a
         // base without them would insert them a second time.
@@ -1074,17 +1081,11 @@ impl Notebook {
             return true;
         }
         let mut base = self.blocks.borrow_mut();
-        let mut fresh: Vec<&Block> = rows
-            .iter()
-            .filter(|block| !base.iter().any(|b| b.entity == block.entity))
-            .collect();
-        let mut landed: Vec<&Block> = Vec::new();
-        for source in &pending.inserts {
-            if let Some(at) = fresh.iter().position(|block| &block.source == source) {
-                landed.push(fresh.remove(at));
-            }
-        }
-        if landed.len() < pending.inserts.len() && pending.inserts_until > js_sys::Date::now() {
+        // Until the wait is over, an insert has landed only once its
+        // entry shows too; after it, a row alone will do.
+        let expired = pending.inserts_until <= js_sys::Date::now();
+        let landed = landed_inserts(rows, &base, &pending.inserts, expired);
+        if landed.len() < pending.inserts.len() && !expired {
             return false;
         }
         pending.inserts.clear();
@@ -1173,14 +1174,8 @@ impl Notebook {
             .removed
             .retain(|entity, until| *until > now && stored.iter().any(|b| &b.entity == entity));
         stored.retain(|block| !pending.removed.contains_key(&block.entity));
-        // Keys are positions that sort in byte order; a pending re-key moves
-        // its block. Unkeyed blocks stay at the end, in arrival order.
-        stored.sort_by(|a, b| match (&a.key, &b.key) {
-            (Some(a), Some(b)) => a.cmp(b),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        });
+        // A pending re-key moves its block.
+        sort_by_key(stored);
     }
 
     /// Commit the editor's current document: split it into blocks, diff

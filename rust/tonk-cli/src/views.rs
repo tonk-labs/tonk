@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use anyhow::{Context, Result, anyhow};
-use dialog_artifacts::{Entity, Relation, Value};
+use dialog_corpus::{Entity, Relation, Value};
 use dialog_query::{AttributeQuery, Output as _, Term, attribute};
 use tonk_render::QueryBackend as _;
 
