@@ -1351,6 +1351,194 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
     Ok(())
 }
 
+/// Setting up a recovery phrase on an account and then signing in with
+/// it from a device that holds nothing but the twelve words, end to end
+/// against the live service (BUG-343).
+///
+/// The same custody flow as
+/// [`it_adds_a_second_passkey_to_an_existing_account`], with a phrase as
+/// the new custodian. Setup provisions the custody DID the phrase
+/// derives and publishes the account secret sealed under it. Sign-in
+/// starts over from the words alone: parse them, derive the same custody
+/// DID, resolve the cell, open the envelope, get the account back, and
+/// act for it from a new device. A different phrase reaches nothing.
+#[dialog_common::test]
+async fn it_sets_up_a_recovery_phrase_and_signs_in_with_it(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::account::Crypto;
+    use tonk_identity::envelope::{AccountSecret, Envelope, KekMethod};
+    use tonk_identity::phrase::RecoveryPhrase;
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // An account, enrolled and activated. Its root signer derives from
+    // the secret, so the account a phrase opens can be compared with it.
+    let secret = AccountSecret::generate()?;
+    let root = secret.signer().await?;
+    let container = enroll_container(&root, &service_did, "phrase@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "enrollment refused: {body}");
+    activate_over_http(&client, &base).await?;
+
+    // Setup. A new phrase, shown to the person once as twelve words.
+    let phrase = RecoveryPhrase::generate()?;
+    let words = phrase.words().to_string();
+    assert_eq!(words.split(' ').count(), 12);
+    let custodian = phrase.custodian().await?;
+    let custody_key = custodian.signer().await?;
+
+    // Provision the custody DID the phrase derives, as a consumer the
+    // account pays for, the way a second passkey is provisioned.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(root.clone(), &device.did()).await?;
+    let consent = custody::mint_custody_consent(custody_key.clone(), &root.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        device,
+        &link,
+        &custody_key.did(),
+        &consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "provisioning the phrase refused");
+
+    // Seal the existing account secret under the phrase and publish it.
+    let sealed = custodian.account().adopt(secret).perform(&Crypto).await?;
+    assert!(matches!(sealed.envelope().method(), KekMethod::Phrase));
+    let sealed = sealed.envelope().encode();
+    let publish = custody::build_publish_invocation(
+        custody_key,
+        &sealed,
+        None,
+        dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(publish)
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "publish permit refused");
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let stored = permit.upload(sealed.clone()).await?;
+    assert!(
+        stored.status().is_success(),
+        "storage PUT failed: {}",
+        stored.status()
+    );
+    drop(phrase);
+    drop(custodian);
+
+    // Sign-in, on a device that has nothing but the words, typed the way
+    // a person might: capitalised and over two lines.
+    let typed = words.to_uppercase().replacen(' ', "\n", 6);
+    let recovered = RecoveryPhrase::parse(&typed)?.custodian().await?;
+    let resolve = custody::build_resolve_invocation(recovered.signer().await?).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        200,
+        "resolving the phrase's cell refused"
+    );
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status()
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the phrase finds the envelope it published");
+
+    let account = recovered
+        .account()
+        .import(Envelope::decode(&bytes)?)
+        .perform(&Crypto)
+        .await?;
+    assert_eq!(
+        account.signer().await?.did(),
+        root.did(),
+        "the phrase opens the same account",
+    );
+
+    // Signed in: a new device acts for the recovered account. Linking it
+    // and provisioning through it (here, another custodian, as adding a
+    // passkey after recovering would) is refused unless the service
+    // accepts the recovered root's authority.
+    let recovered_root = account.into_secret().signer().await?;
+    let new_device = Ed25519Signer::generate().await?;
+    let new_link =
+        delegation::mint_device_delegation(recovered_root.clone(), &new_device.did()).await?;
+    let next_key = tonk_identity::envelope::custody_signer(&[31u8; 32]).await?;
+    let next_consent =
+        custody::mint_custody_consent(Signer::from(next_key.clone()), &root.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        new_device,
+        &new_link,
+        &next_key.did(),
+        &next_consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        200,
+        "a device linked by the recovered account is refused: {}",
+        response.text().await.unwrap_or_default()
+    );
+
+    // Another phrase derives another custody DID, which holds nothing.
+    let stranger = RecoveryPhrase::generate()?.custodian().await?;
+    let resolve = custody::build_resolve_invocation(stranger.signer().await?).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    if response.status() == 200 {
+        let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+        let fetched = permit.send().await?;
+        assert!(
+            !fetched.status().is_success(),
+            "another phrase found an envelope: {}",
+            fetched.status()
+        );
+    }
+    Ok(())
+}
+
 /// A month-old pre-signed publish still redeems.
 ///
 /// The same flow as [`it_adds_a_second_passkey_to_an_existing_account`],
