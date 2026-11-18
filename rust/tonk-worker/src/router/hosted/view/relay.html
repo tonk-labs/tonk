@@ -1411,7 +1411,12 @@
         }
         // The relay: from the provider's framed page.
         if (!framed && viewFrame && event.source === frame.contentWindow && event.origin === origin) {
-          if (m?.tonkFrame === 'size') resize(m.height);
+          if (m?.tonkFrame === 'size') {
+            // The provider's page shows, or shows its own error: either
+            // way the relay is no longer waiting on a stage of its own.
+            reached('');
+            resize(m.height);
+          }
           // How far the framed page has got, so this relay's note names
           // the stage it waits on, and clears once its view has drawn.
           else if (m?.tonkFrame === 'stage') reached(String(m.stage ?? '').slice(0, 120));
@@ -1525,7 +1530,11 @@
             if (route.size === 'full' && host.available.includes('fullscreen') && host.displayMode === 'inline')
               expand.click();
             if (hostFrames(result)) reached('framing the provider\'s page');
-            if (hostFrames(result) && (await tryFrame())) return note('framed'), offer();
+            if (hostFrames(result) && (await tryFrame())) {
+              note('framed');
+              reached("waiting for the provider's page");
+              return offer();
+            }
             if (viewFrame !== undefined) restoreSandbox();
             // A host that runs no worker cannot run a view's peer: a link.
             if (typeof Worker !== 'function') return note('no Worker here'), linkOnly('strip');

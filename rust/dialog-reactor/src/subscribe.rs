@@ -1,16 +1,15 @@
-//! [`Subscribe`] — open or attach to a subscription.
+//! [`Subscribe`] — subscribe a connection to a standing query.
 
 use dialog_query::ConceptQuery;
 
 use super::BranchReference;
-use super::env::{BranchOpenProvider, LoadProvider, SelectProvider};
+use super::env::{BranchOpenProvider, LoadProvider, SettleProvider};
 use super::error::ReactorError;
 use super::subscription::Subscriber;
 
-/// Open or attach to a subscription, run an initial poll, and
-/// return the [`Subscriber`] handle. The receiver's first message
-/// is the current snapshot (delivered by the initial poll);
-/// subsequent messages are change broadcasts.
+/// Subscribe a connection to a query on a branch, settle the branch,
+/// and return the [`Subscriber`]. Its first frame is the current
+/// snapshot; later frames are the changes.
 pub struct Subscribe<'a> {
     /// The branch the subscription is scoped to.
     pub branch: BranchReference<'a>,
@@ -19,8 +18,8 @@ pub struct Subscribe<'a> {
     /// The client this subscriber serves, when known — see
     /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
     pub client: Option<String>,
-    /// Consumer nesting level, notified outermost first — see
-    /// [`BranchState::poll`](crate::BranchState::poll).
+    /// Consumer nesting level, delivered outermost first — see
+    /// [`BranchState::deliver`](crate::BranchState::deliver).
     pub level: u32,
 }
 
@@ -42,19 +41,19 @@ impl<'a> Subscribe<'a> {
         self
     }
 
-    /// Set how deeply the consumer is nested, so its branch notifies
-    /// outer consumers of a change before inner ones.
+    /// Set how deeply the consumer is nested, so its branch delivers a
+    /// change to outer consumers before inner ones.
     pub fn level(mut self, level: u32) -> Self {
         self.level = level;
         self
     }
 
-    /// Resolve the branch (opening it if needed), attach a
-    /// fresh subscriber to the subscription, and poll so the
-    /// new subscriber's first message is the current snapshot.
+    /// Resolve the branch (opening it if needed), subscribe a fresh
+    /// connection, and settle the branch so the connection's first frame
+    /// is the current snapshot.
     pub async fn perform<Env>(self, env: &Env) -> Result<Subscriber, ReactorError>
     where
-        Env: LoadProvider + BranchOpenProvider + SelectProvider,
+        Env: LoadProvider + BranchOpenProvider + SettleProvider,
     {
         let session = self.branch.acquire(env).await?;
         let subscriber = self.branch.reactor().register_subscription(
@@ -63,11 +62,7 @@ impl<'a> Subscribe<'a> {
             self.client,
             self.level,
         )?;
-        session
-            .subscription(subscriber.hash.clone())
-            .poll()
-            .perform(env)
-            .await;
+        session.state.settle(env).await;
         Ok(subscriber)
     }
 }

@@ -38,15 +38,11 @@ struct PresignFailure {
 impl PresignFailure {
     fn authorization(refusal: Refusal) -> Self {
         let status = refusal.status();
+        let failure_kind = crate::observability::AccessFailureKind::of_authorization(&refusal);
         Self {
             refusal,
             operation: crate::observability::AccessOperation::Authorization,
-            failure_kind: match status {
-                401 | 403 => crate::observability::AccessFailureKind::AccessDenied,
-                503 => crate::observability::AccessFailureKind::Unavailable,
-                500..=599 => crate::observability::AccessFailureKind::Internal,
-                _ => crate::observability::AccessFailureKind::Invalid,
-            },
+            failure_kind,
             retryable: status >= 500,
             site: crate::observability::AccessSite::Ucan,
         }

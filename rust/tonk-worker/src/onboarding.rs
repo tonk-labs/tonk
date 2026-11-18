@@ -19,7 +19,7 @@
 //! acquired after it. Rotating bounds the blast radius to what existed
 //! before: an attacker controls the pre-passkey spaces, not the account.
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_credentials::secret::SealedSecret;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
@@ -631,10 +631,10 @@ async fn link_entities(
     branch: &dialog_repository::Branch,
     audience: &str,
 ) -> Result<Vec<Entity>, String> {
-    use dialog_artifacts::{ArtifactSelector, Value};
+    use dialog_corpus::{Selector, Value};
     use futures_util::StreamExt as _;
 
-    let selector = ArtifactSelector::new()
+    let selector = Selector::new()
         .the(
             dialog_repository::DELEGATION_AUDIENCE
                 .parse()
@@ -671,10 +671,10 @@ async fn issued_by(
     entity: &Entity,
     issuer: &str,
 ) -> Result<bool, String> {
-    use dialog_artifacts::{ArtifactSelector, Value};
+    use dialog_corpus::{Selector, Value};
     use futures_util::StreamExt as _;
 
-    let selector = ArtifactSelector::new()
+    let selector = Selector::new()
         .the(
             dialog_repository::DELEGATION_ISSUER
                 .parse()
@@ -701,10 +701,10 @@ async fn is_powerline(
     branch: &dialog_repository::Branch,
     entity: &Entity,
 ) -> Result<bool, String> {
-    use dialog_artifacts::{ArtifactSelector, Value};
+    use dialog_corpus::{Selector, Value};
     use futures_util::StreamExt as _;
 
-    let selector = ArtifactSelector::new()
+    let selector = Selector::new()
         .the(
             dialog_repository::DELEGATION_SUBJECT
                 .parse()

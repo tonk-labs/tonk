@@ -4,33 +4,42 @@
 
 use dialog_capability::Provider;
 use dialog_common::{Blake3Hash, ConditionalSync};
-use dialog_effects::archive::Get;
-use dialog_repository::{Branch, Hydrate, NetworkedIndex, RemoteFallback, Revision, Upstream};
-use dialog_search_tree::LoadBlock;
+use dialog_corpus::DialogCorpusError;
+use dialog_effects::archive::Load;
+use dialog_repository::{Branch, Download, PullError, Revision};
 
 use super::BranchReference;
-use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider};
+use super::env::{BranchOpenProvider, LoadProvider, PullProvider, SelectProvider, SettleProvider};
 use super::error::ReactorError;
 
 /// Pull-from-upstream effect.
 pub struct Pull<'a> {
     /// The branch to pull into.
     pub branch: BranchReference<'a>,
-    /// Materialize the adopted revision locally after the pull.
-    download: bool,
-    /// Restrict that materialization to the operational regions.
-    operational: bool,
+    /// What the pull brings local of the head it would adopt, before the
+    /// head moves there.
+    download: Download,
     /// Whether to ask a remote upstream where it stands before merging.
     confirm_upstream: bool,
 }
 
 impl<'a> Pull<'a> {
-    /// Build a new `Pull` effect.
-    pub fn new(branch: BranchReference<'a>) -> Self {
+    /// Build a new `Pull` effect that brings `download` local of the head
+    /// it would adopt, before the head moves there. See
+    /// [`dialog_repository::Branch::pull`]: a download that fails, or a
+    /// worker stopped before it completes, leaves the head where it was,
+    /// never on blocks the download named and the store lacks.
+    ///
+    /// Authorization-bearing branches (the access branch, the account)
+    /// take [`Download::Operational`]: their walks read entirely locally,
+    /// so a head adopted by reference with blocks still remote bricks the
+    /// next boot. A space takes [`Download::QueriedRanges`], so that what
+    /// a page read or an edit wrote from this device's store it still
+    /// reads and writes from it after the pull.
+    pub fn new(branch: BranchReference<'a>, download: Download) -> Self {
         Self {
             branch,
-            download: false,
-            operational: false,
+            download,
             confirm_upstream: true,
         }
     }
@@ -41,37 +50,6 @@ impl<'a> Pull<'a> {
     /// nothing is risked but staleness.
     pub fn assuming_upstream(mut self) -> Self {
         self.confirm_upstream = false;
-        self
-    }
-
-    /// Materialize every block and blob the adopted revision references
-    /// before the head moves to it. Required for authorization-bearing
-    /// branches (the access branch, the account): their walks read
-    /// entirely locally, so a head adopted by reference with blocks still
-    /// remote bricks the next boot.
-    ///
-    /// The download is ordered before the cell advance, as
-    /// [`dialog_repository::Pull::download`] orders it: a download that
-    /// fails, or a worker stopped before it completes, leaves the head
-    /// where it was, never on blocks the store lacks.
-    pub fn download(mut self) -> Self {
-        self.download = true;
-        self
-    }
-
-    /// Narrow the download to the regions a read can reach: the
-    /// entity/attribute/value indexes and the blob index.
-    ///
-    /// That is every fact the branch holds — every delegation included —
-    /// so an authorization walk still resolves entirely locally. What it
-    /// leaves by reference is history and coverage, which no read path
-    /// can reach and which grow with every edit ever made rather than
-    /// with the live fact count. A history record that does turn out to
-    /// be needed hydrates from the upstream on demand.
-    ///
-    /// No effect without [`download`](Self::download).
-    pub fn operational(mut self) -> Self {
-        self.operational = true;
         self
     }
 
@@ -93,25 +71,24 @@ impl<'a> Pull<'a> {
     /// on a sync's network round trip.
     pub async fn perform<Env>(self, env: &Env) -> Result<Option<Revision>, ReactorError>
     where
-        Env: LoadProvider + BranchOpenProvider + PullProvider + SelectProvider,
+        Env: LoadProvider + BranchOpenProvider + PullProvider + SelectProvider + SettleProvider,
     {
         // The profile's own repository holds the delegations that authorize
         // this device's reads, so whoever pulls it, the pull downloads what
-        // it adopts: adopted by reference, a fast-forward's root is never
-        // read, and the walk that would authorize fetching it reads the
-        // branch it names.
-        let (download, operational) = if self.branch.repository.name()
-            == self.branch.reactor().profile_key()
+        // reads and authorization touch: adopted by reference, a
+        // fast-forward's root is never read, and the walk that would
+        // authorize fetching it reads the branch it names.
+        let download = if self.branch.repository.name() == self.branch.reactor().profile_key()
+            && !matches!(self.download, Download::Operational | Download::Everything)
         {
-            if !self.download {
-                dialog_common::log!(
-                    "pull of the profile's branch {} asked for no download; downloading what it adopts",
-                    self.branch.name
-                );
-            }
-            (true, self.operational || !self.download)
+            dialog_common::log!(
+                "pull of the profile's branch {} asked for {:?}; downloading its operational regions",
+                self.branch.name,
+                self.download
+            );
+            Download::Operational
         } else {
-            (self.download, self.operational)
+            self.download
         };
 
         let cached = self.branch.acquire(env).await?;
@@ -121,32 +98,31 @@ impl<'a> Pull<'a> {
         let before = cached.handle().revision().map(|r| r.tree);
 
         // Fetch + rebase + persist blocks — no cell writes, no lock.
-        let pull = cached.handle().pull();
+        // The download runs in `prepare`, between the merge and any cell
+        // write.
+        let pull = cached.handle().pull(download);
         let pull = if self.confirm_upstream {
             pull
         } else {
             pull.assuming_upstream()
         };
-        let prepared = pull.prepare(env).await?;
-
-        // Materialize what the advance would adopt before it is adopted: a
-        // head that moved first, with its blocks still remote, is a branch
-        // whose authorization walk cannot read itself if the download then
-        // fails or never runs. With nothing new to adopt, the current head
-        // is materialized instead.
-        if download {
-            let download = cached.handle().download();
-            let download = match prepared.revision() {
-                Some(revision) => download.of(revision.clone()),
-                None => download,
-            };
-            let download = if operational {
-                download.operational()
-            } else {
-                download
-            };
-            download.perform(env).await?;
-        }
+        let prepared = match pull.prepare(env).await {
+            Ok(prepared) => prepared,
+            // Since dialog 0.4.0-rc.4 preparing a pull reads the upstream
+            // head's tree through the env (its context region, to order
+            // the two heads), so a head whose blocks this replica can no
+            // longer fetch fails here, before `hold_root` would refuse it.
+            // It is the same refusal: nothing was adopted and the head
+            // stays where it was.
+            Err(PullError::Fact(error)) => {
+                return Err(ReactorError::UnreadableHead {
+                    branch: self.branch.name.to_string(),
+                    root: unreadable_block(&error),
+                    reason: error.to_string(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         // Hold the root of what the advance would adopt before adopting
         // it. A fast-forward adopts by reference and never reads the root,
@@ -185,6 +161,18 @@ impl<'a> Pull<'a> {
     }
 }
 
+/// The block an artifact read named as unreadable, from the message a
+/// hydration failure carries (`block <hash> is not in the local archive
+/// ...`), or `unknown` when the error names none.
+fn unreadable_block(error: &DialogCorpusError) -> String {
+    let text = error.to_string();
+    text.split_whitespace()
+        .skip_while(|word| *word != "block")
+        .nth(1)
+        .map(|hash| hash.trim_end_matches(':').to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Read the root block of `revision`'s tree into `branch`'s archive: a
 /// local hit when it is already held, else a fetch from the upstream the
 /// pull prepared from, which is the first the branch pulls from (see
@@ -195,19 +183,15 @@ impl<'a> Pull<'a> {
 /// branch reads first.
 async fn hold_root<Env>(branch: &Branch, revision: &Revision, env: &Env) -> Result<(), ReactorError>
 where
-    Env: Provider<Get> + Provider<Hydrate> + ConditionalSync,
+    Env: Provider<Load> + ConditionalSync,
 {
-    let fallback = match branch.pulls().iter().next() {
-        Some(Upstream::Remote { remote, .. }) => RemoteFallback::Remote(remote.clone()),
-        Some(Upstream::Unreachable { target, reason, .. }) => RemoteFallback::Unavailable {
-            remote: target.to_string(),
-            reason: reason.clone(),
-        },
-        Some(Upstream::Local { .. }) | None => RemoteFallback::None,
-    };
+    // The load hydrates a miss from the remotes the branch registered as
+    // it opened (its pulls first), and fails naming one it cannot reach.
     let root = Blake3Hash::from(*revision.tree.hash());
-    let index = NetworkedIndex::new(env, branch.archive().index(), fallback);
-    match LoadBlock::new(root.clone()).perform(&index).await {
+    match Load::new(branch.archive().index(), root.clone())
+        .perform(env)
+        .await
+    {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ReactorError::UnreadableHead {
             branch: branch.name().to_string(),

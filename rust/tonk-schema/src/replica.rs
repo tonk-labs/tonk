@@ -6,7 +6,7 @@
 // compile under `-D warnings`.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 use dialog_repository::SiteAddress;
 use dialog_varsig::Did;
