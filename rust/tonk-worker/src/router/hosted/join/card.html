@@ -64,7 +64,9 @@
       .tonk-option b {
         font-weight: 600;
       }
+      /* what a role lets the agent do, under the role's word */
       .tonk-option span span {
+        display: block;
         color: var(--tonk-text-soft);
       }
       @media (pointer: coarse) {
@@ -94,7 +96,6 @@
         <span class="tonk-disc" data-state="hollow" role="img" aria-label="local only" title="local only"></span>
         <span class="tonk-place"><span class="tonk-space" data-name></span></span>
         <span class="tonk-receipt" role="status"></span>
-        <span class="tonk-role">invitation</span>
       </header>
       <p class="tonk-say">Let <span data-agent></span><span class="tonk-bot">bot</span> join <span data-name></span></p>
       <dl class="tonk-ledger">
@@ -107,11 +108,11 @@
         <legend>what it may do</legend>
         <label class="tonk-option">
           <input type="radio" name="access" value="read" checked />
-          <span><b>read</b> <span>· see and search the space</span></span>
+          <span><b>read</b> <span>see and search the space</span></span>
         </label>
         <label class="tonk-option" id="write">
           <input type="radio" name="access" value="write" />
-          <span><b>read and write</b> <span>· also add and change content</span></span>
+          <span><b>write</b> <span>also add and change content</span></span>
         </label>
       </fieldset>
       <p class="tonk-fine" id="fine">
@@ -120,8 +121,8 @@
         use it.
       </p>
       <div class="tonk-acts">
-        <button type="submit" class="tonk-btn" id="join">let it join</button>
         <button type="button" class="tonk-btn tonk-btn--ring" id="no">not now</button>
+        <button type="submit" class="tonk-btn" id="join">let it join</button>
       </div>
     </form>
 
@@ -133,7 +134,6 @@
     <section class="tonk tonk--tell" id="tell" hidden role="alert">
       <header class="tonk-head">
         <span class="tonk-place"><span class="tonk-space" data-name></span></span>
-        <span class="tonk-role">not joined</span>
       </header>
       <p class="tonk-say" id="problem"></p>
       <div class="tonk-acts" id="retry" hidden>
@@ -233,8 +233,8 @@
           // the agent holds, which the person may grant here.
           const upgrade = data.joined === 'read' && data.write;
           if (data.joined && !upgrade) {
-            const words = data.joined === 'write' ? 'read and write' : 'read';
-            return strip(['already in ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
+            const words = data.joined === 'write' ? 'write' : 'read';
+            return strip([...bot(agent), ' is already in ' + space + ' and can ' + words]);
           }
           offer.upgrade = upgrade;
           choose();
@@ -258,7 +258,7 @@
           const access = new FormData(ask).get('access') === 'write' ? 'write' : 'read',
             space = offer.name || 'the space',
             agent = offer.agent?.name || 'Your agent',
-            words = access === 'write' ? 'read and write' : 'read';
+            words = access === 'write' ? 'write' : 'read';
           for (const control of ask.elements) control.disabled = true;
           // Saving is a filled disc and the word, not a spinner.
           disc(ask.querySelector('.tonk-disc'), 'filled', 'saving');
@@ -271,7 +271,7 @@
             if (result?.isError || !result?.structuredContent?.space)
               throw Error(result?.content?.[0]?.text || 'The space did not answer.');
             const joined = result.structuredContent;
-            strip(['joined ' + space + ' · ' + words + ' · as ', ...bot(agent)]);
+            strip([...bot(agent), ' joined ' + space + ' and can ' + words]);
             await tellModel(
               'The person let you join ' + space + ' (space ' + joined.space + ') with ' +
                 words + ' access. It is in tonk_list_spaces now.',
@@ -287,7 +287,7 @@
         });
         $('#no').addEventListener('click', async () => {
           const space = offer.name || 'the space';
-          strip(['not joined · ' + space + ' · the link still works'], 'hollow');
+          strip(['nothing changed in ' + space + ', and the link still works'], 'hollow');
           await tellModel(
             'The person chose not to let you join ' + space + ' for now. Do not ask again ' +
               'unless they bring it up.',
