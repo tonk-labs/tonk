@@ -1935,9 +1935,11 @@ async fn it_keeps_a_tree_exploration_in_the_session() {
             novelty,
             "one row per buffered operation: {buffered:?}"
         );
-        assert!(buffered.iter().all(|row| spans
-            .iter()
-            .any(|span| span["this"] == row["fields"]["span"])));
+        assert!(buffered.iter().all(|row| {
+            spans
+                .iter()
+                .any(|span| span["this"] == row["fields"]["span"])
+        }));
     }
     let parts = rows(query(
         json!({
