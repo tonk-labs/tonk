@@ -1,5 +1,5 @@
 /* Tonk's in-agent system, vendored from gooey (in-agent/in-agent.css and
-   tonk-look.css at gooey 1a2e518) as one file, so the relay and the join card
+   tonk-look.css at gooey 56401b7) as one file, so the relay and the join card
    can inline it: an MCP App resource is one HTML document. Changes go to
    gooey first; copy them here unchanged.
 
@@ -13,14 +13,15 @@
    under "Tonk's look", in one place. Scoped to Tonk's own elements, never
    :root (rule 1), so nothing reaches a space or the agent app around it.
    in-agent.css imports this file. In a browser, Tonk's own pages wear it: the
-   hub (.tonk-hub, in-browser/hub.css) and task pages. <tonk-message> inherits
-   these names and falls back to the same values on its own.
+   hub (.tonk-hub, in-browser/hub.css) and task pages. The desktop app's
+   windows wear it too (.tonk-desk, desktop/desktop.css). <tonk-message>
+   inherits these names and falls back to the same values on its own.
 
    Every name says the job a value does. Light, dark and the ask change values,
    never names. Each name is declared once as light-dark(light, dark); recipes
    read other names, so they follow. Only color-scheme decides dark.
 ============================================================================= */
-.tonk, .tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
+.tonk, .tonk-hub, .tonk-task, .tonk-look, .tonk-desk, .fabb-page, .fabb-request {
   --tonk-text:          light-dark(#38182a, #f7f6f5);
   --tonk-text-soft:     light-dark(#5b4953, #c9bec4);
   --tonk-text-disabled: color-mix(in oklab, var(--tonk-text) 40%, var(--tonk-sheet));
@@ -36,7 +37,7 @@
   --tonk-main-text:     light-dark(#f7f6f5, #38182a);
   --tonk-main-hover:    color-mix(in oklab, var(--tonk-main-text) 12%, var(--tonk-main));
   --tonk-backdrop:      light-dark(rgb(56 24 42 / 32%), rgb(0 0 0 / 45%));
-  --tonk-shadow:        0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 6%)),
+  --tonk-shadow:        0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 10%)),
                         0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
                         0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
   --tonk-view-ground:   light-dark(#ffffff, #131313);
@@ -51,13 +52,15 @@
   /* type: 12, 14 and 16, and no other size */
   --tonk-size-heading:     16px;   /* what a page, sheet or ask is called */
   --tonk-size-label:       14px;   /* buttons, options, links, row details, ledgers, Tonk's line */
-  --tonk-size-hint:        14px;   /* hints, receipts, fine print: soft text makes the step */
+  --tonk-size-hint:        14px;   /* hints, the hub's receipts, fine print: soft text makes the step */
   --tonk-size-code:        12px;   /* ids and addresses; a code someone compares takes the size around it */
   --tonk-size-tag:         12px;   /* the bot and default tags */
-  --tonk-size-field:       16px;   /* text a person types, on every surface */
+  --tonk-size-field:       14px;   /* text a person types: the interface's size, on every screen */
   --tonk-leading-label:    1.3;
   --tonk-leading-sentence: 1.5;
+  --tonk-leading-tag:      1.333;
   --tonk-height-field:     44px;
+  --tonk-measure:          29em;   /* 65 real characters of Plex Sans; 65ch holds 86 */
 }
 /* two settings. Tonk's own pages: */
 .tonk-hub, .tonk-task, .tonk-look, .fabb-page, .fabb-request {
@@ -65,7 +68,6 @@
   --tonk-size-name:      16px;
   --tonk-height-control: 36px;
   --tonk-height-row:     48px;
-  --tonk-measure:        29em;   /* 65 real characters of Plex Sans; 65ch holds 86 */
 }
 /* a card inside someone's agent app, which sits under the agent's text: */
 .tonk {
@@ -74,14 +76,25 @@
   --tonk-height-control: 30px;
 }
 @media (pointer: coarse) { .tonk { --tonk-height-control: 44px; } }
+/* the desktop app's windows: Tonk's own, but small, read with a mouse at arm's
+   length beside other apps, so they take the agent app's sizes. Declared after
+   the pages' block, so a window that is the hub (.tonk-hub.tonk-desk) takes these */
+.tonk-desk {
+  --tonk-size-sentence:  14px;
+  --tonk-size-name:      14px;
+  --tonk-height-control: 30px;
+  --tonk-height-row:     40px;
+  --tonk-height-field:   36px;
+}
 /* the ask: a solid card, the same in light and dark */
 .tonk--ask {
   --tonk-text: #f7f6f5; --tonk-text-soft: #c9bec4; --tonk-sheet: #38182a; --tonk-field: #180d12;
   --tonk-rule: rgb(247 246 245 / 22%); --tonk-wash: rgb(247 246 245 / 12%); --tonk-wash-strong: rgb(247 246 245 / 18%);
   --tonk-main-text: #38182a;
 }
-/* who is dark: the hub follows the system, task pages stay light, the frame sets in-agent */
-.tonk-hub { color-scheme: light dark; }
+/* who is dark: the hub and the desktop app follow the system, task pages stay
+   light, the frame sets in-agent */
+.tonk-hub, .tonk-desk { color-scheme: light dark; }
 .tonk-task, .fabb-page { color-scheme: light; }
 [data-theme="dark"] .tonk:not(:where([data-theme="light"] .tonk)), .tonk[data-theme="dark"] { color-scheme: dark; }
 [data-theme="light"] .tonk, .tonk[data-theme="light"] { color-scheme: light; }
@@ -210,7 +223,7 @@
 }
 
 /* =============================================================================
-   3 · THE DISC — the only circle, with the chrome's states
+   3 · THE DISC — the only circle
    filled  connected and synced · hollow  local only, nothing syncs yet ·
    diagonal half  paused on purpose, changes stay private until it resumes.
    No disc where the person isn't in the space.
@@ -248,7 +261,6 @@
   align-items: center;
   gap: 6px;
   padding: 0 4px 0 var(--in-agent-pad);
-  font-size: var(--tonk-size-label);
   white-space: nowrap;
 }
 /* everything in the line sits on its first text line, so a receipt that
@@ -360,6 +372,11 @@
   .tonk-count + .tonk-role,
   .tonk-stamp + .tonk-role,
   .tonk-stamp + .tonk-out { margin-left: auto; }
+  /* a receipt is what the person has to read, so here it takes the first row
+     whole, beside the disc, and what acts on it goes under it on the same edge */
+  .tonk-line .tonk-receipt { flex: 1 1 calc(100% - 16px); max-width: calc(100% - 16px); }
+  .tonk-line .tonk-receipt + .tonk-link { margin-left: 16px; }
+  .tonk-line:has(.tonk-receipt:not(:empty)) { padding-bottom: 4px; }
 }
 /* a receipt needs more room than a name, so beside one the count moves on a
    card under 520px */
@@ -481,7 +498,7 @@
    stay in the condensed face
 ============================================================================= */
 .tonk-say {
-  max-width: 65ch;
+  max-width: var(--tonk-measure);
   margin: 0;
   padding: 6px var(--in-agent-pad) 2px;
   font: 400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence);
@@ -499,7 +516,6 @@
   display: grid;
   grid-template-columns: minmax(72px, 104px) minmax(0, 1fr);
   gap: 2px 10px;
-  font-size: var(--tonk-size-label);
 }
 .tonk-ledger dt { color: var(--tonk-text-soft); }
 .tonk-ledger dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -510,7 +526,6 @@
   margin: 4px var(--in-agent-pad) 8px;
   padding: 0;
   box-shadow: inset 0 1px 0 var(--tonk-rule);
-  font-size: var(--tonk-size-label);
 }
 .tonk-changes li {
   min-height: 28px;
@@ -522,13 +537,9 @@
   box-shadow: inset 0 -1px 0 var(--tonk-rule);
   overflow-wrap: anywhere;
 }
-.tonk-mark {
-  font-family: var(--tonk-font-code);
-  font-size: var(--tonk-size-label);
-}
+.tonk-mark { font-family: var(--tonk-font-code); }
 .tonk-kind {
   color: var(--tonk-text-soft);
-  font-size: var(--tonk-size-label);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -545,7 +556,7 @@
 }
 
 .tonk-fine {
-  max-width: 65ch;
+  max-width: var(--tonk-measure);
   margin: 0;
   padding: 0 var(--in-agent-pad) 8px;
   color: var(--tonk-text-soft);
@@ -556,11 +567,13 @@
 .tonk-code {
   font-family: var(--tonk-font-code);
   font-size: var(--tonk-size-code);
+  line-height: var(--tonk-leading-sentence);
 }
 /* a code someone compares takes the size around it, tracked */
 .tonk-ledger .tonk-code,
 .tonk-strip .tonk-code {
   font-size: inherit;
+  line-height: inherit;
   letter-spacing: 0.08em;
   white-space: nowrap;
 }
@@ -568,11 +581,13 @@
 /* =============================================================================
    6 · ACTIONS — primary · ring · quiet
 ============================================================================= */
-/* the row gap keeps wrapped buttons' hit areas apart */
+/* at the right edge, the safe answer first and the main one last, as on every
+   surface. The row gap keeps wrapped buttons' hit areas apart */
 .tonk-acts {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 14px 8px;
   padding: 4px var(--in-agent-pad) var(--in-agent-pad);
 }
@@ -593,6 +608,8 @@
   letter-spacing: 0.02em;
   text-decoration: none;
   white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
   cursor: pointer;
   touch-action: manipulation;
   transition: scale var(--tonk-change), background-color var(--tonk-change);
@@ -605,13 +622,13 @@
 }
 /* hover on a solid action mixes in the ground, not more ink */
 @media (hover: hover) and (pointer: fine) {
-  .tonk-btn:hover { background-color: color-mix(in oklch, var(--tonk-text) 84%, var(--tonk-sheet)); }
+  .tonk-btn:hover { background-color: var(--tonk-main-hover); }
 }
 .tonk-btn:active { scale: 0.96; }
 .tonk-btn--ring {
   background: transparent;
   color: var(--tonk-text);
-  box-shadow: inset 0 0 0 1px var(--tonk-text);
+  box-shadow: inset 0 0 0 1.5px var(--tonk-text);
 }
 @media (hover: hover) and (pointer: fine) {
   .tonk-btn--ring:hover { background-color: var(--tonk-wash); }
@@ -622,7 +639,7 @@
 .tonk-btn[disabled],
 .tonk-btn--ring[disabled] {
   background: var(--tonk-wash-strong);
-  color: color-mix(in oklch, var(--tonk-text) 40%, var(--tonk-sheet));
+  color: var(--tonk-text-disabled);
   box-shadow: none;
   cursor: not-allowed;
   scale: 1;
@@ -658,7 +675,7 @@
 }
 .tonk-link:active { background: var(--tonk-wash-strong); scale: 0.96; }
 /* a link among the buttons hits 44px tall, like them */
-.tonk-acts .tonk-link { position: relative; }
+.tonk-acts .tonk-link { position: relative; font-weight: 600; }
 .tonk-acts .tonk-link::after {
   content: "";
   position: absolute;
@@ -706,7 +723,7 @@
   border-radius: var(--tonk-radius-tag, 3px);
   background: var(--tonk-wash-strong, rgb(56 24 42 / 10%));
   color: var(--tonk-text, #38182a);
-  font: 500 var(--tonk-size-tag, 12px)/1.333 var(--tonk-font-label, "IBM Plex Sans Condensed", sans-serif);
+  font: 500 var(--tonk-size-tag, 12px)/var(--tonk-leading-tag, 1.333) var(--tonk-font-label, "IBM Plex Sans Condensed", sans-serif);
   letter-spacing: 0.02em;
   vertical-align: 1px;
   white-space: nowrap;
@@ -734,7 +751,6 @@
   gap: 2px 6px;
   min-height: var(--in-agent-line-size);
   padding: 4px var(--in-agent-pad);
-  font-size: var(--tonk-size-label);
 }
 .tonk-strip .tonk-receipt { flex: 1; }
 /* a strip that asks or counts: the sentence, then the answers or the count in
@@ -748,6 +764,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 14px;
+  margin-left: auto;
 }
 
 .tonk-handoff {
