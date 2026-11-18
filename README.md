@@ -147,6 +147,15 @@ the code layout, read [ARCHITECTURE.md](ARCHITECTURE.md). The MCP contracts are
 in [`mcp/AGENT-LINKS.md`](mcp/AGENT-LINKS.md), and the Claude Code plugin is
 in [`plugins/tonk`](plugins/tonk).
 
+### Connect Claude to Tonk
+
+**[Add Tonk to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tonk&connectorUrl=https%3A%2F%2Ftonk.network%2Fmcp)**
+
+The link opens Claude's Add custom connector dialog with the name and the
+server URL (`https://tonk.network/mcp`) filled in. Confirm, select
+**Connect**, and approve the agent in Tonk. Other clients, ChatGPT included,
+are covered in the [MCP server docs](https://tonk-labs.github.io/docs/mcp.html).
+
 # What's in This Repo
 
 This repository contains the Tonk Rust workspace (sync and storage, the web
