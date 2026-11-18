@@ -61,7 +61,7 @@
   const spans = new Map();
   for (const row of once(rows.span, (row) => row.this)) {
     const f = fields(row);
-    group(spans, text(f.parent), { span: text(row.this), at: number(f.at), child: text(f.child), separator: text(f.separator), scale: number(f.scale), novelty: number(f.novelty) });
+    group(spans, text(f.parent), { span: text(row.this), at: number(f.at), child: text(f.child), separator: text(f.separator), scale: number(f.scale), novelty: number(f.novelty), rank: number(f.rank) });
   }
   for (const list of spans.values()) list.sort((a, b) => a.at - b.at);
 
@@ -71,6 +71,23 @@
     group(entries, text(f.segment), { entry: text(row.this), at: number(f.at), key: text(f.key), state: text(f.state), rank: number(f.rank) });
   }
   for (const list of entries.values()) list.sort((a, b) => a.at - b.at);
+
+  // What an entry holds beyond its key, each where it applies.
+  const claims = new Map();
+  for (const row of rows.claim) {
+    const f = fields(row);
+    claims.set(text(row.this), { retraction: f.retraction === true, cause: number(f.cause), collapsed: number(f.collapsed), supersedes: number(f.supersedes) });
+  }
+  const versions = new Map();
+  for (const row of rows.version) {
+    const f = fields(row);
+    const origin = self.bytes(f.origin).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    versions.set(text(row.this), { origin, edition: number(f.edition) });
+  }
+  const buffers = new Map();
+  for (const row of rows.buffer) buffers.set(text(row.this), text(fields(row).span));
+  const blobs = new Map();
+  for (const row of rows.blob) blobs.set(text(row.this), { blob: text(fields(row).blob), size: number(fields(row).size) });
 
   // A part is `part:<hash of its key>/<position>`: every part of one key
   // shares the prefix, which is how a key finds its parts.
@@ -83,5 +100,5 @@
   for (const list of parts.values()) list.sort((a, b) => a.at - b.at);
   const partsOf = (part) => parts.get(part.slice(0, part.lastIndexOf('/'))) ?? null;
 
-  return { branches, explorations, nodes, held, spills, values, spans, entries, partsOf };
+  return { branches, explorations, nodes, held, spills, values, spans, entries, partsOf, claims, versions, buffers, blobs };
 }

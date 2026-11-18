@@ -1,5 +1,6 @@
-// The pane beside the outline: what the session holds of the selected
-// node or entry.
+// The pane beside the outline: the selected node, what it was written
+// under, its separator, and its entries (a segment's, or the operations
+// an index node buffers) as a table whose rows unfold.
 (self, model) => {
   const state = self.__tree;
   const element = (tag, className, text) => {
@@ -9,103 +10,76 @@
     return node;
   };
   const pane = element('aside', 'detail');
-  pane.setAttribute('aria-label', 'Selected item');
-  const table = (rows) => {
-    const list = element('dl', 'facts');
-    for (const [name, value] of rows) {
-      if (value === undefined || value === null || value === '') continue;
-      list.append(element('dt', '', name));
-      list.append(element('dd', '', String(value)));
-    }
-    return list;
-  };
-  const chips = (part) => {
-    const box = element('div', 'chips');
-    for (const piece of model.partsOf(part) ?? []) {
-      const span = element('span', `part part--${piece.kind}`, piece.text || piece.kind);
-      span.title = piece.kind;
-      box.append(span);
-    }
-    return box;
+  pane.setAttribute('aria-label', 'Selected node');
+  const selected = state.selected || self.getAttribute('selected') || '';
+  pane.dataset.for = selected;
+  const kv = (name, value, extra) => {
+    const line = element('div', 'kv');
+    line.append(element('span', 'k', name), element('span', 'v', String(value)));
+    if (extra) line.append(extra);
+    return line;
   };
 
-  const selected = state.selected;
-  if (!selected) {
-    pane.append(element('p', 'note', 'Select a node or an entry to see what it holds.'));
+  if (!selected.startsWith('node:')) {
+    pane.append(element('p', 'note', 'Select a node to see what it holds.'));
     return pane;
   }
   const info = model.nodes.get(selected);
-  if (info || selected.startsWith('node:')) {
-    pane.append(element('h2', '', info?.kind ?? 'node'));
-    pane.append(element('span', 'entity', selected));
-    if (!info) pane.append(element('p', 'note', 'Open the node to read it.'));
-    else {
-      const held = model.held.get(selected);
-      pane.append(table([
-        ['block size', `${info.size} bytes`],
-        [info.kind === 'index' ? 'spans' : 'entries', info.count],
-        ['scale', info.scale],
-        ['buffered ops', info.novelty],
-        ['held here', held === undefined ? 'not asked' : held ? 'yes' : 'no'],
-      ]));
-      pane.append(element('h3', '', 'written under'));
-      pane.append(table([
-        ['layout version', info.format.version],
-        ['fanout exponent', info.format['fanout-exponent']],
-        ['max separator', info.format['max-separator']],
-        ['inline up to', info.format['inline-n']],
-        ['spill prefix', info.format['spill-prefix']],
-        ['max segment', info.format['max-segment']],
-        ['frame ceiling factor', info.format['frame-ceiling-factor']],
-        ['anchor selector', info.format['anchor-selector']],
-        ['entry overhead', info.format['entry-overhead']],
-        ['key overhead', info.format['key-overhead']],
-        ['link overhead', info.format['link-overhead']],
-      ]));
-    }
+  if (!info) {
+    pane.append(element('p', 'note', model.held.get(selected) === false ? 'Not held here: opening it fetches it.' : 'Reading…'));
     return pane;
   }
-  let entry = null;
-  for (const list of model.entries.values()) {
-    entry = list.find((candidate) => candidate.entry === selected);
-    if (entry) break;
+  // The span that names the node in its parent, if one is open.
+  let span = null;
+  for (const list of model.spans.values()) {
+    span = list.find((candidate) => candidate.child === selected) ?? null;
+    if (span) break;
   }
-  if (!entry) {
-    pane.append(element('p', 'note', 'That item is no longer open.'));
+  const held = model.held.get(selected);
+
+  pane.append(element('h2', '', info.kind === 'index' ? 'Index node' : 'Segment node'));
+  pane.append(kv('hash', selected.replace(/^node:/, '')));
+  const bar = element('span', 'bar');
+  bar.style.width = `${Math.max(2, Math.round(80 * info.size / Math.max(1, state.widest ?? info.size)))}px`;
+  pane.append(kv('size', self.size(info.size), bar));
+  pane.append(kv(info.kind === 'index' ? 'children' : 'entries', info.count));
+  if (span) pane.append(kv('rank', span.rank));
+  pane.append(kv('scale', info.scale));
+  pane.append(kv('novelty', info.novelty));
+  if (span) pane.append(kv('buffered in parent', span.novelty));
+  pane.append(kv('storage', held === true ? 'local' : held === false ? 'remote (fetched on demand)' : 'not asked'));
+
+  pane.append(element('h3', '', 'manifest'));
+  const format = info.format;
+  for (const [name, value] of [
+    ['version', format.version],
+    ['fanout', 2 ** format['fanout-exponent']],
+    ['max-separator', format['max-separator']],
+    ['inline', format['inline-n']],
+    ['spill-prefix', format['spill-prefix']],
+    ['max-segment', format['max-segment']],
+    ['frame-ceiling', format['frame-ceiling-factor']],
+    ['anchor-selector', format['anchor-selector']],
+    ['entry-overhead', format['entry-overhead']],
+    ['key-overhead', format['key-overhead']],
+    ['link-overhead', format['link-overhead']],
+  ]) {
+    pane.append(kv(name, value));
+  }
+
+  if (span) {
+    pane.append(kv('separator', ''));
+    pane.append(self.chips(model.partsOf(span.separator)));
+  }
+
+  const entries = model.entries.get(selected) ?? [];
+  const buffered = info.kind === 'index';
+  if (buffered && info.novelty === 0) return pane;
+  pane.append(element('h3', '', buffered ? `${entries.length} buffered` : `${entries.length} entries`));
+  if (!entries.length) {
+    pane.append(element('p', 'note', 'Reading…'));
     return pane;
   }
-  pane.append(element('h2', '', 'entry'));
-  pane.append(element('span', 'entity', selected));
-  pane.append(element('h3', '', 'key'));
-  pane.append(chips(entry.key));
-  pane.append(table([
-    ['position', entry.at],
-    ['state', entry.state],
-    ['rank', entry.rank],
-  ]));
-  const spill = model.spills.get(entry.entry);
-  if (spill) {
-    pane.append(element('h3', '', 'spilled value'));
-    pane.append(element('span', 'entity', spill));
-    const value = model.values.get(spill);
-    if (!value) {
-      // Read only when asked: a value can be large, and may be fetched.
-      const read = element('button', 'button', state.pending.get(spill) === 'open' ? 'reading…' : 'read value');
-      read.type = 'button';
-      read.dataset.value = spill;
-      pane.append(read);
-    } else {
-      const head = Uint8Array.from(value.bytes.slice(0, 4096));
-      let shown;
-      try {
-        shown = new TextDecoder('utf-8', { fatal: true }).decode(head);
-      } catch {
-        shown = value.bytes.slice(0, 1024).map((byte) => byte.toString(16).padStart(2, '0')).join(' ');
-      }
-      if (value.bytes.length > head.length) shown += '\n…';
-      pane.append(table([['size', `${value.size} bytes`]]));
-      pane.append(element('pre', 'value', shown));
-    }
-  }
+  pane.append(self.entries(model, selected, entries, buffered));
   return pane;
 }

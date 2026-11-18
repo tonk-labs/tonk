@@ -50,6 +50,7 @@
       separator: [`${at}.span/separator`, 'Entity'],
       scale: [`${at}.span/scale`, 'UnsignedInteger'],
       novelty: [`${at}.span/novelty`, 'UnsignedInteger'],
+      rank: [`${at}.span/rank`, 'UnsignedInteger'],
     },
     entry: {
       segment: [`${at}.entry/segment`, 'Entity'],
@@ -57,6 +58,23 @@
       key: [`${at}.entry/key`, 'Entity'],
       state: [`${at}.entry/state`, 'Text'],
       rank: [`${at}.entry/rank`, 'UnsignedInteger'],
+    },
+    claim: {
+      retraction: [`${at}.claim/retraction`, 'Boolean'],
+      cause: [`${at}.claim/cause`, 'UnsignedInteger'],
+      collapsed: [`${at}.claim/collapsed`, 'UnsignedInteger'],
+      supersedes: [`${at}.claim/supersedes`, 'UnsignedInteger'],
+    },
+    version: {
+      origin: [`${at}.version/origin`, 'Bytes'],
+      edition: [`${at}.version/edition`, 'UnsignedInteger'],
+    },
+    buffer: {
+      span: [`${at}.buffer/span`, 'Entity'],
+    },
+    blob: {
+      blob: [`${at}.blob/blob`, 'Entity'],
+      size: [`${at}.blob/size`, 'UnsignedInteger'],
     },
     part: {
       at: [`${at}.part/at`, 'UnsignedInteger'],

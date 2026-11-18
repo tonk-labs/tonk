@@ -43,6 +43,11 @@ element!: &tree-inspector
     detail: !include/text ./tree-inspector/detail.js
     act: !include/text ./tree-inspector/act.js
     keys: !include/text ./tree-inspector/keys.js
+    key: !include/text ./tree-inspector/key.js
+    chips: !include/text ./tree-inspector/chips.js
+    columns: !include/text ./tree-inspector/columns.js
+    entries: !include/text ./tree-inspector/entries.js
+    size: !include/text ./tree-inspector/size.js
     sheet: !include/text ./tree-inspector/sheet.js
 
 # ---------------------------------------------------------------------------
@@ -253,6 +258,36 @@ rule!:
         key-overhead: ?key-overhead
         link-overhead: ?link-overhead
 
+rule!:
+  description: A child of an open index node that this replica holds is read through `tree/node` too, so its row shows its size and count; one it lacks is not read, so nothing is fetched.
+  assert: tree-inspector/node
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?parent }
+    - assert: tree/span
+      where: { of: ?parent, node: ?this }
+    - assert: tree-inspector/held
+      where: { this: ?this, local: true }
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+        version: ?version
+        fanout-exponent: ?fanout-exponent
+        max-separator: ?max-separator
+        inline-n: ?inline-n
+        spill-prefix: ?spill-prefix
+        max-segment: ?max-segment
+        frame-ceiling-factor: ?frame-ceiling-factor
+        anchor-selector: ?anchor-selector
+        entry-overhead: ?entry-overhead
+        key-overhead: ?key-overhead
+        link-overhead: ?link-overhead
+
 concept!: &tree-inspector/span
   description: A span of an open index node, naming a child node.
   with:
@@ -280,6 +315,10 @@ concept!: &tree-inspector/span
       description: Buffered operations the node holds against the span.
       the: xyz.tonk.tree-inspector.span/novelty
       as: natural
+    rank:
+      description: The seam rank of the span's separator, the level coin that made the boundary.
+      the: xyz.tonk.tree-inspector.span/rank
+      as: natural
 
 rule!:
   description: An open index node's spans are read through `tree/span`.
@@ -288,15 +327,15 @@ rule!:
     - assert: tree-inspector/opened
       where: { this: ?exploration, open: ?parent }
     - assert: tree/span
-      where: { of: ?parent, span: ?this, at: ?at, node: ?child, separator: ?bytes, scale: ?scale, novelty: ?novelty }
+      where: { of: ?parent, span: ?this, at: ?at, node: ?child, separator: ?bytes, scale: ?scale, novelty: ?novelty, rank: ?rank }
     - assert: dialog/separator-part
       where: { of: ?bytes, part: ?separator, at: ?position, kind: ?kind, text: ?text, bytes: ?component }
 
 concept!: &tree-inspector/entry
-  description: An entry of an open segment.
+  description: An entry of an open segment, or an operation an open index node buffers.
   with:
     segment:
-      description: The segment the entry is in.
+      description: The node the entry is in.
       the: xyz.tonk.tree-inspector.entry/segment
       as: entity
     at:
@@ -317,7 +356,7 @@ concept!: &tree-inspector/entry
       as: natural
 
 rule!:
-  description: An open segment's entries are read through `tree/entry`.
+  description: An open node's entries, or an index's buffered operations, are read through `tree/entry`.
   assert: tree-inspector/entry
   when:
     - assert: tree-inspector/opened
@@ -326,6 +365,98 @@ rule!:
       where: { of: ?segment, entry: ?this, at: ?at, key: ?bytes, state: ?state, rank: ?rank }
     - assert: dialog/key-part
       where: { of: ?bytes, part: ?key, at: ?position, kind: ?kind, text: ?text, bytes: ?component }
+
+# What an entry holds beyond its key, each part read only where it
+# applies: a claim (not on a blob record), a version (not on an
+# unversioned write), the span a buffered operation rides (not in a
+# segment), and the blob a blob record is about.
+concept!: &tree-inspector/claim
+  description: The claim an entry of an open node carries.
+  with:
+    retraction:
+      description: Whether the datum marks a retraction.
+      the: xyz.tonk.tree-inspector.claim/retraction
+      as: boolean
+    cause:
+      description: Prior claim versions in the entry's cause.
+      the: xyz.tonk.tree-inspector.claim/cause
+      as: natural
+    collapsed:
+      description: Claim versions collapsed into the entry.
+      the: xyz.tonk.tree-inspector.claim/collapsed
+      as: natural
+    supersedes:
+      description: Versions a covering record supersedes.
+      the: xyz.tonk.tree-inspector.claim/supersedes
+      as: natural
+
+rule!:
+  description: An open node's entries carry their claims.
+  assert: tree-inspector/claim
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, retraction: ?retraction, cause: ?cause, collapsed: ?collapsed, supersedes: ?supersedes }
+
+concept!: &tree-inspector/version
+  description: The version that wrote an entry of an open node.
+  with:
+    origin:
+      description: The replica that wrote it.
+      the: xyz.tonk.tree-inspector.version/origin
+      as: bytes
+    edition:
+      description: Its causal depth on that replica.
+      the: xyz.tonk.tree-inspector.version/edition
+      as: natural
+
+rule!:
+  description: An open node's versioned entries name their version.
+  assert: tree-inspector/version
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, origin: ?origin, edition: ?edition }
+
+concept!: &tree-inspector/buffer
+  description: The span an operation an open index node buffers rides.
+  with:
+    span:
+      description: The span, as `tree/span` names it.
+      the: xyz.tonk.tree-inspector.buffer/span
+      as: entity
+
+rule!:
+  description: An open index node's buffered operations name their span.
+  assert: tree-inspector/buffer
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, span: ?span }
+
+concept!: &tree-inspector/blob
+  description: The blob an entry of an open segment records.
+  with:
+    blob:
+      description: The blob, as its `asset:` entity.
+      the: xyz.tonk.tree-inspector.blob/blob
+      as: entity
+    size:
+      description: Its size in bytes.
+      the: xyz.tonk.tree-inspector.blob/size
+      as: natural
+
+rule!:
+  description: An open segment's blob records name their blob.
+  assert: tree-inspector/blob
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, blob: ?blob, blob-size: ?size }
 
 concept!: &tree-inspector/part
   description: A component of a key or a separator in an open node.
@@ -344,7 +475,7 @@ concept!: &tree-inspector/part
       as: text
 
 rule!:
-  description: The keys of an open segment's entries are decoded by `dialog/key-part`.
+  description: The keys of an open node's entries are decoded by `dialog/key-part`.
   assert: tree-inspector/part
   when:
     - assert: tree-inspector/opened

@@ -1,5 +1,7 @@
-// A click: open or close a node (a command, answered when the session
-// holds it), select a row, show more entries, or start an exploration.
+// A click: follow a link, read a spilled value, unfold an entry, show
+// more entries, or select a node. Selecting a node opens it (a command,
+// answered when the session holds it), so its entries can be read; the
+// dot, or selecting an open index node again, closes it.
 (self, event) => {
   const state = self.__tree;
   const link = event.target.closest?.('a[href]');
@@ -19,39 +21,44 @@
     relay.remove();
     return;
   }
+  const exploration = self.getAttribute('selected') || '';
   const read = event.target.closest?.('[data-value]');
   if (read) {
     // A spilled value is opened in the exploration like a node.
     state.pending.set(read.dataset.value, 'open');
-    self.send('tree-open', { exploration: self.getAttribute('selected') || '', node: read.dataset.value });
+    self.send('tree-open', { exploration, node: read.dataset.value });
+    self.schedule();
+    return;
+  }
+  const more = event.target.closest?.('[data-more]');
+  if (more) {
+    state.shown ??= new Map();
+    state.shown.set(more.dataset.more, (state.shown.get(more.dataset.more) ?? 200) + 200);
+    self.schedule();
+    return;
+  }
+  const unfold = event.target.closest?.('[data-unfold]');
+  if (unfold) {
+    state.unfolded ??= new Set();
+    const entry = unfold.dataset.unfold;
+    if (state.unfolded.has(entry)) state.unfolded.delete(entry);
+    else state.unfolded.add(entry);
     self.schedule();
     return;
   }
   const row = event.target.closest?.('.row');
-  if (!row) return;
-  if (row.dataset.more) {
-    state.shown ??= new Map();
-    state.shown.set(row.dataset.more, (state.shown.get(row.dataset.more) ?? 100) + 100);
-    self.schedule();
-    return;
+  if (!row?.dataset.node) return;
+  const node = row.dataset.node;
+  const open = state.model?.explorations.get(exploration)?.open.has(node);
+  const index = state.model?.nodes.get(node)?.kind === 'index';
+  const twisted = !!event.target.closest('.dot');
+  if (open && (twisted || (index && state.selected === node))) {
+    state.pending.set(node, 'close');
+    self.send('tree-close', { exploration, node });
+  } else if (!open) {
+    state.pending.set(node, 'open');
+    self.send('tree-open', { exploration, node });
   }
-  const exploration = self.getAttribute('selected') || '';
-  if (row.dataset.node) {
-    const node = row.dataset.node;
-    const open = state.model?.explorations.get(exploration)?.open.has(node);
-    const twisted = !!event.target.closest('.dot');
-    if (open && (twisted || state.selected === node)) {
-      state.pending.set(node, 'close');
-      self.send('tree-close', { exploration, node });
-    } else if (!open) {
-      state.pending.set(node, 'open');
-      self.send('tree-open', { exploration, node });
-    }
-    state.selected = node;
-  } else if (row.dataset.entry) {
-    state.selected = row.dataset.entry;
-  } else {
-    return;
-  }
+  state.selected = node;
   self.schedule();
 }
