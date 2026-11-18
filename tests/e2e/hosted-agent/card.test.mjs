@@ -65,7 +65,7 @@ const strip = (say, byAgent) => ({
 
 const ANSWERS = {
   tonk_proposal_apply: strip('changed 2 items in Family trip', true),
-  tonk_proposal_dismiss: strip('nothing changed · Family trip stays as it is', false),
+  tonk_proposal_dismiss: strip('nothing changed in Family trip', false),
 };
 
 const tell = {
@@ -195,7 +195,7 @@ test('keep as is dismisses, and its receipt names no agent', async () => {
   try {
     await shown.card().click('button:text-is("keep as is")');
     const shownReceipt = await receipt(shown.card());
-    assert.equal(shownReceipt.text, 'nothing changed · Family trip stays as it is');
+    assert.equal(shownReceipt.text, 'nothing changed in Family trip');
     assert.equal(shownReceipt.bot, false);
     assert.deepEqual(shown.calls, [{ name: 'tonk_proposal_dismiss', arguments: HELD }]);
   } finally {
@@ -303,7 +303,7 @@ test('a change not saved offers try again and drop it, and drop it calls nothing
         say: 'This change isn’t saved because Tonk can’t reach Family trip. Nothing in it changed.',
         answers: [
           { label: 'try again', kind: 'main', receipt: 'asked to try again', context: 'Try again.' },
-          { label: 'drop it', kind: 'link', receipt: 'dropped · nothing changed in Family trip', context: 'Dropped.' },
+          { label: 'drop it', kind: 'link', receipt: 'dropped the change, and nothing changed in Family trip', context: 'Dropped.' },
         ],
         agent: AGENT,
         person: PERSON,
@@ -321,7 +321,7 @@ test('a change not saved offers try again and drop it, and drop it calls nothing
       ],
     );
     await shown.card().click('button:text-is("drop it")');
-    assert.equal((await receipt(shown.card())).text, 'dropped · nothing changed in Family trip');
+    assert.equal((await receipt(shown.card())).text, 'dropped the change, and nothing changed in Family trip');
     assert.deepEqual(shown.calls, []);
     const context = (await shown.asked()).filter((m) => m.method === 'ui/update-model-context');
     assert.equal(context[0].params.content[0].text, 'Dropped.');
@@ -352,10 +352,10 @@ test('a tell can open Tonk through the agent app, and stays as it is', async () 
         disc: 'filled',
         label: 'read only in Family trip',
         say: 'I can only read Family trip, so I didn’t change it.',
-        ledger: [{ term: 'this agent', value: 'read · sees and searches only' }],
+        ledger: [{ term: 'this agent', value: 'can read and search only' }],
         answers: [
           { label: 'open in tonk ↗', kind: 'main', url: `https://tonk.example/space/${SPACE}` },
-          { label: 'skip', kind: 'ring', receipt: 'nothing changed · Family trip stays as it is', context: 'Skipped.' },
+          { label: 'skip', kind: 'ring', receipt: 'nothing changed in Family trip', context: 'Skipped.' },
         ],
         agent: AGENT,
         person: PERSON,
