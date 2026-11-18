@@ -126,7 +126,7 @@ export async function standIn({ peer = {}, guest = null, runtimeFails = 0 } = {}
         runtimeFailures--;
         return send(503, 'text/plain', 'not now');
       }
-      return send(200, 'application/json', '{}');
+      return send(200, 'application/json', '{"wasm":"","wa":""}');
     }
     if (pathname === '/worker-guest')
       return send(200, 'text/html', guest ? GUEST(guest) : '<!doctype html><p>silent');
