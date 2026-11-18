@@ -16,6 +16,7 @@ export function createTonkServer(
     server.registerTool(
       tool.name,
       {
+        title: tool.title,
         description: tool.description,
         inputSchema: z.fromJSONSchema(inputSchemaFor(tool, { spaceSelection, agentLinkSelection })),
         annotations: tool.annotations,

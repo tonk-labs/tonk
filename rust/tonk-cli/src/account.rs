@@ -1203,26 +1203,36 @@ async fn retract_device_rows(
     operator: &dialog_peer::Peer<NativeSpace, dialog_peer::Session>,
     target: &str,
 ) -> Result<bool> {
-    let links = tonk_schema::device_link::device_links(branch, operator)
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
-    let mut transaction = branch.transaction();
-    let mut retracting = false;
-    for (link, did) in links {
-        if did == target {
-            transaction = transaction.retract(link);
-            retracting = true;
-        }
-    }
-    if retracting {
-        transaction
-            .commit()
-            .publish()
-            .perform(operator)
+    let links = |branch| async move {
+        let links = tonk_schema::device_link::device_links(branch, operator)
             .await
-            .context("failed to retract the revoked device's rows")?;
+            .map_err(|error| anyhow::anyhow!("failed to query device links: {error:?}"))?;
+        anyhow::Ok(
+            links
+                .into_iter()
+                .filter(|(_, did)| did == target)
+                .map(|(link, _)| link)
+                .collect::<Vec<_>>(),
+        )
+    };
+    if links(branch).await?.is_empty() {
+        return Ok(false);
     }
-    Ok(retracting)
+    // The rows are read again on each try, so a lost race retracts what
+    // the head that won holds.
+    branch
+        .transact(|transaction| async move {
+            Ok::<_, anyhow::Error>(
+                links(branch)
+                    .await?
+                    .into_iter()
+                    .fold(transaction, |transaction, link| transaction.retract(link)),
+            )
+        })
+        .perform(operator)
+        .await
+        .context("failed to retract the revoked device's rows")?;
+    Ok(true)
 }
 
 /// The browser URL that asks the account to delegate to this CLI profile.

@@ -692,7 +692,7 @@ fn view_subject(name: &str, scope: &Scope) -> Option<String> {
         return Some(concept.entity.to_string());
     }
     // A URI spells its own entity.
-    name.parse::<dialog_artifacts::Entity>()
+    name.parse::<dialog_corpus::Entity>()
         .ok()
         .map(|entity| entity.to_string())
 }
@@ -758,7 +758,7 @@ fn check_fills(
 
 #[cfg(test)]
 mod tests {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
     use dialog_query::Term;
     use tonk_schema::transact::{Application, Statement};
     use tonk_template::bindings::Bindings;

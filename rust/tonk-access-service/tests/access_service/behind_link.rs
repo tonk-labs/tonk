@@ -10,7 +10,7 @@
 
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
-use dialog_artifacts::{ArtifactSelector, Entity};
+use dialog_corpus::{Entity, Selector};
 use dialog_peer::helpers::{test_session_with_peer, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan::UcanAddress;
@@ -86,10 +86,16 @@ async fn a_push_and_pull_behind_a_link_cross_only_the_link() -> anyhow::Result<(
         .perform(&operator)
         .await?;
     assert!(branch.push().perform(&operator).await?.is_some());
-    assert!(branch.pull().perform(&operator).await?.is_none());
+    assert!(
+        branch
+            .pull(dialog_repository::Download::MinimalRanges)
+            .perform(&operator)
+            .await?
+            .is_none()
+    );
     let found = branch
         .claims()
-        .select(ArtifactSelector::new().the("user/name".parse()?))
+        .select(Selector::new().the("user/name".parse()?))
         .perform(&operator)
         .await?
         .collect::<Vec<_>>()

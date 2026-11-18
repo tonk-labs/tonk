@@ -10,16 +10,18 @@
 //! repo load and `BranchOpenProvider` for the branch open), the
 //! bound is `LoadProvider + BranchOpenProvider`.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Preload, Speculation};
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{List, Publish, Resolve};
 use dialog_effects::space::Load;
 use dialog_repository::registry::RegistryEnv;
-use dialog_repository::{Hydrate, PeersEnv, RemoteSite, ResolveEnv};
+use dialog_repository::{PeersEnv, RemoteSite, ResolveEnv};
 
 /// Bound needed to load a repository via the profile: loading opens the
 /// repository's branch registry and upgrades its storage.
@@ -27,12 +29,36 @@ pub trait LoadProvider: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv
 impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 
 /// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+pub trait BranchOpenProvider:
+    Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
+impl<T> BranchOpenProvider for T where
+    T: Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
 
-/// Bound needed for raw content-addressed block access — a
-/// `LocalIndex` over the branch archive, reading tree nodes by
-/// hash. `Put` is part of the `StorageBackend` bound even though
+/// What settling a branch's stack needs ([`Stack::settle`]): the reads
+/// a subscription's poll makes, through a handle the stack clones once
+/// and shares among every subscription it polls.
+///
+/// [`Stack::settle`]: dialog_repository::Stack::settle
+pub trait SettleProvider:
+    dialog_repository::OpenStackEnv + Clone + dialog_common::ConditionalSend + ConditionalSync + 'static
+{
+}
+impl<T> SettleProvider for T where
+    T: dialog_repository::OpenStackEnv
+        + Clone
+        + dialog_common::ConditionalSend
+        + ConditionalSync
+        + 'static
+{
+}
+
+/// Bound needed for raw content-addressed block access to the branch
+/// archive, reading tree nodes by hash. `Put` is part of the
+/// `StorageBackend` bound even though
 /// tree introspection only reads.
 pub trait GetPutProvider: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
 impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
@@ -44,7 +70,11 @@ pub trait SelectProvider:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
@@ -60,7 +90,11 @@ impl<T> SelectProvider for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -83,11 +117,16 @@ pub trait CommitProvider:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<Attest>
-    + Provider<Hydrate>
+    + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+    + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
+    + dialog_common::Holds
     + ConditionalSync
     + 'static
 {
@@ -103,17 +142,22 @@ impl<T> CommitProvider for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
+        + dialog_common::Holds
         + ConditionalSync
         + 'static
 {
 }
 
-/// Bound needed to pull from upstream (`branch.pull().perform`): the
+/// Bound needed to pull from upstream (`branch.pull(dialog_repository::Download::MinimalRanges).perform`): the
 /// registry the branch's upstreams resolve from, and the host's
 /// connections to the peers they live at.
 pub trait PullProvider:

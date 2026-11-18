@@ -26,6 +26,7 @@ pub mod access;
 pub mod in_agent;
 pub mod join;
 pub mod mcp;
+pub mod telemetry;
 pub mod view;
 mod writer;
 pub use writer::{NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, writer_seed};

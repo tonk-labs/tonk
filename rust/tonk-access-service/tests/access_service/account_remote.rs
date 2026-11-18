@@ -3,8 +3,8 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use dialog_artifacts::Entity;
 use dialog_common::helpers::Provisionable as _;
+use dialog_corpus::Entity;
 use dialog_credentials::Ed25519Signer;
 use dialog_effects::storage::Location;
 use dialog_peer::helpers::{test_session_with_peer, unique_name};
@@ -295,7 +295,13 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     // Adopt the winner by pulling — the pull integrates the established
     // head and records it as the loser's sync base, so its next push
     // fast-forwards.
-    assert!(loser_branch.pull().perform(loser_operator).await?.is_some());
+    assert!(
+        loser_branch
+            .pull(dialog_repository::Download::MinimalRanges)
+            .perform(loser_operator)
+            .await?
+            .is_some()
+    );
     assert_eq!(
         publish_genesis_if_absent(winner_branch, winner_remote, winner_operator).await?,
         CreateGenesis::Loser(winner.clone()),
@@ -313,7 +319,7 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     assert!(loser_branch.push().perform(loser_operator).await?.is_some());
     assert!(
         winner_branch
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(winner_operator)
             .await?
             .is_some()
@@ -334,7 +340,13 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
             .await?
             .is_some()
     );
-    assert!(loser_branch.pull().perform(loser_operator).await?.is_some());
+    assert!(
+        loser_branch
+            .pull(dialog_repository::Download::MinimalRanges)
+            .perform(loser_operator)
+            .await?
+            .is_some()
+    );
     assert_eq!(winner_branch.revision(), loser_branch.revision());
 
     service.stop().await?;
@@ -419,7 +431,11 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
 
     // Adopt as `hydrate` does: pull, integrating the winner's head and
     // recording it as the sync base, and read through.
-    loser.branch.pull().perform(&loser.operator).await?;
+    loser
+        .branch
+        .pull(dialog_repository::Download::MinimalRanges)
+        .perform(&loser.operator)
+        .await?;
 
     let seeded: Vec<_> = loser
         .branch

@@ -36,7 +36,7 @@
 //!
 //! [`dialog_reactor::Migrated`]: https://docs.rs/dialog-reactor
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 use crate::domain::command::Value as SpaceName;
@@ -359,7 +359,7 @@ impl RegisterAccount {
 /// Ordinary login may omit the account constraint added for agent handoffs.
 #[derive(dialog_query::Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AuthorizeDevice {
-    pub this: dialog_artifacts::Entity,
+    pub this: dialog_corpus::Entity,
     pub audience: crate::domain::command::authorize_device::Audience,
     pub callback: crate::domain::command::authorize_device::Callback,
     pub name: crate::domain::command::authorize_device::Name,
