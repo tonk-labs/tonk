@@ -578,6 +578,52 @@ fn session_ids_bind_to_their_token() {
     assert_ne!(key.mint(&token), id, "each initialize mints a new id");
 }
 
+/// Directory review reads every tool's title and hints from `tools/list`,
+/// app-only tools included: a tool without them is taken to be a
+/// destructive write.
+#[dialog_common::test]
+async fn every_listed_tool_has_a_title_and_annotations() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let bearer = token(&agent, &home()).await;
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &Unreachable);
+    let session = connect(&endpoint, &bearer).await;
+
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+    let (status, body) = answer(
+        endpoint
+            .serve(rpc_request(Some(&bearer), Some(&session), list))
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let tools = body["result"]["tools"].as_array().unwrap();
+    for tool in tools {
+        let name = &tool["name"];
+        assert!(
+            tool["title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()),
+            "{name} has no title"
+        );
+        let hints = &tool["annotations"];
+        assert!(hints["readOnlyHint"].is_boolean(), "{name}: readOnlyHint");
+        assert!(hints["openWorldHint"].is_boolean(), "{name}: openWorldHint");
+        if hints["readOnlyHint"] == false {
+            assert!(
+                hints["destructiveHint"].is_boolean(),
+                "{name}: destructiveHint"
+            );
+        }
+    }
+    let evaluate = tools
+        .iter()
+        .find(|tool| tool["name"] == "tonk_evaluate")
+        .unwrap();
+    assert_eq!(evaluate["annotations"]["destructiveHint"], true);
+}
+
 #[dialog_common::test]
 async fn a_session_id_of_another_token_is_refused() {
     let agent = Ed25519Signer::generate().await.unwrap();
