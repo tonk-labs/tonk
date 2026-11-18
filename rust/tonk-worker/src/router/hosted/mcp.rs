@@ -747,7 +747,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
-        // A key command is the person's to confirm, whatever the agent sent.
+        // A key command is the person's to confirm, whatever the agent sent:
+        // a document that names one is proposed at once, and the writer
+        // refuses one it runs unproposed however it is spelled.
         let confirm = confirm || super::propose::names_key_command(document);
         let route = if confirm {
             super::propose::PROPOSE_ROUTE
@@ -764,6 +766,19 @@ impl<W: Writers> McpEndpoint<'_, W> {
         let context = &reached.context;
         if !status.is_success() {
             let value = parsed(&body);
+            // The worker found a key command the source did not spell as
+            // one: nothing was written, and the person is asked instead.
+            if !confirm
+                && [&value["code"], &value["error"]["code"]]
+                    .iter()
+                    .any(|code| **code == "KEY_COMMAND_NOT_CONFIRMED")
+            {
+                call.outcome = None;
+                return Box::pin(
+                    self.evaluate(verified, bearer, session, space, document, true, call),
+                )
+                .await;
+            }
             let reason = reason(&value);
             // A change that would change nothing is not asked: it is said.
             if confirm && value["code"] == "NOTHING_TO_PROPOSE" {

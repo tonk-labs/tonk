@@ -1600,6 +1600,43 @@ concept!: &mcp-note
         assert!(error, "{refused}");
         assert!(refused.to_string().contains("on its own"), "{refused}");
 
+        // Spelled so the source does not name it: the worker still finds
+        // the command, nothing runs, and the person is asked.
+        let other = format!("Escaped {run}");
+        let escaped = format!(
+            "\"tonk/rename-repository\\u0021\":\n  subject: {space}\n  name: \"{other}\"\n"
+        );
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": escaped }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        assert_eq!(asked["structuredContent"]["card"]["kind"], "ask", "{asked}");
+        let (found, _) = client
+            .call(
+                "tonk_query",
+                json!({ "space": space, "document": format!("tonk/repository:\n  this: {space}\n  name: ?name\n") }),
+            )
+            .await;
+        assert!(
+            !found.to_string().contains(&other),
+            "an escaped rename ran unasked: {found}"
+        );
+
+        // A query beside it could bind its inputs to other values by the
+        // time the person answers: refused, and nothing runs.
+        let queried = format!("tonk/repository:\n  this: {space}\n  name: ?name\n{rename}");
+        let (refused, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": queried }),
+            )
+            .await;
+        assert!(error, "{refused}");
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+
         service.stop().await.unwrap();
     }
 

@@ -156,9 +156,10 @@ impl Proposals {
 /// is held only when the command is all it does.
 pub const KEY_COMMANDS: &[&str] = &["tonk/invite", "member/expel", "tonk/rename-repository"];
 
-/// Whether `document` may run a [key command](KEY_COMMANDS): it names one
-/// as a head (`tonk/invite!`). A false positive only asks for a write the
-/// preview then shows as it is; a key command is never written unasked.
+/// Whether `document` names a [key command](KEY_COMMANDS) as a head
+/// (`tonk/invite!`), so it is proposed at once. A shortcut only: the
+/// writer refuses a key command a plain write runs, however the document
+/// spells it, and the endpoint then proposes the document instead.
 pub fn names_key_command(document: &str) -> bool {
     KEY_COMMANDS
         .iter()

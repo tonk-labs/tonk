@@ -107,6 +107,12 @@ pub struct EvaluateQuery {
     /// per-keystroke dry run leaves it off. Ignored when committing.
     #[serde(default, deserialize_with = "deserialize_bool")]
     pub preview: bool,
+    /// Refuse, before it commits, a document that runs a key command
+    /// ([`super::command::key_command_attributes`]): it is answered
+    /// `403` `KEY_COMMAND_NOT_CONFIRMED` and nothing is written. A hosted
+    /// agent's writer sets it on every write but a confirmed one.
+    #[serde(default, deserialize_with = "deserialize_bool")]
+    pub refuse_key_commands: bool,
     /// Set only by the conditional JSON endpoint. Outer None means unconditional;
     /// Some(None) requires an empty branch, Some(Some(revision)) an exact head.
     #[serde(skip)]
@@ -118,6 +124,7 @@ impl Default for EvaluateQuery {
         Self {
             transact: true,
             preview: false,
+            refuse_key_commands: false,
             expected_revision: None,
         }
     }
@@ -290,6 +297,7 @@ pub async fn evaluate_conditional(
         axum::extract::Query(EvaluateQuery {
             transact: true,
             preview: false,
+            refuse_key_commands: false,
             expected_revision: Some(request.expected_revision),
         }),
         client,
@@ -906,6 +914,20 @@ async fn evaluate_on_branch_with<'a>(
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
+        if query.refuse_key_commands {
+            let key = super::command::key_command_attributes();
+            if evaluated
+                .dispatched
+                .iter()
+                .any(|(_, relation, _)| key.contains(&relation.to_string()))
+            {
+                return Err(TonkWorkerError::KeyCommandUnconfirmed(
+                    "this document runs a command that changes who may use the space or what it \
+                     is called; the person confirms it first, so nothing was written"
+                        .into(),
+                ));
+            }
+        }
         if query.expected_revision.is_some() && !evaluated.dispatched.is_empty() {
             return Err(TonkWorkerError::Forbidden(
                 "Conditional builds accept durable changes only; transient commands are unavailable".into(),
@@ -1520,6 +1542,7 @@ mod tests {
             super::EvaluateQuery {
                 transact: true,
                 preview: false,
+                refuse_key_commands: false,
                 expected_revision: Some(expected),
             },
         )
@@ -1719,6 +1742,7 @@ mod tests {
             super::EvaluateQuery {
                 transact: true,
                 preview: false,
+                refuse_key_commands: false,
                 expected_revision: Some(initial),
             },
             super::Retractions::Fixed(Vec::new()),
