@@ -16,3 +16,6 @@
 pub mod analysis;
 
 pub mod analyzer;
+/// A back end for `dialog-notation`: a notation library lowered to the
+/// claims tonk stores for it.
+pub mod notation;
