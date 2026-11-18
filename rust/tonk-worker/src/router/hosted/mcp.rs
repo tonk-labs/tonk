@@ -685,11 +685,17 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
-            super::join::JOIN | super::join::ACCEPT => {
-                super::join::call(name, arguments, verified, self.writers, bearer, session)
-                    .await
-                    .unwrap_or_else(|| tool_result(json!("Tool unavailable."), true))
-            }
+            super::join::JOIN | super::join::ACCEPT => super::join::call(
+                name,
+                arguments,
+                verified,
+                self.writers,
+                bearer,
+                session,
+                self.origin,
+            )
+            .await
+            .unwrap_or_else(|| tool_result(json!("Tool unavailable."), true)),
             _ => match super::view::call(
                 name,
                 arguments,
@@ -928,9 +934,9 @@ fn read_guide(uri: &str) -> Option<Value> {
 }
 
 /// How a listing describes the agent's own space to the model.
-const HOME: &str = "Your own space. Only you write here unless you share it: \
-keep notes, drafts and anything you want to remember across conversations. \
-The other spaces are the ones the person granted you, with the access shown.";
+const HOME: &str = "This connection's own space. Only this connection writes \
+here unless it is shared: save things here when the person asks to keep them. \
+The other spaces are the ones the person granted, with the access shown.";
 
 /// The offered tools, from the shared catalog, with `space` added to the
 /// scoped ones.
@@ -946,15 +952,16 @@ pub fn tools() -> Vec<Value> {
             let name = tool["name"].as_str().unwrap_or_default().to_owned();
             if name == "tonk_query" {
                 tool["description"] = json!(
-                    "Read a space with inline Tonk notation; never changes anything. Name the \
-                     space by its exact subject from tonk_list_spaces. Query concept: for \
-                     schema and read tonk_guide for notation. Select the fields you need and \
-                     use exact saved entity URIs."
+                    "Read a space with inline Tonk notation (https://tonk-labs.github.io/docs/notation.html); never \
+                     changes anything. Name the space by its exact subject from \
+                     tonk_list_spaces. Query concept: for schema and read tonk_guide for \
+                     notation. Select the fields you need and use exact saved entity URIs."
                 );
             }
             if name == "tonk_evaluate" {
                 tool["description"] = json!(
-                    "Write to a space with inline Tonk notation: assertions and commands, run \
+                    "Write to a space with inline Tonk notation \
+                     (https://tonk-labs.github.io/docs/notation.html): assertions and commands, run \
                      once, answered after the write is saved. Needs read-write access to the \
                      space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
                      before authoring unfamiliar schemas or views. If a response is lost, query \
