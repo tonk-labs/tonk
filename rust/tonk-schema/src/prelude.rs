@@ -1,7 +1,7 @@
 //! Extension traits intended for glob import.
 //!
 //! ```no_run
-//! # use dialog_artifacts::Entity;
+//! # use dialog_corpus::Entity;
 //! use tonk_schema::prelude::*;
 //!
 //! # #[derive(serde::Serialize)] struct Origin;
@@ -10,14 +10,14 @@
 //! ```
 
 use base58::ToBase58;
-use dialog_artifacts::Entity;
 use dialog_common::Blake3Hash;
+use dialog_corpus::Entity;
 use dialog_varsig::Did;
 use serde::Serialize;
 
 /// Derive an [`Entity`] from a serializable value.
 ///
-/// `Entity` comes from `dialog_artifacts` and has no awareness of the
+/// `Entity` comes from `dialog_corpus` and has no awareness of the
 /// content-derivation scheme this crate uses. `EntityExt` adds that
 /// shortcut: [`Entity::of`] hashes the dag-cbor encoding of a value
 /// and wraps the result as a `did:key:z6Mk<base58>` URI.

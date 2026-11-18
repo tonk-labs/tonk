@@ -1136,13 +1136,14 @@ pub async fn create(
             .await
             .map_err(|e| SpaceError::Init(format!("failed to open main branch: {e}")))?
             .handle()
-            .transaction()
-            .assert(RepositoryName {
-                this: site.repository.did().this(),
-                name: tonk_schema::domain::repo::Name(name.to_owned()),
+            .transact(|transaction| {
+                std::future::ready(Ok::<_, dialog_repository::CommitError>(transaction.assert(
+                    RepositoryName {
+                        this: site.repository.did().this(),
+                        name: tonk_schema::domain::repo::Name(name.to_owned()),
+                    },
+                )))
             })
-            .commit()
-            .publish()
             .perform(&site.operator)
             .await
             .map_err(|e| SpaceError::Init(format!("failed to stamp repository identity: {e}")))?;

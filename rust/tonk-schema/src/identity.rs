@@ -2,7 +2,7 @@
 //! the profile meta branch and the transient self overlay used by the
 //! topbar chip.
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 use crate::domain::identity::{Did as IdentityDid, Name as IdentityName};
@@ -58,7 +58,7 @@ impl ProfileIdentity {
 mod tests {
     use super::ProfileName;
     use crate::prelude::EntityExt;
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
 
     #[test]
     fn it_attaches_the_name_to_the_profile_entity() {

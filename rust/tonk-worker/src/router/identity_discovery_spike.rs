@@ -136,7 +136,7 @@ async fn has_authority(state: &AppState, space: &Did) -> bool {
         .is_ok()
 }
 
-async fn profile_revision(state: &AppState) -> Option<dialog_artifacts::Revision> {
+async fn profile_revision(state: &AppState) -> Option<dialog_corpus::Revision> {
     let tonk = state.read().await;
     tonk.reactor
         .profile_repository()

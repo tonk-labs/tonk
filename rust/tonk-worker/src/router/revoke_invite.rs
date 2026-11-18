@@ -515,7 +515,7 @@ mod tests {
             .await
             .expect("the member's branch opens");
         branch
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(&member.operator)
             .await
             .map(|_| ())
@@ -996,7 +996,7 @@ mod tests {
             tonk.reactor
                 .repository(&key)
                 .branch("main")
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .perform(&tonk.operator)
                 .await
                 .expect("the founder pulls the member's write");
@@ -1049,7 +1049,7 @@ mod tests {
                 .reactor
                 .repository(&key)
                 .branch("main")
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .assuming_upstream()
                 .perform(&member.operator)
                 .await
