@@ -46,8 +46,8 @@ const PEER = {
 // A guest with a bridge: it opens the bridge, then reports a size.
 const SPEAKS = [{ hello: true }, { wait: 300 }, { type: 'tonk-view-size', height: 180 }];
 
-async function shown({ peer = PEER, guest = SPEAKS, access = granted, extra, context } = {}) {
-  const provider = await standIn({ peer, guest });
+async function shown({ peer = PEER, guest = SPEAKS, access = granted, extra, context, runtimeFails } = {}) {
+  const provider = await standIn({ peer, guest, runtimeFails });
   const client = standInClient(access);
   const view = await showView({
     client,
@@ -213,6 +213,24 @@ test('a page that loads and stays silent fails after 3 s, and try again loads it
     assert.ok(
       card.provider.served.filter((path) => path === '/worker-guest').length > pulls,
       'try again loads the page again',
+    );
+  } finally {
+    await card.close();
+  }
+});
+
+test('a runtime that fails once loads on try again', async () => {
+  const card = await shown({ runtimeFails: 1 });
+  try {
+    const frame = await card.relay();
+    await until(frame, () => document.querySelector('.tonk-well').hasAttribute('data-failed'));
+    await frame.click('.tonk-failed .tonk-link');
+    await until(frame, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'), null, 12_000);
+    assert.equal(await frame.evaluate(() => document.querySelector('.tonk-failed')), null);
+    assert.equal(
+      card.provider.served.filter((path) => path === '/space-runtime.json').length,
+      2,
+      'try again asks for the runtime anew',
     );
   } finally {
     await card.close();
