@@ -728,7 +728,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
     }
 
     /// `tonk_evaluate`: write `document` to `space`, or with `confirm`,
-    /// propose it and write nothing (see [`super::propose`]). The result
+    /// propose it and write nothing (see [`super::propose`]). A document
+    /// that names a [key command](super::propose::KEY_COMMANDS) is always
+    /// proposed. The result
     /// carries the card the host draws: the receipt, the ask, or a tell.
     #[allow(clippy::too_many_arguments)]
     async fn evaluate(
@@ -745,6 +747,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
+        // A key command is the person's to confirm, whatever the agent sent.
+        let confirm = confirm || super::propose::names_key_command(document);
         let route = if confirm {
             super::propose::PROPOSE_ROUTE
         } else {
