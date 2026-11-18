@@ -22,7 +22,7 @@
   --loud: color-mix(in oklab, currentColor 50%, transparent);
   --fill: color-mix(in oklab, currentColor 8%, transparent);
   /* The tree's connecting lines stay in the background. */
-  --guide: color-mix(in oklab, currentColor 20%, transparent);
+  --guide: color-mix(in oklab, currentColor 12%, transparent);
   display: block;
   box-sizing: border-box;
   height: 100dvh;
@@ -197,7 +197,8 @@ table.entries tr.removed td { color: var(--quiet); text-decoration: line-through
 .col-attr { color: var(--triangle); }
 .col-span { color: var(--quiet); text-align: right; }
 table.entries .col-index { width: 1%; }
-.col-val .part--value { color: var(--square); }
+table.entries td.col-val, table.entries td.col-val .val { color: var(--square); }
+table.entries .val--entity { text-decoration: underline; }
 .ordering { display: inline-block; font-weight: 600; color: var(--text); }
 .version { margin-left: 6px; color: var(--closure); }
 tr.unfolded td { white-space: normal; max-width: none; background: var(--fill); padding: 8px; }

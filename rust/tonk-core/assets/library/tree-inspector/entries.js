@@ -70,7 +70,10 @@
     const shownValue = of(parts, 'value');
     if (removed) value.textContent = '(retracted)';
     else if (shownValue) {
-      const text = element('span', 'val part--value', trunc(shownValue.text, 40));
+      // A value is the square's red, an entity value underlined as the
+      // entity column is.
+      const typed = of(parts, 'vtype')?.text === 'Entity' ? ' val--entity' : '';
+      const text = element('span', `val part--value${typed}`, trunc(shownValue.text, 40));
       text.title = shownValue.text;
       value.append(text);
     } else {
@@ -112,11 +115,14 @@
       box.append(kv('edition', version.edition));
     }
     const claim = model.claims.get(entry.entry);
+    // The claim, every field of it: a zero says as much as a count.
     if (claim) {
-      for (const name of ['cause', 'collapsed', 'supersedes']) {
-        if (claim[name] > 0) box.append(kv(name, claim[name]));
-      }
-      if (claim.retraction) box.append(kv('retraction', 'yes'));
+      box.append(kv('cause', claim.cause));
+      box.append(kv('collapsed', claim.collapsed));
+      box.append(kv('supersedes', claim.supersedes));
+      box.append(kv('retraction', claim.retraction ? 'yes' : 'no'));
+    } else if (!blob) {
+      box.append(kv('claim', 'none read'));
     }
     if (blob) {
       box.append(kv('blob', blob.blob));
@@ -125,7 +131,13 @@
     if (spill) {
       box.append(kv('spilled to', spill));
       const read = model.values.get(spill);
-      if (!read) {
+      const opened = model.explorations.get(self.getAttribute('selected') || '')?.open.has(spill);
+      if (!read && opened) {
+        // Opened, and still nothing: neither this replica nor a remote
+        // gave the value's bytes.
+        state.pending.delete(spill);
+        box.append(element('p', 'note', 'The value could not be read: this replica does not hold it, and no remote gave it.'));
+      } else if (!read) {
         // Read only when asked: a value can be large, and may be fetched.
         const button = element('button', 'button', state.pending.get(spill) === 'open' ? 'reading…' : 'read value');
         button.type = 'button';

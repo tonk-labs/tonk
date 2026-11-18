@@ -1734,6 +1734,174 @@ async fn it_replaces_an_askers_previous_answer() {
     );
 }
 
+/// A value too long to sit in its key spills out of it, and the
+/// inspector reads it only when it is opened: the entry names the value
+/// by its `asset:` entity, and opening that entity in the exploration
+/// yields its size and bytes, as the "read value" button does.
+#[dialog_common::test]
+async fn it_reads_a_spilled_value_when_it_is_opened() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/spill",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/tree-inspector.yaml")
+            .await
+            .expect("the inspector installs");
+    }
+    let long = "x".repeat(6000);
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        format!(
+            "concept!: &spill/note\n  description: A note.\n  with:\n    body:\n      description: What it says.\n      the: xyz.spill.note/body\n      as: text\n---\nspill/note!:\n  body: \"{long}\"\n"
+        ),
+    )
+    .await;
+
+    let variable = |name: &str| json!({ "?": { "name": name } });
+    let query = |with: Value, names: &[&str]| {
+        let mut terms = serde_json::Map::new();
+        terms.insert("this".into(), variable("this"));
+        for name in names {
+            terms.insert((*name).into(), variable(name));
+        }
+        json!({ "predicate": { "with": with }, "terms": terms }).to_string()
+    };
+    let rows = async |body: String| -> Vec<Value> {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            body,
+        )
+        .await;
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .clone()
+    };
+    let evaluate = async |text: String| {
+        send(
+            &app,
+            "POST",
+            &format!("{space}/evaluate"),
+            "application/yaml",
+            text,
+        )
+        .await
+    };
+    let branch = rows(query(
+        json!({ "tree": { "the": "dialog.branch/tree", "as": "Entity", "cardinality": "one" } }),
+        &["tree"],
+    ))
+    .await;
+    let root = branch[0]["fields"]["tree"]
+        .as_str()
+        .expect("a root")
+        .to_owned();
+    evaluate(format!(
+        "tree-inspector/explore!:\n  root: {root}\n  time: 1\n"
+    ))
+    .await;
+
+    // Open every child of the root, so the spilled entry's segment is open.
+    let children = rows(query(
+        json!({ "child": { "the": "xyz.tonk.tree-inspector.span/child", "as": "Entity", "cardinality": "one" } }),
+        &["child"],
+    ))
+    .await;
+    for (at, span) in children.iter().enumerate() {
+        let child = span["fields"]["child"].as_str().unwrap();
+        evaluate(format!(
+            "tree-inspector/open!:\n  exploration: {root}\n  node: {child}\n  time: {}\n",
+            10 + at
+        ))
+        .await;
+    }
+    let spills = rows(query(
+        json!({ "value": { "the": "xyz.tonk.tree-inspector.spill/value", "as": "Entity", "cardinality": "one" } }),
+        &["value"],
+    ))
+    .await;
+    let asset = spills
+        .iter()
+        .filter_map(|row| row["fields"]["value"].as_str())
+        .next()
+        .unwrap_or_else(|| panic!("a spilled value is named: {spills:?}"))
+        .to_owned();
+    assert!(asset.starts_with("asset:"), "{asset}");
+
+    let opened = evaluate(format!(
+        "tree-inspector/open!:\n  exploration: {root}\n  node: {asset}\n  time: 1000\n"
+    ))
+    .await;
+    let values = rows(query(
+        json!({
+            "size": { "the": "xyz.tonk.tree-inspector.value/size", "as": "UnsignedInteger", "cardinality": "one" },
+            "bytes": { "the": "xyz.tonk.tree-inspector.value/bytes", "as": "Bytes", "cardinality": "one" }
+        }),
+        &["size", "bytes"],
+    ))
+    .await;
+    let read = values.iter().find(|row| row["this"] == asset);
+    assert!(
+        read.is_some(),
+        "the opened value is read: open answered {opened}, values {values:?}"
+    );
+
+    // Every value the inspector offers to read can be read: a coverage
+    // entry carries a hash of the covered value, under which nothing is
+    // stored, and is offered none.
+    for (at, spill) in spills.iter().enumerate() {
+        let value = spill["fields"]["value"].as_str().unwrap();
+        evaluate(format!(
+            "tree-inspector/open!:\n  exploration: {root}\n  node: {value}\n  time: {}\n",
+            2000 + at
+        ))
+        .await;
+    }
+    let every = rows(query(
+        json!({ "size": { "the": "xyz.tonk.tree-inspector.value/size", "as": "UnsignedInteger", "cardinality": "one" } }),
+        &["size"],
+    ))
+    .await;
+    for spill in &spills {
+        let value = &spill["fields"]["value"];
+        assert!(
+            every.iter().any(|row| row["this"] == *value),
+            "{value} is offered and cannot be read"
+        );
+    }
+    let fetches = rows(query(
+        json!({ "node": { "the": "dialog.node.fetch/node", "as": "Entity", "cardinality": "one", "in": "control:" } }),
+        &["node"],
+    ))
+    .await;
+    assert!(
+        fetches.iter().all(|row| row["fields"]["node"] != asset),
+        "a value is no node, so opening it fetches none: {fetches:?}"
+    );
+}
+
 /// The tree inspector's state lives in the session: exploring the
 /// branch's root and opening it are commands whose rules write into the
 /// stack's `session:` layer, so the branch's revision does not move, and

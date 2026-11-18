@@ -622,11 +622,13 @@ rule!:
       where: { this: ?this, is: ?node }
 
 rule!:
-  description: Opening a node fetches it.
+  description: Opening a node a span names fetches it; a spilled value opened beside it is no node, and is read by `tree/value` alone.
   assert!: tree-inspector/fetch
   when:
     - assert: tree-inspector/open
       where: { exploration: ?exploration, node: ?this, time: ?time }
+    - assert: tree-inspector/span
+      where: { child: ?this }
     - assert: ==
       where: { this: ?this, is: ?node }
 
