@@ -1603,6 +1603,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link: link.clone(),
                     access: None,
+                    origin: None,
                 })
                 .await
                 .unwrap();
@@ -1620,6 +1621,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link,
                     access: Some(access.into()),
+                    origin: None,
                 })
                 .await
                 .unwrap();
