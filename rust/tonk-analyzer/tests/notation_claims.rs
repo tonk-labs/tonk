@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_corpus::{Changes, Instruction, Statement as _, Value};
 use dialog_notation::{
-    Analyzer, Concept, Declaration, Segment, Step, Syntax, View, check, compile, parse_written,
+    Analyzer, Concept, Declaration, Segment, Step, Syntax, View, check_forms, parse_written,
 };
 use dialog_query::query::Output as _;
 use dialog_query::{ConceptConclusion, DeductiveRule, InductiveRule, Parameters, Term};
@@ -439,55 +439,37 @@ async fn notation_library_claims(
         .map(|form| (true, form.as_str()))
         .chain(library.iter().map(|form| (false, form.as_str())))
         .collect();
-    // A form the walker refuses is taken out and the rest walked
-    // again, until the walker refuses nothing. What it walks, the
-    // Dialog-DB back end compiles one kernel rule at a time, and a form
-    // any rule of which it refuses is refused there; its declarations
-    // stand, as `check` gives them whenever the walker passes.
+    // The notation checks the document form by form: a refused form
+    // gives nothing and says why, every other form gives its steps and
+    // its declarations, each with the form it came of. A view is
+    // refused by the Dialog-DB compiler and still declared.
+    let text: String = parts.iter().map(|(_, part)| *part).collect();
+    let checked = check_forms(&mut Analyzer::new()?, &text);
     let mut refused: BTreeMap<usize, String> = BTreeMap::new();
-    let (alive, trees, written, analysis) = loop {
-        let alive: Vec<usize> = (0..parts.len())
-            .filter(|at| !refused.contains_key(at))
-            .collect();
-        let text: String = alive.iter().map(|at| parts[*at].1).collect();
-        let (trees, written) = parse_written(&text)?;
-        anyhow::ensure!(trees.len() == alive.len(), "a part is not one form");
-        let analysis = Analyzer::new()?.analyze(&trees);
-        let mut stopped = false;
-        for diagnostic in analysis.refusals() {
-            let at = match diagnostic.path.first() {
-                Some(Segment::Item(at)) => alive[*at],
-                _ => anyhow::bail!("a refusal with no form: {}", diagnostic.message),
-            };
-            anyhow::ensure!(!parts[at].0, "core is refused: {}", diagnostic.message);
-            refused
-                .entry(at)
-                .or_insert_with(|| diagnostic.message.clone());
-            stopped = true;
-        }
-        if !stopped {
-            break (alive, trees, written, analysis);
-        }
-    };
-    let text: String = alive.iter().map(|at| parts[*at].1).collect();
-    let checked = check(&mut Analyzer::new()?, &text);
-
-    // What each form compiles to, each kernel rule compiled with the
-    // comment above the form it came of as its description, as `check`
-    // does.
-    let mut steps: BTreeMap<usize, Vec<Step>> = BTreeMap::new();
-    for (analyzed, origin) in analysis.analyzed.iter().zip(&analysis.origin) {
-        let at = alive[*origin];
-        let analyzed = described(analyzed, &written, *origin);
-        match compile(&analyzed) {
-            Ok(compiled) => steps.entry(at).or_default().extend(compiled),
-            Err(error) => {
-                anyhow::ensure!(!parts[at].0, "core is refused: {error}");
-                refused.entry(at).or_insert_with(|| error.to_string());
-            }
-        }
+    for diagnostic in checked.refusals() {
+        let at = match diagnostic.path.first() {
+            Some(Segment::Item(at)) => *at,
+            _ => anyhow::bail!("a refusal with no form: {}", diagnostic.message),
+        };
+        anyhow::ensure!(
+            at < parts.len() && !parts[at].0,
+            "core is refused: {}",
+            diagnostic.message
+        );
+        refused
+            .entry(at)
+            .or_insert_with(|| diagnostic.message.clone());
     }
-    let _ = trees;
+    let mut steps: BTreeMap<usize, Vec<Step>> = BTreeMap::new();
+    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
+        steps.entry(*at).or_default().push(step.clone());
+    }
+    let declared: BTreeMap<usize, &Declaration> = checked
+        .declaration_forms
+        .iter()
+        .copied()
+        .zip(&checked.declarations)
+        .collect();
     let mut concepts: BTreeMap<String, &Concept> = BTreeMap::new();
     for declaration in &checked.declarations {
         if let Declaration::Concept(concept) = declaration {
@@ -530,7 +512,7 @@ async fn notation_library_claims(
         let mut changes = Changes::new();
         let mut transients = Changes::new();
         if !refused.contains_key(&at) {
-            if let Some(concept) = concepts.get(&name)
+            if let Some(Declaration::Concept(concept)) = declared.get(&at)
                 && matches!(kind, "concept" | "command")
             {
                 declaration_claims(concept, &mut changes).map_err(anyhow::Error::msg)?;
@@ -572,7 +554,7 @@ async fn notation_library_claims(
         let mut events: Vec<Form> = Vec::new();
         if views
             && kind == "view"
-            && let Some(view) = described_view(tree, &checked.declarations)
+            && let Some(Declaration::View { view, .. }) = declared.get(&at)
         {
             let written = view_claims(view, &concepts)
                 .map_err(|error| anyhow::anyhow!("view {}: {error}", view.concept))?;
@@ -636,25 +618,6 @@ async fn notation_library_claims(
     })
 }
 
-/// `analyzed` with the comment above the form it came of as its
-/// `description:`, when it has none: what `check` compiles.
-fn described(analyzed: &Syntax, written: &dialog_notation::Written, origin: usize) -> Syntax {
-    let said: Vec<&str> = written
-        .comments(&[Segment::Item(origin)])
-        .into_iter()
-        .map(|comment| comment.said())
-        .filter(|said| !said.is_empty())
-        .collect();
-    let mut analyzed = analyzed.clone();
-    if let (false, Syntax::Application(_, operand)) = (said.is_empty(), &mut analyzed) {
-        operand
-            .terms
-            .entry("description".into())
-            .or_insert_with(|| Syntax::Constant(Value::String(said.join("\n"))));
-    }
-    analyzed
-}
-
 /// What tonk's analyzer writes for a `concept!:` or a `command!:`,
 /// from what the notation declares: each field's attribute facts
 /// (`attribute_statements`) with the comment above its line as its
@@ -674,23 +637,18 @@ fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<(), St
     };
     // The descriptor names a field by its attribute, and tonk by the
     // label the head gives it (what a view's `{field}` and a posted
-    // command name): each field is found by its line, and its label by
-    // the variable the line and the head share.
+    // command name): each field is found by the line that compiles to
+    // its attribute, and takes that line's label.
     let mut relabelled = serde_json::Map::new();
     for (name, field) in descriptor.with().iter() {
-        let the = field.descriptor().the().to_string();
-        let domain = |attribute: &str| attribute.split('/').next().unwrap_or_default().to_string();
+        let uri = field.descriptor().to_uri();
         let line = concept.lines.iter().find(|line| {
-            line.attribute == the || (line.key.is_some() && domain(&line.attribute) == domain(&the))
+            line.descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.to_uri() == uri)
         });
         let label = line
-            .and_then(|line| {
-                concept
-                    .fields
-                    .iter()
-                    .find(|(_, variable)| *variable == line.is)
-            })
-            .map(|(label, _)| label.clone())
+            .and_then(|line| line.label.clone())
             .unwrap_or_else(|| name.to_string());
         let mut attribute =
             serde_json::to_value(field.descriptor()).map_err(|error| error.to_string())?;
@@ -733,24 +691,6 @@ fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<(), St
     }
     .assert(changes);
     Ok(())
-}
-
-/// The `View` the notation describes for a `(view concept :name …)`
-/// form.
-fn described_view<'a>(tree: &Syntax, declarations: &'a [Declaration]) -> Option<&'a View> {
-    let items = &tree.operand()?.items;
-    let Some(Syntax::Reference(concept)) = items.first() else {
-        return None;
-    };
-    let name = items.get(1)?.keyword()?;
-    declarations
-        .iter()
-        .find_map(|declaration| match declaration {
-            Declaration::View { view, .. } if &view.concept == concept && view.name == name => {
-                Some(view)
-            }
-            _ => None,
-        })
 }
 
 /// What a view lowers to: its own facts, and each event it binds, by
@@ -802,13 +742,7 @@ fn slots(view: &View, concept: &Concept) -> Result<BTreeMap<String, String>, Str
         }
     }
     let domain = |attribute: &str| attribute.split('/').next().unwrap_or_default().to_string();
-    let label = |line: &dialog_notation::Line| -> Option<String> {
-        concept
-            .fields
-            .iter()
-            .find(|(_, variable)| *variable == line.is)
-            .map(|(label, _)| label.clone())
-    };
+    let label = |line: &dialog_notation::Line| line.label.clone();
     let mut slots = BTreeMap::new();
     slots.insert(view.entity.clone(), "this".to_string());
     for condition in &view.conditions {
@@ -1352,6 +1286,11 @@ fn causes(yaml: &str, notation: &str) -> Vec<&'static str> {
     if count(yaml, "\"assert\":\"==\"") > count(notation, "\"assert\":\"==\"") {
         causes.push("the YAML binds with `==` what the notation binds directly");
     }
+    if count(notation, "\"assert\":\"==\"") > count(yaml, "\"assert\":\"==\"") {
+        causes.push(
+            "the notation binds a collection's key with `==` where the YAML binds it directly",
+        );
+    }
     if count(yaml, "\"as\":") != count(notation, "\"as\":") {
         causes.push("a type left out on one side");
     }
@@ -1569,9 +1508,9 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         Headline {
             yaml: 376,
             identical: 107,
-            differently: 210,
-            not_at_all: 59,
-            only_notation: 269,
+            differently: 211,
+            not_at_all: 58,
+            only_notation: 277,
         }
     );
     assert_eq!(
@@ -1579,9 +1518,9 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         Headline {
             yaml: 376,
             identical: 231,
-            differently: 110,
-            not_at_all: 35,
-            only_notation: 145,
+            differently: 111,
+            not_at_all: 34,
+            only_notation: 153,
         }
     );
     // Of the five views: facet claims equal as bytes, templates
