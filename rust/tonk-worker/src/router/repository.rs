@@ -4894,7 +4894,7 @@ async fn install_seed(
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
-    let install = install_claims_for(&current.source, &library).await?;
+    let install = install_claims_for(tonk, &current.source, &library).await?;
     let subject = space_entity(key)?;
 
     // The writer lock the evaluate path takes, so another committer lines up
@@ -4993,7 +4993,7 @@ pub(super) async fn install_fresh_from(
     library: &str,
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
-    let install = install_claims_for(source, library).await?;
+    let install = install_claims_for(tonk, source, library).await?;
     let seed = seed_version(library);
     let reference = tonk.reactor.repository(key).branch(branch);
     // The install commits through the session's handle, not the reactor's
@@ -5279,7 +5279,7 @@ async fn uninstall_claims(
         .into_iter()
         .filter(|seed| lineage(&seed.source) != in_lineage)
     {
-        for claim in declared_by(&other).await {
+        for claim in declared_by(tonk, &other).await {
             seen.insert(claim_identity(&claim));
         }
     }
@@ -5308,7 +5308,7 @@ async fn uninstall_claims(
 /// What the library an install was fetched from declares, as this worker
 /// ships it. Empty when it cannot be read (a seed whose source is offline):
 /// an upgrade of another library then protects less, and goes on.
-async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
+async fn declared_by(tonk: &TonkState, seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
     let library = match fetch_library_document(&seed.source).await {
         Ok(library) => library,
         Err(error) => {
@@ -5319,7 +5319,7 @@ async fn declared_by(seed: &InstalledSeed) -> Vec<super::claim::RawClaim> {
             return Vec::new();
         }
     };
-    match install_claims_for(&seed.source, &library).await {
+    match install_claims_for(tonk, &seed.source, &library).await {
         Ok(claims) => claims.durable,
         Err(error) => {
             log!(
@@ -7057,14 +7057,74 @@ async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, Repo
 
 /// What installing `library`, fetched from `source`, asserts: a main seed on
 /// its own, a component after the core it relies on.
-async fn install_claims_for(source: &str, library: &str) -> Result<LibraryClaims, RepositoryError> {
+async fn install_claims_for(
+    tonk: &TonkState,
+    source: &str,
+    library: &str,
+) -> Result<LibraryClaims, RepositoryError> {
     if !super::library::is_component_url(source) {
         return library_claims(library, "space library").await;
+    }
+    if source.ends_with(".clj") {
+        return notation_claims(tonk, source, library).await;
     }
     let core = fetch_library_document(STANDARD_LIBRARY_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}")))?;
     library_claims_after(Some(&core), library, source).await
+}
+
+/// What a component written in the dialog notation asserts, lowered by
+/// `tonk_analyzer::notation` with the notation's core (`/library/core.clj`)
+/// read before it for its names only. The space's core stays the one
+/// installed from YAML: nothing of the notation's core is written.
+async fn notation_claims(
+    tonk: &TonkState,
+    source: &str,
+    library: &str,
+) -> Result<LibraryClaims, RepositoryError> {
+    use dialog_corpus::Instruction;
+
+    const NOTATION_CORE_URL: &str = "/library/core.clj";
+    let core = fetch_library_document(NOTATION_CORE_URL)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{NOTATION_CORE_URL}': {e}")))?;
+    let lowered =
+        tonk_analyzer::notation::notation_library_claims(&core, library, true, &tonk.operator)
+            .await
+            .map_err(|error| RepositoryError::Internal(format!("{source}: {error}")))?;
+    // The Dialog-DB compiler refuses every view, and the back end lowers
+    // a view from its description all the same; any other refusal would
+    // install the library without that form, so it is an error.
+    if let Some(form) = lowered
+        .forms
+        .iter()
+        .find(|form| form.refused.is_some() && form.kind != "view")
+    {
+        return Err(RepositoryError::Internal(format!(
+            "{source}: {} is refused: {}",
+            form.key,
+            form.refused.as_deref().unwrap_or_default()
+        )));
+    }
+    let claims = |instructions: Vec<Instruction>| -> Vec<super::claim::RawClaim> {
+        instructions
+            .into_iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Assert(artifact, policy) => Some(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    policy,
+                }),
+                Instruction::Retract(_) => None,
+            })
+            .collect()
+    };
+    Ok(LibraryClaims {
+        durable: claims(lowered.durable),
+        transient: claims(lowered.transient),
+    })
 }
 
 /// [`library_claims`] for a library that relies on `prelude`, as a component
@@ -16349,7 +16409,7 @@ attribute!: &probe/next
             install(&tonk, &key, CORE).await,
             "the seed moves to plain core"
         );
-        let declared = install_claims_for(NOTEBOOK_SOURCE, &shipped)
+        let declared = install_claims_for(&tonk, NOTEBOOK_SOURCE, &shipped)
             .await
             .expect("the component analyzes");
         // Where core says something else of the same thing (a description
@@ -16359,7 +16419,7 @@ attribute!: &probe/next
             .await
             .expect("core is shipped");
         let core_says: std::collections::HashMap<(String, String), String> =
-            install_claims_for(STANDARD_LIBRARY_URL, &core)
+            install_claims_for(&tonk, STANDARD_LIBRARY_URL, &core)
                 .await
                 .expect("core analyzes")
                 .durable
