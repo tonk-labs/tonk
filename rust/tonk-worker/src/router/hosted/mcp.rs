@@ -704,8 +704,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                     .await
             }
             super::creation::CREATE | super::creation::CONFIRM => {
-                super::creation::call(name, arguments, verified, self.writers, bearer, session)
-                    .await
+                super::creation::call(name, arguments, verified, self.writers, bearer).await
             }
             super::join::JOIN | super::join::ACCEPT => super::join::call(
                 name,

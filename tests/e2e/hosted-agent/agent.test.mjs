@@ -349,7 +349,8 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         resource: { html: resource.text, csp: resource._meta.ui.csp },
         answers: {
           tonk_create_space_confirm: async (args) => {
-            const result = await call(client, 'tonk_create_space_confirm', args);
+            // ChatGPT answers a card on a fresh transport for the same connection.
+            const result = await call(await connect(), 'tonk_create_space_confirm', args);
             subject = result.structuredContent.space;
             return result;
           },

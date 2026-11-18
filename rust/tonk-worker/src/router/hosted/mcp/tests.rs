@@ -1569,6 +1569,11 @@ concept!: &mcp-note
         )
         .await
         .unwrap();
+        let another_connection =
+            issue_agent_session_with_grants(agent.clone(), &remote, std::slice::from_ref(&grant))
+                .await
+                .unwrap()
+                .token;
         let bearer = issue_agent_session_with_grants(agent, &remote, &[grant])
             .await
             .unwrap()
@@ -1582,7 +1587,8 @@ concept!: &mcp-note
         let tickets = crate::router::hosted::view::TicketKey::derive("test");
         let endpoint = endpoint(&key, &tickets, &writers);
         let client = Client::connect(&endpoint, bearer.clone()).await;
-        let other = Client::connect(&endpoint, bearer).await;
+        let card = Client::connect(&endpoint, bearer).await;
+        let other = Client::connect(&endpoint, another_connection).await;
         let ask = client.result(CREATE, json!({"name":"Research"})).await;
         let buttons = &ask["structuredContent"]["card"]["answers"];
         let approve = buttons[1]["arguments"].clone();
@@ -1608,7 +1614,7 @@ concept!: &mcp-note
         let ask = client.result(CREATE, json!({"name":"Research"})).await;
         let answer = &ask["structuredContent"]["card"]["answers"][1];
         assert_eq!(answer["tool"], CONFIRM);
-        let receipt = client.result(CONFIRM, answer["arguments"].clone()).await;
+        let receipt = card.result(CONFIRM, answer["arguments"].clone()).await;
         let subject = receipt["structuredContent"]["space"]
             .as_str()
             .expect("creation receipt");

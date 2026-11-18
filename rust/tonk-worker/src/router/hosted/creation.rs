@@ -66,7 +66,6 @@ pub(super) async fn call<W: Writers>(
     verified: &Verified,
     writers: &W,
     bearer: &str,
-    session: &str,
 ) -> Value {
     let Some(permission) = verified.token().grants().iter().find(|grant| {
         grant.ability() == "/provider/create-space" && grant.audience() == verified.agent()
@@ -101,8 +100,17 @@ pub(super) async fn call<W: Writers>(
             serde_json::to_vec(&body).expect("creation request serializes"),
         ))
         .expect("static request");
+    // Chat hosts can open a new MCP transport when the person answers a card.
+    // The writer key also includes the OAuth connection's random seed, so only
+    // that connection can consume its one-use proposal.
     let response = writers
-        .call(verified, bearer, session, verified.agent(), request)
+        .call(
+            verified,
+            bearer,
+            "tonk/space-creation",
+            verified.agent(),
+            request,
+        )
         .await;
     if !response.status().is_success() {
         return error(&refusal(response).await);
