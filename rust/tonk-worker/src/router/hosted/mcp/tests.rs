@@ -657,6 +657,7 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_guide",
             "tonk_join_accept",
             "tonk_join_space",
+            "tonk_leave_space",
             "tonk_list_spaces",
             "tonk_open_space",
             "tonk_outline",
@@ -754,7 +755,17 @@ async fn evaluate_offers_to_confirm_first_and_draws_its_result_in_the_card() {
         super::super::card::CARD_URI
     );
     assert_eq!(evaluate["_meta"]["openai/widgetAccessible"], true);
+    // The answers are the card's; asking to leave is the model's, and
+    // shows the card.
     for tool in super::super::propose::tools() {
+        if tool["name"] == super::super::propose::LEAVE {
+            assert_eq!(
+                tool["_meta"]["ui"]["resourceUri"],
+                super::super::card::CARD_URI
+            );
+            assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
+            continue;
+        }
         assert_eq!(tool["_meta"]["ui"]["visibility"], json!(["app"]), "{tool}");
         assert_eq!(tool["_meta"]["openai/visibility"], "private", "{tool}");
     }
@@ -1012,6 +1023,10 @@ concept!: &mcp-note
                 path if path == crate::router::hosted::propose::DISMISS_ROUTE => {
                     let body = body.collect().await.unwrap().to_bytes();
                     writer.dismiss(&id(&body))
+                }
+                path if path == crate::router::hosted::propose::LEAVE_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.propose_leave(&body)
                 }
                 other => panic!("no writer route {other}"),
             }
@@ -1508,6 +1523,101 @@ concept!: &mcp-note
     /// A command that changes who has access to a space or what it is
     /// called is asked first, whatever the agent sends: `tonk_evaluate`
     /// holds it and answers an ask, and only the person's answer runs it.
+    /// Leaving a space is the person's to confirm: `tonk_leave_space`
+    /// answers an ask and changes nothing, and only the card's answer
+    /// drops the grants the agent holds for it.
+    #[dialog_common::test]
+    async fn leaving_a_space_is_asked_first() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        let shelf = Ed25519Signer::generate().await.unwrap();
+        for subject in [agent.did(), shelf.did()] {
+            service
+                .address
+                .provision_subject(subject.as_ref())
+                .await
+                .unwrap();
+        }
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        approve(
+            &agent,
+            &remote,
+            &shelf,
+            &["get", "put"],
+            Some("Shelf"),
+            None,
+            FOREIGN,
+        )
+        .await;
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let shelf_did = shelf.did().to_string();
+        let listed = || {
+            let client = &client;
+            let shelf_did = shelf_did.clone();
+            async move {
+                let (spaces, error) = client.call("tonk_list_spaces", json!({})).await;
+                assert!(!error, "{spaces}");
+                spaces["spaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["subject"] == json!(shelf_did))
+            }
+        };
+        assert!(listed().await, "the shelf was not granted");
+
+        // Asked: a card, and the agent still holds the space.
+        let asked = client
+            .result("tonk_leave_space", json!({ "space": shelf_did }))
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        assert_eq!(ask["say"], "leave Shelf", "{ask}");
+        assert!(listed().await, "asking left the space");
+
+        // Its own space is not one it can leave.
+        let (refused, error) = client
+            .call(
+                "tonk_leave_space",
+                json!({ "space": agent.did().to_string() }),
+            )
+            .await;
+        assert!(error, "{refused}");
+
+        // Confirmed: the grants are dropped, and the receipt says so.
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply", "{ask}");
+        let left = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(left["isError"], false, "{left}");
+        let strip = &left["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{left}");
+        assert_eq!(strip["say"], "left Shelf", "{strip}");
+        assert!(!listed().await, "the space is still listed after leaving");
+
+        // Once only.
+        let again = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(again["isError"], true, "{again}");
+
+        service.stop().await.unwrap();
+    }
+
     #[dialog_common::test]
     async fn a_key_command_is_asked_first_even_without_confirm() {
         let service = AccessServiceAddress::start(Default::default())

@@ -512,9 +512,12 @@ impl SpaceWriter {
         let revision = evaluation["revision_before"].clone();
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         let seen = super::propose::seen(&evaluation);
-        let (id, expires) = self
-            .proposals
-            .hold(document, revision, seen, runs_a_command, now);
+        let effect = if runs_a_command {
+            super::propose::Effect::Command
+        } else {
+            super::propose::Effect::Document
+        };
+        let (id, expires) = self.proposals.hold(document, revision, seen, effect, now);
         json_answer(super::propose::held(&id, expires, evaluation))
     }
 
@@ -541,7 +544,19 @@ impl SpaceWriter {
         let Ok(taken) = self.proposals.take(id, now) else {
             return proposal_gone();
         };
-        if taken.command {
+        if taken.effect == super::propose::Effect::Leave {
+            let Ok(space) = taken.document.parse::<Did>() else {
+                return failure(StatusCode::BAD_REQUEST, "BAD_LEAVE", "not a space");
+            };
+            return match self.leave(&space).await {
+                Ok(dropped) => json_answer(serde_json::json!({
+                    "left": space.to_string(),
+                    "grants": dropped,
+                })),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, "LEAVE_FAILED", &error),
+            };
+        }
+        if taken.effect == super::propose::Effect::Command {
             // A key command alone: what the person confirmed is the command
             // and its inputs, which a moved space does not change.
             let request = Request::builder()
@@ -1123,6 +1138,101 @@ impl SpaceWriter {
         directory: &[super::access::DirectoryEntry],
     ) -> Result<(), String> {
         self.retain_grants(chains, directory).await
+    }
+
+    /// Hold leaving `space` (`body` is `{"space"}`) for the person to
+    /// confirm, answering the held proposal's id. Only the agent space's
+    /// own writer holds it, and the agent space itself cannot be left.
+    pub fn propose_leave(&self, body: &[u8]) -> Response<Body> {
+        if self.space != self.agent {
+            return failure(
+                StatusCode::FORBIDDEN,
+                "NOT_THE_AGENT_SPACE",
+                "only the agent space's own writer leaves spaces",
+            );
+        }
+        let space = serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|body| {
+                body["space"]
+                    .as_str()
+                    .and_then(|space| space.parse::<Did>().ok())
+            });
+        let Some(space) = space else {
+            return failure(
+                StatusCode::BAD_REQUEST,
+                "BAD_LEAVE",
+                "name the space to leave",
+            );
+        };
+        if space == self.agent {
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CANNOT_LEAVE_HOME",
+                "the agent's own space cannot be left",
+            );
+        }
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(
+            space.to_string(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            super::propose::Effect::Leave,
+            now,
+        );
+        json_answer(serde_json::json!({ "proposal": { "id": id, "expires": expires } }))
+    }
+
+    /// Leave `space`: drop every grant the agent space holds for it, in
+    /// force or lapsed, under the lock, and push. Answers how many were
+    /// dropped. The access service is not told (only the agent space's own
+    /// key could disclaim a grant there), so the agent space no longer
+    /// holds a chain to the space: the agent cannot reach it, and the
+    /// person's list of their agents stops naming it.
+    pub(crate) async fn leave(&self, space: &Did) -> Result<usize, String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer leaves spaces".into());
+        }
+        let _turn = self.lock.lock().await;
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let dropped = {
+            let state = peer.state.read().await;
+            let session = state
+                .reactor
+                .repository(self.space.as_ref())
+                .branch("main")
+                .acquire(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            let held = session
+                .handle()
+                .delegations()
+                .issued_to(self.agent.clone())
+                .perform(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut dropped = 0;
+            for leaf in held {
+                if leaf.0.subject() != Some(space) {
+                    continue;
+                }
+                session
+                    .handle()
+                    .delegations()
+                    .retract(leaf)
+                    .perform(&state.operator)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                dropped += 1;
+            }
+            dropped
+        };
+        if dropped == 0 {
+            return Err("this agent holds no access to that space".into());
+        }
+        self.push(&peer).await.map_err(String::from)?;
+        Ok(dropped)
     }
 
     /// Drop `chains` from the agent space and push, as revoking a grant

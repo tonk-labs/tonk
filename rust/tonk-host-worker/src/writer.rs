@@ -380,6 +380,14 @@ impl SpaceWriterObject {
             let document = request.text().await?;
             return worker::Response::try_from(writer.propose(document).await);
         }
+        // Leaving a space, held by the agent space's own writer.
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::LEAVE_ROUTE.trim_start_matches('/')
+        {
+            self.reach("leave");
+            let body = request.bytes().await?;
+            return worker::Response::try_from(writer.propose_leave(&body));
+        }
         let answer = if path == tonk_worker::propose::APPLY_ROUTE.trim_start_matches('/') {
             Some(true)
         } else if path == tonk_worker::propose::DISMISS_ROUTE.trim_start_matches('/') {

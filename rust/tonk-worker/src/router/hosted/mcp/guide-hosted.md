@@ -22,12 +22,17 @@ listed, ask the person to grant it to you.
 
 When the person gives you a Tonk invite link (`/space/...#...`, `/@/...`, or
 one with `access=`), call `tonk_join_space` with the whole link. It joins
-nothing: it shows a card where the person chooses your access, read or read and
-write, and lets you join. You join as yourself, this connection's agent, not as
-the person; say so when you ask. Do not call it again or claim you joined until
-the card tells you; then the space is in `tonk_list_spaces`. If the host shows
-no card, ask the person to grant you the space in Tonk at {origin}. A link is a
+nothing: it shows a card where the person chooses your access, read or write,
+and lets you join. You join as yourself, this connection's agent, not as the
+person; say so when you ask. Do not call it again or claim you joined until the
+card tells you; then the space is in `tonk_list_spaces`. If the host shows no
+card, ask the person to grant you the space in Tonk at {origin}. A link is a
 key to the space: never repeat it back or write it into a space.
+
+When the person asks you to leave a space granted to you, call
+`tonk_leave_space` with its subject. It leaves nothing: it shows a card, and
+only the person's answer there drops your access. Do not claim you left until
+the card tells you. Your own space cannot be left.
 
 ## Reading and writing
 
