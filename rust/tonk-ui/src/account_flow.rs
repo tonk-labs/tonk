@@ -2251,7 +2251,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&second).await?;
         raise_cluster_from_hub(&second, &env).await?;
         type_into_register_dialog(&second, EMAIL).await?;
-        await_register_action(&second, "log in with passkey").await?;
+        await_register_action(&second, "sign in with passkey").await?;
         click_register_action(&second).await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
