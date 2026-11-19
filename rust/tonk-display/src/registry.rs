@@ -1663,7 +1663,7 @@ mod tests {
             let _ = host.set_attribute(name, value);
         }
         host.set_inner_html(
-            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog data-space-remove-dialog heading="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
+            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog role="group" data-space-remove-dialog aria-label="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
         );
         document()
             .body()
@@ -1775,7 +1775,7 @@ mod tests {
 
         assert_eq!(shown.length(), 1, "the opener shows the row's dialog");
         assert_eq!(
-            dialog.get_attribute("heading").as_deref(),
+            dialog.get_attribute("aria-label").as_deref(),
             Some("confirm leaving space"),
             "the dialog is prepared for the row's verb",
         );

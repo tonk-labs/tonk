@@ -75,50 +75,10 @@ test("the settings display name has visible input affordance", () => {
   );
 });
 
-test("active account fields use a measured two-line row spanning its full width", () => {
-  assert.match(
-    registration,
-    /class="orow mblk editing" id="tonk-register-email-row"/,
-  );
-  assert.match(registration, /class_list\(\)\.remove_1\("editing"\)/);
-  assert.match(
-    appStyles,
-    /\.tonk-ceremony \.orow\.editing \{[\s\S]*?box-sizing: border-box;[\s\S]*?height: 60px;[\s\S]*?grid-template-rows: 13px 20px;[\s\S]*?gap: 7px;/,
-  );
-  assert.match(
-    appStyles,
-    /\.tonk-ceremony \.orow\.editing \.ed \{[\s\S]*?display: block;[\s\S]*?inline-size: 100%;[\s\S]*?max-inline-size: none;/,
-    "the password manager must see the field's real trailing edge",
-  );
-  assert.doesNotMatch(
-    appStyles,
-    /\.tonk-ceremony \.ed\[autocomplete~="webauthn"\]/,
-    "input padding shifts the password-manager affordance away from the row edge",
-  );
-});
-
-test("an anchored account ceremony cannot scroll away from its hub bar", () => {
-  assert.match(
-    appStyles,
-    /html:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\),[\s\S]*?body:has\(#tonk-register\[data-anchored\]\[open\]:not\(\[data-suspended\]\)\)\s*\{\s*overflow: hidden;/,
-    "the top page must be locked while its fixed account page is open",
-  );
-  assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\]\s*\{[^}]*overflow: hidden;[^}]*overscroll-behavior: none;/,
-    "the account page must neither scroll nor chain wheel input to the page behind it",
-  );
-  assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\] \.ocol\s*\{[^}]*overflow: auto;[^}]*overscroll-behavior: none;/,
-    "the content panel must remain scrollable without chaining to the page behind it",
-  );
-});
-
-test("an anchored account ceremony obscures the hub account menu beneath it", () => {
-  assert.match(
-    appStyles,
-    /#tonk-register\[data-anchored\] \.ocol\s*\{[\s\S]*?background:\s*var\(--page\);/,
-    "the opaque column backing must cover the gaps between ceremony rows",
-  );
+test("the account task labels its full-width native passkey field", () => {
+  const markup = readFileSync(join(UI, "src", "register.html"), "utf8");
+  const forms = readFileSync(join(dirname(LIBRARY), "gooey/in-browser/fabb-forms.css"), "utf8");
+  assert.match(markup, /<label class="fabb-field editing"[^>]*>\s*<span class="k">email address<\/span>\s*<input[^>]*autocomplete="username webauthn"[^>]*>\s*<\/label>/);
+  assert.match(forms, /\.fabb-field :is\(input,select,textarea\)\s*\{[^}]*width:100%[^}]*caret-color:currentColor/);
+  assert.doesNotMatch(markup, /class="cur"/);
 });

@@ -175,20 +175,11 @@ export async function signUp(page, { origin, address, inbox }) {
   const field = page.locator('#tonk-register-email');
   await field.waitFor({ timeout: 30_000 });
   await field.fill(address);
-  const action = page.locator('#tonk-register-action:not([hidden])');
-  await action.filter({ hasText: 'create a passkey' }).waitFor({ timeout: 30_000 });
-  const before = await page.evaluate(() => performance.timeOrigin);
-  await action.click();
-
-  const name = page
-    .locator('#tonk-register .orow')
-    .filter({
-      has: page.locator('.k', { hasText: /^(display name|what should people call you\?)$/ }),
-    })
-    .locator('input');
+  const name = page.getByRole('textbox', { name: 'display name', exact: true });
   await name.waitFor({ timeout: 30_000 });
   await name.fill('E2E agent owner');
-  await name.press('Enter');
+  const before = await page.evaluate(() => performance.timeOrigin);
+  await page.getByRole('button', { name: 'make account', exact: true }).click();
 
   // Either the ceremony asks for the emailed link, or it promoted a fresh
   // profile and reloaded; both mean enrollment landed.
@@ -307,7 +298,7 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   const root = await approvalRoot(page, signIn);
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
-  await root.getByRole('button', { name: 'continue' }).click();
+  await root.getByRole('button', { name: /^(choose spaces|continue)$/ }).click();
   const shown = Date.now();
   try {
     for (const [space, access] of Object.entries(grants)) {
@@ -392,7 +383,7 @@ async function approvalRoot(page, signIn) {
   // The approval page's own continue, not the account ceremony's.
   const ready = (root) =>
     root
-      .getByRole('button', { name: 'continue' })
+      .getByRole('button', { name: /^(choose spaces|continue)$/ })
       .and(root.locator(':not(#tonk-register-action):not([disabled])'));
   const register = page.locator('#tonk-register-email');
   // Signed out, a settings page is a wall whose sign in raises the ceremony.

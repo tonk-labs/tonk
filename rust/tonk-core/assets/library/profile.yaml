@@ -732,55 +732,19 @@ view!:
          quieter, but still openable — visiting replicates it */
       .hub-row[data-presence="case:seeding"] .hub-name,
       .hub-row[data-presence="case:remote"] .hub-name { color:var(--tonk-text-soft); }
-      /* a space's verbs, beside its row until the row opens in place */
-      .hub-row-line > space-actions { flex:none; display:flex; align-items:center; padding-right:6px; }
-      .verbs { display:flex; }
-      space-remove { display:contents; }
-      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; margin-left:-2px; }
-      [data-space-actions-open][aria-expanded="true"]::after { transform:rotate(180deg); }
-      .hub-row:has(.space-menu[open="true"]) { position:relative; z-index:10; }
-      /* The row's menu, in the hub's look: a small sheet (its surface,
-         radius and soft shadow), items set like the hub's text buttons,
-         and a hairline before the one that removes. */
-      .space-menu { position:fixed; z-index:8; width:200px;
-        max-width:calc(100vw - 16px); padding:4px; border:0;
-        border-radius:var(--tonk-radius-sheet); background:var(--tonk-sheet);
-        color:var(--tonk-text); box-shadow:var(--tonk-shadow); }
-      .space-menu[open="false"] { display:none; }
-      /* Under its own delete dialog the menu is unseen; the dialog is not. */
-      .space-menu[data-behind], .space-menu[open="false"][data-behind] { display:block; visibility:hidden; }
-      .space-menu[data-behind] tonk-dialog { visibility:visible; }
-      .space-menu space-remove { display:contents; }
-      .space-menu > button, .space-menu > [data-space-copy-link], .space-menu .verb-remove {
-        display:flex; width:100%; min-height:var(--tonk-height-control); align-items:center;
-        justify-content:flex-start; padding:0 10px; border:0;
-        border-radius:var(--tonk-radius-control); background:transparent; color:inherit;
-        font:600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
-        letter-spacing:.02em; text-align:left; cursor:pointer;
-        transition:background-color var(--tonk-change); }
-      .space-menu .verb-remove { position:relative; margin-top:9px; }
-      .space-menu .verb-remove::before { content:""; position:absolute; left:6px; right:6px;
-        top:-5px; border-top:1px solid var(--tonk-rule-soft); }
-      @media (hover:hover) and (pointer:fine) {
-        .space-menu > button:hover, .space-menu > [data-space-copy-link]:hover,
-        .space-menu .verb-remove:hover { background:var(--tonk-wash); }
-      }
-      .space-menu > button:active, .space-menu > [data-space-copy-link]:active,
-      .space-menu .verb-remove:active,
-      .space-menu > button:focus-visible, .space-menu > [data-space-copy-link]:focus-visible,
-      .space-menu .verb-remove:focus-visible { outline:none; background:var(--tonk-wash-strong); }
-      @media (pointer:coarse) {
-        .space-menu > button, .space-menu > [data-space-copy-link], .space-menu .verb-remove { min-height:44px; }
-      }
-      @media (forced-colors:active) {
-        .space-menu { border:1px solid CanvasText; }
-        .space-menu :focus-visible { outline:2px solid Highlight; }
-      }
-      /* `copy link` answers in place: `copied`, or `couldn't copy`. */
-      .space-menu [data-copy-label] { display:none; }
-      .space-menu [data-space-copy-link]:not([data-copy]) [data-copy-label="idle"],
-      .space-menu [data-space-copy-link][data-copy="copied"] [data-copy-label="copied"],
-      .space-menu [data-space-copy-link][data-copy="failed"] [data-copy-label="failed"] { display:inline; }
+      space-actions > :is(space-create, space-remove) { display:contents; }
+      space-actions hub-row-task:not([hidden]) { display:block; flex:1 1 100%; }
+      space-actions hub-row-task[hidden],
+      space-actions:has(hub-row-task:not([hidden])) :is([data-space-copy-link],[data-space-rename-open],[data-space-duplicate-open],[data-space-remove-open]) { display:none; }
+      space-actions hub-row-task { text-align:right; }
+      space-actions hub-row-task :is(form,[role=alert]) { text-align:left; }
+      space-actions hub-row-task .space-create-field { display:grid; gap:6px; }
+      space-actions [data-space-duplicate]:not([busy]) [data-duplicating-label],
+      space-actions [data-space-duplicate][busy] [data-duplicate-label] { display:none; }
+      space-actions [data-copy-label] { display:none; }
+      space-actions [data-space-copy-link]:not([data-copy]) [data-copy-label="idle"],
+      space-actions [data-space-copy-link][data-copy="copied"] [data-copy-label="copied"],
+      space-actions [data-space-copy-link][data-copy="failed"] [data-copy-label="failed"] { display:inline; }
       /* creation is the action in Tonk's line */
       space-create { display:block; }
       [data-space-duplicate]:not([busy]) [data-duplicating-label],
@@ -888,6 +852,15 @@ view!:
       [data-spaces-sheet]:not([data-list="ready"]) .hub-line [data-new-space] { display:none; }
       [data-spaces-sheet]:not([data-list]) [data-space-count]::before { content:"loading"; }
       [data-spaces-sheet][data-list="failed"] [data-space-count] { display:none; }
+      [data-start-sheet] { display:none; }
+      /* The starter and the spaces sheet are alternate views in the same slot. */
+      [data-start-sheet] + [data-spaces-sheet] { margin-top:0; }
+      [data-start-feedback]:empty { display:none; }
+      .hub-page:has([data-account-link][data-state="empty"]):has([data-spaces-sheet][data-list="ready"][data-empty]):not(:has([data-inline] form:not([hidden]))) {
+        --hub-width:480px;
+        [data-start-sheet] { display:block; }
+        [data-spaces-sheet], .hub-me .hub-ic, .mobile-nav { display:none; }
+      }
       /* an empty list is one quiet line in the sheet */
       .hub-empty:not(.hub-failed) p { color:var(--tonk-text-soft); }
 
@@ -917,7 +890,7 @@ view!:
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       @media (max-width:600px) {
         /* room for the bar at the bottom */
-        .hub-page.tonk-hub { padding-bottom:calc(96px + env(safe-area-inset-bottom,0px)); }
+        .hub-page.tonk-hub:has(hub-bar[path^="/settings/"]) { padding-bottom:calc(96px + env(safe-area-inset-bottom,0px)); }
         .srow-wrap:nth-of-type(3n+2) { top:0; }
         .srow-wrap { display:grid; grid-template-columns:minmax(0,1fr) 67px; --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
           --fr-l:var(--fr-l-mobile,0px); }
@@ -933,6 +906,9 @@ view!:
           grid-template-columns:1fr 1.25fr 1fr; gap:7px; padding:7px 12px
           calc(7px + env(safe-area-inset-bottom,0px)); background:var(--frost-solid);
           border-top:1px solid var(--ring); }
+        /* The hub and account sheet already expose these actions in their header.
+           Nested settings still use the bar to get back to spaces. */
+        .hub-page:not(:has(hub-bar[path^="/settings/"])) .mobile-nav { display:none; }
         .mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }
         /* The nav's own controls only: its new-space dialog's buttons
            are a dialog's, not the nav's. */
@@ -986,61 +962,6 @@ view!:
                    The meta slot (people, role) is left out until the
                    profile branch records them. -->
               <a class="hub-open" href="/space/{subject}"><span class="hub-disc" role="img" data-sync-case={sync}></span><span class="hub-name" title="{name}">{name}</span></a>
-              <space-actions>
-                <span class="verbs">
-                  <button class="hub-btn" type="button" data-space-actions-open aria-haspopup="menu"
-                    aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
-                </span>
-                <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
-                  <!-- `copy link` copies the space's own address, at once: the row
-                       is its link. Bringing someone in is a passlink, made
-                       in the open row's links, never minted from here. -->
-                  <button type="button" role="menuitem" data-space-copy-link data-space={subject}><span data-copy-label="idle">copy link</span><span data-copy-label="copied">copied</span><span data-copy-label="failed">couldn't copy</span></button>
-                  <button type="button" role="menuitem" data-space-rename-open>rename</button>
-                  <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
-                  <space-remove data-space-subject={subject} data-space-name={name}
-                    data-space-provider={provider} data-space-founded={founded-at}
-                    data-space-owner={owner}>
-                    <button class="verb-remove" type="button" role="menuitem"
-                      data-space-remove-open disabled>checking&hellip;</button>
-                    <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
-                      <form id="remove-{subject}" class="remove-form" data-remove={subject}>
-                        Leave {name}? This removes the space and its local data from this
-                        device. You'll need another invite link to join again. Other
-                        members keep access.
-                      </form>
-                      <p class="space-create-error" data-space-remove-error role="alert"></p>
-                      <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                      <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit aria-live="polite">leave space</button>
-                    </tonk-dialog>
-                  </space-remove>
-                </hub-menu>
-                <space-create data-space-duplicate>
-                  <tonk-dialog appearance="hub" data-space-create-dialog heading="duplicate space">
-                    <form id="duplicate-{subject}" class="space-create-form" data-space-create-form>
-                      <p class="space-create-help">Copy the data and app into a new space. Members and shared access won't carry over.</p>
-                      <label class="space-create-field"><span>space name</span><input name="name" type="text" html:value="Copy of {name}" required maxlength="100" autocomplete="off"></label>
-                      <input name="description" type="hidden" value="">
-                      <input name="open" type="hidden" value="true">
-                      <input name="copyFrom" type="hidden" value={subject}>
-                      <p class="space-create-error" data-space-create-error role="alert"></p>
-                    </form>
-                    <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                    <button class="m-go" slot="actions" type="submit" html:form="duplicate-{subject}" data-space-create-submit><span data-duplicate-label>duplicate space</span><span data-duplicating-label>duplicating…</span></button>
-                  </tonk-dialog>
-                </space-create>
-                <tonk-dialog appearance="hub" data-space-rename-dialog heading="rename space">
-                  <form id="rename-{subject}" class="space-create-form" data-space-rename-form
-                    data-space={subject}>
-                    <label class="space-create-field"><span>space name</span><input name="name" type="text"
-                      value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
-                    <p class="space-create-error" data-space-rename-error role="alert"></p>
-                  </form>
-                  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                  <button class="m-go" slot="actions" type="submit" html:form="rename-{subject}"
-                    data-space-rename-submit>save changes</button>
-                </tonk-dialog>
-              </space-actions>
               <!-- The chevron: a button of its own, the height of the row,
                    that unfolds the space's details in place. Pressing the
                    row itself opens the space. -->
@@ -1054,6 +975,52 @@ view!:
                  hidden and inert. -->
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
               <space-links data-space={subject} data-name={name}></space-links>
+              <space-actions class="hub-own">
+                  <button class="hub-btn" type="button" data-space-copy-link data-space={subject}><span data-copy-label="idle">copy link</span><span data-copy-label="copied">copied</span><span data-copy-label="failed">couldn't copy</span></button>
+                  <button class="hub-btn" type="button" data-space-rename-open>rename</button>
+                  <button class="hub-btn" type="button" data-space-duplicate-open>duplicate</button>
+                  <space-remove data-space-subject={subject} data-space-name={name}
+                    data-space-provider={provider} data-space-founded={founded-at}
+                    data-space-owner={owner}>
+                    <button class="hub-btn" type="button"
+                      data-space-remove-open disabled>checking&hellip;</button>
+                    <hub-row-task hidden role="group" class="hub-ask" data-space-remove-dialog aria-label="confirm leaving space">
+                      <form id="remove-{subject}" class="remove-form" data-remove={subject}>
+                        Leave {name}? This removes the space and its local data from this
+                        device. You'll need another invite link to join again. Other
+                        members keep access.
+                      </form>
+                      <p class="space-create-error" data-space-remove-error role="alert"></p>
+                      <button class="hub-btn" type="button" data-row-cancel>not now</button>
+                      <button class="hub-btn hub-btn--main" type="submit" html:form="remove-{subject}" data-space-remove-submit aria-live="polite">leave space</button>
+                    </hub-row-task>
+                  </space-remove>
+                <space-create data-space-duplicate>
+                  <hub-row-task hidden role="group" class="hub-linkform" data-space-create-dialog aria-label="duplicate space">
+                    <form id="duplicate-{subject}" class="space-create-form" data-space-create-form>
+                      <p class="space-create-help">Copy the data and app into a new space. Members and shared access won't carry over.</p>
+                      <label class="space-create-field"><span>space name</span><input name="name" type="text" html:value="Copy of {name}" required maxlength="100" autocomplete="off"></label>
+                      <input name="description" type="hidden" value="">
+                      <input name="open" type="hidden" value="true">
+                      <input name="copyFrom" type="hidden" value={subject}>
+                      <p class="space-create-error" data-space-create-error role="alert"></p>
+                    </form>
+                    <button class="hub-btn" type="button" data-row-cancel>not now</button>
+                    <button class="hub-btn hub-btn--main" type="submit" html:form="duplicate-{subject}" data-space-create-submit><span data-duplicate-label>make copy</span><span data-duplicating-label>duplicating…</span></button>
+                  </hub-row-task>
+                </space-create>
+                <hub-row-task hidden role="group" class="hub-linkform" data-space-rename-dialog aria-label="rename space">
+                  <form id="rename-{subject}" class="space-create-form" data-space-rename-form
+                    data-space={subject}>
+                    <label class="space-create-field"><span>space name</span><input name="name" type="text"
+                      value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
+                    <p class="space-create-error" data-space-rename-error role="alert"></p>
+                  </form>
+                  <button class="hub-btn" type="button" data-row-cancel>not now</button>
+                  <button class="hub-btn hub-btn--main" type="submit" html:form="rename-{subject}"
+                    data-space-rename-submit>rename space</button>
+                </hub-row-task>
+              </space-actions>
             </div></div></div>
           </div>
         </hub-collection>
@@ -2560,6 +2527,7 @@ element!: &hub-collection
         const rows = [...self.querySelectorAll('.hub-row[data-space-subject]')]
           .filter(row => getComputedStyle(row).display !== 'none');
         const count = String(rows.length);
+        sheet.toggleAttribute('data-empty', rows.length === 0);
         if (slot.textContent !== count) slot.textContent = count;
       }
     connected: |
@@ -2581,7 +2549,7 @@ element!: &hub-collection
           self.addEventListener('keydown', (event) => {
             if (event.key !== 'Escape' || event.defaultPrevented) return;
             const row = self.querySelector('.hub-row[data-open]');
-            if (!row || event.target?.closest?.('hub-menu, tonk-dialog')) return;
+            if (!row || event.target?.closest?.('hub-menu, tonk-dialog, hub-row-task')) return;
             event.preventDefault();
             self.unfold(row, false, true);
             row.querySelector('.hub-toggle')?.focus();
@@ -2765,6 +2733,8 @@ element!: &hub-discover
         const state = display.getAttribute('data-state');
         const list = !state || state === 'loading' ? 'loading'
           : state === 'offline' && !display.querySelector('.space-card') ? 'failed' : 'ready';
+        if (state === 'empty') sheet.setAttribute('data-empty', '');
+        else if (state !== 'ready') sheet.removeAttribute('data-empty');
         if (sheet.dataset.list === list) return;
         sheet.dataset.list = list;
         if (list === 'loading') sheet.setAttribute('aria-busy', 'true'); else sheet.removeAttribute('aria-busy');
@@ -2923,6 +2893,36 @@ element!: &hub-discover
           await reader?.cancel().catch(() => {});
         }
       }
+    start-help: |
+      (self, toggle, open) => {
+        const fold = toggle.closest('[data-fold]');
+        fold.toggleAttribute('data-open', open);
+        toggle.setAttribute('aria-expanded', String(open));
+        fold.querySelector(':scope > .hub-fold').inert = !open;
+      }
+    copy-start-prompt: |
+      async (self, button) => {
+        const prompt = self.querySelector('[data-start-prompt]');
+        const feedback = self.querySelector('[data-start-feedback]');
+        try {
+          await navigator.clipboard.writeText(prompt.textContent);
+          button.setAttribute('data-copied', '');
+          feedback.textContent = 'Prompt copied.';
+          clearTimeout(self._copyPromptTimer);
+          self._copyPromptTimer = setTimeout(() => {
+            button.removeAttribute('data-copied');
+            feedback.textContent = '';
+          }, 1500);
+        } catch (_) {
+          const range = document.createRange();
+          range.selectNodeContents(prompt);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          prompt.setAttribute('data-whole', '');
+          feedback.textContent = 'Copy the selected prompt and paste it into your agent app.';
+        }
+      }
     watch-list: |
       (self) => {
         const display = self.querySelector('[data-spaces-sheet] > tonk-display');
@@ -2961,7 +2961,22 @@ element!: &hub-discover
         self.__wired = true;
         // An agent approved in another tab shows on coming back here.
         window.addEventListener('focus', () => { if (self.isConnected) self.agents(); });
+        self.addEventListener('keydown', event => {
+          if (event.key !== 'Escape' || !event.target.closest('[data-start-sheet]')) return;
+          const fold = event.target.closest('[data-fold][data-open]');
+          const toggle = fold?.querySelector(':scope > .hub-help-h > button');
+          if (toggle) { event.stopPropagation(); self.startHelp(toggle, false); toggle.focus(); }
+        });
         self.addEventListener('click', event => {
+          const starter = event.target?.closest?.('[data-start-sheet]');
+          if (starter) {
+            const toggle = event.target.closest('.hub-help-toggle');
+            if (toggle) self.startHelp(toggle, toggle.getAttribute('aria-expanded') !== 'true');
+            const copy = event.target.closest('[data-start-copy]');
+            if (copy) self.copyStartPrompt(copy);
+            if (event.target.closest('[data-start-create]')) self.querySelector('space-create[data-inline]')?.open();
+            return;
+          }
           if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }
           if (event.target?.closest?.('[data-hub-undo]')) { self.undo(); return; }
           const revoke = event.target?.closest?.('[data-agent-revoke]');
@@ -3015,7 +3030,8 @@ element!: &space-create
         form.hidden = true;
         // `new space` shows again once the row is hidden; focus it then,
         // never leaving focus on the page.
-        const opener = self.querySelector('[data-new-space]');
+        const starter = self.closest('hub-discover')?.querySelector('[data-start-create]');
+        const opener = starter?.getClientRects().length ? starter : self.querySelector('[data-new-space]');
         opener?.focus();
         if (opener && document.activeElement !== opener) requestAnimationFrame(() => opener.focus());
       }
@@ -3374,6 +3390,72 @@ view!:
                re-renders nothing here: the bar and the panel follow the
                host's context on their own, and the rows keep their hover
                and their focus across the move. -->
+          <section class="hub-sheet" data-start-sheet aria-labelledby="start-title">
+              <div class="hub-line"><div class="hub-line-l" id="start-line"><h1 class="hub-line-name" id="start-title" tabindex="-1">connect an agent app</h1></div></div>
+              <div class="hub-start">
+                <div class="hub-start-read">
+                  <p>Paste this into Claude, ChatGPT or another agent app you use. Your agent adds Tonk, or tells you where to add it.</p>
+                  <p class="hub-prompt" data-start-prompt>Add Tonk to this app. It’s an MCP server at https://tonk.network/mcp. Add it yourself if you can, or tell me where in this app’s settings to add it. Connecting opens Tonk in my browser. Once it’s connected, tell me what you can do with it.</p>
+                </div>
+                <p class="hub-note" data-start-feedback role="status"></p>
+                <div class="hub-start-acts">
+                  <p class="hub-note">Connecting brings you back here to add an account and choose what your agent can reach.</p>
+                  <button type="button" class="hub-btn hub-btn--main hub-copy" data-start-copy aria-describedby="prompt-name"><span data-idle>copy prompt</span><span data-done aria-hidden="true">copied</span></button>
+                  <span class="hub-sr" id="prompt-name">the prompt for your agent app</span>
+                </div>
+              </div>
+
+              <div class="hub-help" id="help" data-fold>
+                <h2 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-body"><span>troubleshooting</span><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></h2>
+                <div class="hub-fold" inert id="help-body"><div class="hub-fold-in"><div class="hub-help-qs">
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-connect"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent can’t connect</span></button></h3>
+                    <div class="hub-fold" inert id="help-connect"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>If your agent can’t add Tonk itself, add it in the app’s settings, usually under connectors. Search for “Tonk Network”, or use the address <code>https://tonk.network/mcp</code>. Then start a new chat.</p>
+                      <p>Connecting opens Tonk in your browser, where you add an account and choose what your agent can reach. If nothing opened, look for a connect or sign-in button in your agent app.</p>
+                    </div></div></div>
+                  </div>
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-find"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent can’t find my space</span></button></h3>
+                    <div class="hub-fold" inert id="help-find"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>Your agent reaches only the spaces you’ve given it. Ask it to list them.</p>
+                      <p>To add one, send it the space’s passlink, or give it a role there under connections in your account.</p>
+                      <p>A space that’s only on your device can’t be reached until it syncs. Sync it in the Tonk app first by adding an account.</p>
+                      <p>If a passlink has expired or was removed, ask the person who shared the space for a new one.</p>
+                    </div></div></div>
+                  </div>
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-write"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent isn’t allowed to write</span></button></h3>
+                    <div class="hub-fold" inert id="help-write"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>An agent has a role in each space it reaches, read or write, and never more than yours.</p>
+                      <p>You chose its role in each space when it connected. To give it write, change its role under connections in your account.</p>
+                      <p>Passlinks have roles baked in. If it joined with a passlink, it has the role the link gives.</p>
+                    </div></div></div>
+                  </div>
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-remove"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>how do I take my agent’s access away?</span></button></h3>
+                    <div class="hub-fold" inert id="help-remove"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>In your account, under connections, remove it. It loses access to every space at once.</p>
+                      <p>You can also ask the agent to leave a space.</p>
+                    </div></div></div>
+                  </div>
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-passkey"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>where is my passkey?</span></button></h3>
+                    <div class="hub-fold" inert id="help-passkey"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>Passkeys are stored in different locations depending on your device settings: password managers (if you use one), operating systems (e.g. Apple’s keychain), and browsers all store passkeys. Typically, passkeys stored in browsers aren’t portable. To use your account on another device, connect it from account settings.</p>
+
+                    </div></div></div>
+                  </div>
+                  <div class="hub-help-q" data-fold>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-without"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>can I use tonk without an agent?</span></button></h3>
+                    <div class="hub-fold" inert id="help-without"><div class="hub-fold-in"><div class="hub-help-a">
+                      <p>Yes, in a space someone shares with you. Its passlink opens the space in your browser, and you can read or write to it, with or without an account.</p>
+                      <p>You can also <button type="button" class="hub-btn" data-start-create>make a space</button> in this browser. For building spaces by hand, see the <a href="https://github.com/tonk-labs/tonk/blob/stable/README.md">documentation</a> on how to build with Tonk.</p>
+                    </div></div></div>
+                  </div>
+                </div></div></div>
+              </div>
+            </section>
           <section class="hub-sheet" data-spaces-sheet aria-label="your spaces">
             <div class="hub-sr" role="status" aria-live="polite" data-hub-live></div>
             <!-- Tonk's line and, under it, the new space row. One
@@ -3554,48 +3636,51 @@ view!:
                 <!-- An app's OAuth request, as the FABB task dialog the hub's
                      sign-in uses: which agent, what it can reach, the passkey,
                      then back to the app. One step shows at a time. -->
-                <div class="pane" data-pane="agent" hidden data-agent-approval data-agent-step="agent">
-                  <div class="agent-dlg" role="group" aria-labelledby="agent-title">
-                    <div class="agent-head"><span class="agent-disc" aria-hidden="true"></span><h2 class="agent-title" id="agent-title" data-agent-title>connect an app</h2></div>
-                    <div class="agent-step" data-agent-panel="agent">
+                <div class="pane fabb-page" data-pane="agent" hidden data-agent-approval data-agent-step="agent">
+                  <header class="fabb-top"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></header>
+                  <section class="fabb-task" aria-labelledby="agent-title">
+                    <header class="fabb-task-head"><h1 class="fabb-task-title" id="agent-title" data-agent-title tabindex="-1">connect an app</h1></header>
+                    <div class="fabb-request" data-agent-panel="agent">
                       <div class="agent-row"><span class="k">app</span><span class="v" data-agent-client>…</span></div>
                       <div class="agent-row"><span class="k">returns to</span><span class="v" data-agent-host>…</span></div>
-                      <p class="agent-exp" data-agent-warning hidden></p>
+                      <p class="fabb-note" data-agent-warning hidden></p>
                       <div class="agent-label" data-agent-choice hidden>which agent</div>
                       <div class="agent-options" data-agent-options role="radiogroup" aria-label="which agent" hidden></div>
-                      <label class="agent-edit" data-agent-name-field><span class="k">agent name</span>
-                        <input class="agent-input" type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
-                      <p class="agent-exp" data-agent-intro>The agent gets a space of its own, where it can always read and write.</p>
-                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-deny>deny</button><button class="agent-btn go" type="button" data-agent-next disabled>continue</button></div>
+                      <label class="fabb-field" data-agent-name-field><span class="k">agent name</span>
+                        <input type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
+                      <p class="fabb-note" data-agent-intro>The agent gets a space of its own, where it can always read and write.</p>
+                      <div class="fabb-actions"><button type="button" data-agent-deny>don’t allow</button><button type="button" data-agent-next disabled>choose spaces</button></div>
                     </div>
-                    <div class="agent-step" data-agent-panel="spaces" hidden>
-                      <div class="agent-spaces" data-agent-spaces role="group" aria-label="what it can reach"><p class="agent-exp">loading your spaces…</p></div>
-                      <p class="agent-exp">You approve each new space in chat.</p>
-                      <p class="agent-exp">Access lasts 90 days. You can remove it any time under your agents.</p>
-                      <div class="agent-foot"><button class="agent-btn" type="button" data-agent-back>back</button><button class="agent-btn go" type="button" data-agent-approve>approve</button></div>
+                    <div class="fabb-request" data-agent-panel="spaces" hidden>
+                      <div class="agent-spaces" data-agent-spaces role="group" aria-label="what it can reach"><p class="fabb-note">loading your spaces…</p></div>
+                      <p class="fabb-note">You approve each new space in chat.</p>
+                      <p class="fabb-note">Access lasts 90 days. You can remove it any time under your agents.</p>
+                      <div class="fabb-actions"><button type="button" data-agent-back>back</button><button type="button" data-agent-approve>approve with passkey</button></div>
                     </div>
-                    <div class="agent-step" data-agent-panel="passkey" hidden>
+                    <div class="fabb-request" data-agent-panel="passkey" hidden>
                       <div data-agent-summary></div>
-                      <p class="agent-exp"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
-                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-deny>cancel</button></div>
+                      <p class="fabb-note"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
+                      <div class="fabb-actions"><button type="button" data-agent-deny>cancel</button></div>
                     </div>
-                    <div class="agent-step" data-agent-panel="working" hidden>
-                      <div class="agent-row agent-phase" data-agent-phase="passkey" data-state="done"><span class="k">passkey</span><span class="v">account opened</span></div>
-                      <div class="agent-row agent-phase" data-agent-phase="agent"><span class="k">agent</span><span class="v"></span></div>
-                      <div class="agent-row agent-phase" data-agent-phase="access"><span class="k">access</span><span class="v"></span></div>
-                      <div class="agent-row agent-phase" data-agent-phase="saving"><span class="k">saving</span><span class="v">to the agent's space</span></div>
-                      <div class="agent-row agent-phase" data-agent-phase="app"><span class="k">app</span><span class="v"></span></div>
-                      <p class="agent-exp" data-agent-wait role="status">This usually takes 10 to 30 seconds. Keep this page open.</p>
+                    <div class="fabb-request" data-agent-panel="working" hidden>
+                      <ol class="fabb-steps" aria-label="connection progress">
+                        <li data-agent-phase="passkey">checking your passkey</li>
+                        <li data-agent-phase="agent">setting up the agent</li>
+                        <li data-agent-phase="access">giving it access</li>
+                        <li data-agent-phase="saving">saving the connection</li>
+                        <li data-agent-phase="app">taking you back to the app</li>
+                      </ol>
+                      <p class="fabb-note" data-agent-wait role="status">Keep this page open. It usually takes 10 to 30 seconds.</p>
                     </div>
-                    <div class="agent-step" data-agent-panel="done" hidden>
+                    <div class="fabb-request" data-agent-panel="done" hidden>
                       <div data-agent-summary></div>
-                      <p class="agent-exp" data-agent-returning>Returning you to the app…</p>
+                      <p class="fabb-note" data-agent-returning>Returning you to the app…</p>
                     </div>
-                    <div class="agent-step" data-agent-panel="error" hidden>
-                      <p class="agent-exp" data-agent-error role="alert"></p>
-                      <div class="agent-foot"><button class="agent-btn wide" type="button" data-agent-close>close</button></div>
+                    <div class="fabb-request" data-agent-panel="error" hidden>
+                      <p class="fabb-note" data-agent-error role="alert"></p>
+                      <div class="fabb-actions"><button type="button" data-agent-close>close</button></div>
                     </div>
-                  </div>
+                  </section>
                 </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" entity="state:ceremony" view="settings">
@@ -3625,6 +3710,7 @@ view!:
             </account-settings>
           </section>
         </main>
+        <footer class="hub-foot">tonk.network</footer>
         <nav class="mobile-nav" aria-label="main navigation">
           <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
           <space-create>
@@ -5569,11 +5655,38 @@ element!: &space-login
         });
       }
 
-element!: &space-actions
-  description: Controls a space card menu and its rename and duplicate dialogs.
+element!: &hub-row-task
+  description: An inline question or form at the foot of an expanded space row.
   method:
+    show: |
+      (self) => {
+        if (!self.hidden) return;
+        self._opener = document.activeElement;
+        self.hidden = false;
+        (self.querySelector('input:not([type=hidden])') ?? self.querySelector('[data-row-cancel]'))?.focus();
+      }
     close: |
-      (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
+      (self) => {
+        self.hidden = true;
+        self._opener?.focus();
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', event => {
+          if (event.target.closest('[data-row-cancel]') && !self.closest('[busy]')) self.close();
+        });
+        self.addEventListener('keydown', event => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          if (!self.closest('[busy]')) self.close();
+        });
+      }
+
+element!: &space-actions
+  description: Controls the actions at the foot of an expanded space row.
+  method:
     # Copy the space's address at once and say so in the item; nothing is
     # minted, so nothing is waited for. The menu closes after the answer.
     copy-link: |
@@ -5586,7 +5699,6 @@ element!: &space-actions
         clearTimeout(self.__copied);
         self.__copied = setTimeout(() => {
           button.removeAttribute('data-copy');
-          self.close(true);
         }, copied ? 900 : 1800);
         return { url, copied };
       }
@@ -5674,56 +5786,27 @@ element!: &space-actions
           if (submit) submit.disabled = false;
         }
       }
-    # A dialog opened from the menu: the menu stays open under it, unseen,
-    # and shows again when it closes, with focus back on the item that
-    # opened it (as `space-remove` does for delete).
-    hold-menu: |
-      (self, dialog, item) => {
-        const menu = self.querySelector('hub-menu');
-        if (!dialog || !menu) { self.close(false); return; }
-        menu.setAttribute('data-behind', '');
-        const native = dialog.shadowRoot?.querySelector('dialog');
-        const done = () => {
-          dialog.removeEventListener('fabb-close', done);
-          native?.removeEventListener('close', done);
-          menu.removeAttribute('data-behind');
-          const active = document.activeElement;
-          if (menu.getAttribute('open') === 'true' && (!active || active === document.body)) {
-            item?.focus({ preventScroll: true });
-          }
-        };
-        dialog.addEventListener('fabb-close', done);
-        native?.addEventListener('close', done);
-      }
     connected: |
       (self) => {
         if (self.__wired) return;
         self.__wired = true;
         self.addEventListener('submit', event => self.validate(event), true);
         self.addEventListener('click', event => {
-          const opener = event.target?.closest?.('[data-space-actions-open]');
-          if (opener) {
-            const menu = self.querySelector('hub-menu');
-            if (menu?.getAttribute('open') === 'true') menu.close(true);
-            else menu?.open?.();
-            return;
-          }
           const copy = event.target?.closest?.('[data-space-copy-link]');
           if (copy) { self.copyLink(copy); return; }
           const duplicate = event.target?.closest?.('[data-space-duplicate-open]');
           if (duplicate) {
             self.querySelector('[data-space-duplicate]')?.open?.();
-            self.holdMenu(self.querySelector('[data-space-duplicate] [data-space-create-dialog]'), duplicate);
             return;
           }
           const rename = event.target?.closest?.('[data-space-rename-open]');
           if (rename) {
-            self.holdMenu(self.querySelector('[data-space-rename-dialog]'), rename);
             self.removeAttribute('busy');
             const submit = self.querySelector('[data-space-rename-submit]');
             if (submit) submit.disabled = false;
             const error = self.querySelector('[data-space-rename-error]');
             if (error) error.textContent = '';
+            self.querySelector('[data-space-rename-form]')?.reset();
             self.querySelector('[data-space-rename-dialog]')?.show?.();
             requestAnimationFrame(() => {
               const input = self.querySelector('[data-space-rename-input]');
@@ -5731,17 +5814,10 @@ element!: &space-actions
             });
             return;
           }
-          if (event.target?.closest?.('[role=menuitem]')
-              && !event.target?.closest?.('[data-space-remove-open]')) self.close(false);
         });
-        self._outside = event => {
-          if (!self.contains(event.target)) self.close(false);
-        };
-        document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
       (self) => {
-        document.removeEventListener('pointerdown', self._outside, true);
         self.__renameReader?.cancel().catch(() => {});
         self.__renameReader = null;
       }
@@ -5875,6 +5951,44 @@ element!: &space-links
         const cut = url.length - 12;
         return `<p class="hub-link-url" data-whole="${self.esc(url)}"><span>${self.esc(url.slice(0, cut))}</span><span>${self.esc(url.slice(cut))}</span></p>`;
       }
+    link-form: |
+      (self) => {
+        const view = self._linkKind === 'view';
+        return `<form class="hub-linkform" aria-label="new link">
+          <div class="hub-lf-row"><span class="hub-lf-label">type</span><div class="hub-opts" role="radiogroup" aria-label="link type">
+            <label class="hub-opt"><input type="radio" name="kind" value="pass" ${view ? '' : 'checked'}><span>passlink</span><small>gives access</small></label>
+            <label class="hub-opt"><input type="radio" name="kind" value="view" ${view ? 'checked' : ''}><span>view</span><small>shows the home view</small></label>
+          </div></div>
+          <p class="hub-lf-note">${view ? 'Opens this space’s home view for people who already have access.' : 'Anyone holding this passlink can join the space.'}</p>
+          ${view && self._manualView ? self.whole(self._manualView) : ''}
+          <div class="hub-lf-acts"><button type="button" class="hub-btn" data-link-cancel>not now</button>
+            <button type="button" class="hub-btn hub-btn--main" data-link-submit>${view ? 'copy link to home view' : 'make passlink'}</button></div></form>`;
+      }
+    choose-link: |
+      (self, kind, focus) => {
+        self._linkKind = kind;
+        self._manualView = null;
+        self._error = '';
+        self._focus = focus;
+        self.render();
+      }
+    copy-view: |
+      async (self, button) => {
+        await self.act(button, 'copying', async () => {
+          const url = self.closest('.hub-row')?.querySelector('.hub-open')?.getAttribute('href');
+          if (!url) return;
+          const address = new URL(url, window.tonk?.context?.origin ?? window.location.origin).href;
+          try {
+            await navigator.clipboard.writeText(address);
+            self.chooseLink(null, '[data-link-new]');
+            self.hub()?.note?.('Copied the link to the home view.');
+          } catch (_) {
+            self._manualView = address;
+            self._error = 'Select the address and copy it.';
+            self.render();
+          }
+        });
+      }
     render: |
       (self) => {
         const esc = (text) => self.esc(text);
@@ -5911,7 +6025,8 @@ element!: &space-links
         self.innerHTML = `${items ? `<ul class="hub-links">${items}</ul>` : ''}`
           + (note ? `<p class="hub-note">${note}</p>` : '')
           + `<p class="hub-err" data-links-err role="alert">${esc(self._error ?? '')}</p>`
-          + `<button type="button" class="hub-btn hub-new-link" data-link-new data-wait="making">new link</button>`;
+          + (self._linkKind ? self.linkForm()
+            : '<button type="button" class="hub-btn hub-new-link" data-link-new>new link</button>');
         // A question that just opened comes in; one already open stays put.
         const ask = self.querySelector('.hub-ask');
         if (ask && self._entering) ask.classList.add('hub-enter');
@@ -5977,10 +6092,11 @@ element!: &space-links
         try { made = await self.mint(); }
         catch (_) {
           self._error = 'Couldn’t make the link. Check your connection and try again.';
-          self._focus = '[data-link-new]';
+          self._focus = '[data-link-submit]';
           self.render();
           return;
         }
+        self._linkKind = null;
         self._error = made.copied ? '' : 'The link was made, but couldn’t be copied. Copy it from its row.';
         self.hub()?.receipt?.(['made a passlink for', self.dataset.name || 'this space']);
         self._focus = made.target ? `[data-link-copy="${made.target}"]` : '[data-link-new]';
@@ -6102,7 +6218,7 @@ element!: &space-links
       (self) => {
         // The actions draw at once, open or not; the links fill in when
         // the row opens.
-        if (!self.querySelector('[data-link-new]')) self.render();
+        if (!self.querySelector('[data-link-new], [data-link-submit]')) self.render();
         if (self.closest('.hub-row')?.hasAttribute('data-open')) self.opened();
         if (self.__wired) return;
         self.__wired = true;
@@ -6114,12 +6230,30 @@ element!: &space-links
           event.clipboardData.setData('text/plain', el.dataset.whole);
           event.preventDefault();
         });
+        self.addEventListener('change', event => {
+          const radio = event.target.closest('.hub-linkform input[name=kind]');
+          if (radio && !self._busy) self.chooseLink(radio.value, `input[name=kind][value="${radio.value}"]`);
+        });
+        self.addEventListener('keydown', event => {
+          if (event.key === 'Escape' && self._linkKind) {
+            event.preventDefault();
+            if (!self._busy) self.chooseLink(null, '[data-link-new]');
+          }
+        });
         self.addEventListener('click', (event) => {
           const target = event.target;
           const copy = target?.closest?.('[data-link-copy]');
           if (copy) { self.copy(copy); return; }
           const make = target?.closest?.('[data-link-new]');
-          if (make) { self.make(make); return; }
+          if (self._busy) return;
+          if (make) { self.chooseLink('pass', 'input[name=kind]:checked'); return; }
+          if (target.closest('[data-link-cancel]')) { self.chooseLink(null, '[data-link-new]'); return; }
+          const submit = target.closest('[data-link-submit]');
+          if (submit) {
+            if (self._linkKind === 'view') self.copyView(submit);
+            else self.make(submit);
+            return;
+          }
           const ask = target?.closest?.('[data-link-ask]');
           if (ask) {
             self._ask = { what: ask.dataset.linkAsk, target: ask.dataset.target, kind: ask.dataset.kind };
@@ -6193,7 +6327,7 @@ element!: &space-remove
           ],
         };
         const [heading, copy, submit] = texts[action] ?? texts.leave;
-        self.querySelector('[data-space-remove-dialog]')?.setAttribute('heading', heading);
+        self.querySelector('[data-space-remove-dialog]')?.setAttribute('aria-label', heading);
         const form = self.querySelector('form[data-remove]');
         if (form) form.textContent = copy;
         const button = self.querySelector('[data-space-remove-submit]');
@@ -6282,26 +6416,6 @@ element!: &space-remove
           self.prepare(self.action());
           const dialog = self.querySelector('[data-space-remove-dialog]');
           dialog?.show?.();
-          // The dialog lives in the menu, so the menu stays open under it,
-          // unseen; it shows again when the dialog closes, with focus back
-          // on the item that opened it.
-          const menu = self.closest('hub-menu');
-          if (!dialog || !menu) return;
-          menu.setAttribute('data-behind', '');
-          const done = () => {
-            dialog.removeEventListener('fabb-close', done);
-            native?.removeEventListener('close', done);
-            menu.removeAttribute('data-behind');
-            // The dialog hands focus back while the menu is still unseen,
-            // which drops it; give it to the item that opened the dialog.
-            const active = document.activeElement;
-            if (menu.getAttribute('open') === 'true' && (!active || active === document.body)) {
-              self.querySelector('[data-space-remove-open]')?.focus({ preventScroll: true });
-            }
-          };
-          const native = dialog.shadowRoot?.querySelector('dialog');
-          dialog.addEventListener('fabb-close', done);
-          native?.addEventListener('close', done);
         });
       }
     attribute-changed: |
@@ -6963,27 +7077,18 @@ element!: &account-settings
         if (self._agentPhase !== phase) { self._agentPhase = phase; self._agentPhaseAt = Date.now(); }
         const reusing = Boolean(self._agentReusing);
         const client = self._agentClient ?? 'the app';
-        const reach = spaces ? `${spaces} space${spaces === 1 ? '' : 's'} signed` : 'its own space only';
-        const words = {
-          agent: [reusing ? 'reopening it' : 'making its space', reusing ? 'reopened' : 'its space made'],
-          access: ['signing', reach],
-          saving: ["to the agent's space", "to the agent's space"],
-          app: [`return to ${client}`, `return to ${client}`],
-        };
         const rows = self.querySelectorAll('[data-agent-phase]');
+        for (const row of rows) {
+          const index = order.indexOf(row.dataset.agentPhase);
+          row.dataset.step = index < at ? 'done' : index === at ? 'now' : 'todo';
+          if (index === at) row.setAttribute('aria-current', 'step');
+          else row.removeAttribute('aria-current');
+          if (row.dataset.agentPhase === 'access') row.textContent =
+            !reusing && !spaces ? 'making the agent’s own space' : 'giving it access';
+          if (row.dataset.agentPhase === 'app') row.textContent = `taking you back to ${client}`;
+        }
         const show = () => {
           const seconds = Math.floor((Date.now() - self._agentPhaseAt) / 1000);
-          const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-          for (const row of rows) {
-            const index = order.indexOf(row.dataset.agentPhase);
-            const state = index < at ? 'done' : index === at ? 'now' : 'todo';
-            if (row.dataset.state !== state) row.dataset.state = state;
-            const said = words[row.dataset.agentPhase];
-            if (!said) continue;
-            const text = state === 'now' ? `${said[0]} · ${clock}` : state === 'done' ? said[1] : said[0];
-            const value = row.querySelector('.v');
-            if (value.textContent !== text) value.textContent = text;
-          }
           const wait = self.querySelector('[data-agent-wait]');
           const slow = seconds >= 60;
           if (wait && wait.dataset.slow !== String(slow)) {
@@ -6993,7 +7098,7 @@ element!: &account-settings
               strong.textContent = 'This is taking longer than usual.';
               wait.replaceChildren(strong, ' Your connection to Tonk may be slow. It will finish on its own; if it fails, this page says why.');
             } else {
-              wait.textContent = 'This usually takes 10 to 30 seconds. Keep this page open.';
+              wait.textContent = 'Keep this page open. It usually takes 10 to 30 seconds.';
             }
           }
         };
@@ -7196,7 +7301,7 @@ element!: &account-settings
         self.agentStep('passkey');
         self._agentAsked = request;
         self._agentReusing = Boolean(agent);
-        self._agentSpaces = 0;
+        self._agentSpaces = spaces.length;
         // The worker asks this page's top document for the passkey; the
         // ceremony row reports how it goes, and the top page goes on to
         // the app's callback when it is done.

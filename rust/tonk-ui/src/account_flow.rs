@@ -357,6 +357,17 @@ pub(crate) mod tests {
             let bound = driver
                 .execute(
                     "const target = arguments[0];
+                     return (async () => {
+                     // A fold reveals its children before its clipped edge finishes moving.
+                     const fold = target.closest('.hub-fold');
+                     if (fold) {
+                       const transitions = [];
+                       for (let node = fold; node; node = node.parentElement) {
+                         if (node.matches('.hub-fold, .hub-fold-in')) transitions.push(...node.getAnimations());
+                       }
+                       await Promise.allSettled(transitions.map(a => a.finished));
+                       target.scrollIntoView({block:'center', inline:'nearest', behavior:'instant'});
+                     }
                      // A library element's handlers arrive with its upgrade; the
                      // registry watches each such tag, so one it watches must be
                      // upgraded before a click inside it means anything.
@@ -371,7 +382,7 @@ pub(crate) mod tests {
                        bound = bound.parentElement;
                      }
                      const display = bound && bound.closest('tonk-display');
-                     return !display || display.hasAttribute('data-bound');",
+                     return !display || display.hasAttribute('data-bound'); })();",
                     vec![found.to_json()?],
                 )
                 .await?;
@@ -708,7 +719,7 @@ pub(crate) mod tests {
     async fn registration_motion_styles(driver: &WebDriver) -> Result<serde_json::Value> {
         driver
             .execute(
-                r#"const action = document.querySelector('.obtn');
+                r#"const action = document.querySelector('#tonk-register-action');
                    action.classList.add('wait', 'flash');
                    const read = selector => {
                      const style = getComputedStyle(document.querySelector(selector));
@@ -718,9 +729,9 @@ pub(crate) mod tests {
                      };
                    };
                    return {
-                     cluster: read('.tonk-cluster'),
-                     row: read('.orow'),
-                     action: read('.obtn')
+                     cluster: read('#tonk-register'),
+                     row: read('#tonk-register-email-row'),
+                     action: read('#tonk-register-action')
                    };"#,
                 Vec::new(),
             )
@@ -1214,7 +1225,7 @@ pub(crate) mod tests {
     pub(crate) async fn run_cluster_ceremony(driver: &WebDriver, email: &str) -> Result<()> {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
-        await_register_action(driver, "create a passkey").await?;
+        await_register_action(driver, "make account").await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?
@@ -1279,7 +1290,7 @@ pub(crate) mod tests {
     pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
-        await_register_action(driver, "log in with passkey").await?;
+        await_register_action(driver, "sign in with passkey").await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?
@@ -1500,7 +1511,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
         type_into_register_dialog(&driver, email).await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
         click_register_action(&driver).await?;
         element(&driver, "#tonk-register-name").await?;
         // An empty name cannot create the account or send its email.
@@ -1732,7 +1743,7 @@ pub(crate) mod tests {
         graft_prf_outputs(&device_b, &key_output, &kek_output).await?;
         raise_cluster_from_hub(&device_b, &env).await?;
         type_into_register_dialog(&device_b, email).await?;
-        await_register_action(&device_b, "log in with passkey").await?;
+        await_register_action(&device_b, "sign in with passkey").await?;
         click_register_action(&device_b).await?;
         // Refused by the gate, and parked rather than failed.
         await_row_value(&device_b, "email", "awaiting confirmation").await?;
@@ -1910,7 +1921,7 @@ pub(crate) mod tests {
         type_into_register_dialog(&second, EMAIL).await?;
         // The address is taken, so the offer is to sign in rather than
         // create — that much already worked.
-        await_register_action(&second, "log in with passkey").await?;
+        await_register_action(&second, "sign in with passkey").await?;
         click_register_action(&second).await?;
 
         // What this test exists for: a row naming the outstanding step,
@@ -2108,45 +2119,15 @@ pub(crate) mod tests {
         let form = driver
             .execute(
                 r#"const host = document.querySelector('#tonk-register[data-fabb-task]');
-                   const label = host?.querySelector('#tonk-register-email-row .k');
-                   const input = host?.querySelector('#tonk-register-email');
-                   const status = host?.querySelector('#tonk-register-status');
-                   const head = host?.querySelector('#tonk-register-head');
-                   const disc = host?.querySelector('.fabb-task-disc');
-                   const title = host?.querySelector('.fabb-task-title');
-                   const dismiss = host?.querySelector('#tonk-register-dismiss');
-                   const action = host?.querySelector('#tonk-register-action');
-                   const explanation = host?.querySelector('.oexp');
-                   const inputStyle = input && getComputedStyle(input);
-                   const statusStyle = status && getComputedStyle(status);
-                   const explanationStyle = explanation && getComputedStyle(explanation);
-                   const rowStyle = label && getComputedStyle(label.closest('.orow'));
-                   const dismissRect = dismiss?.getBoundingClientRect();
-                   const actionRect = action?.getBoundingClientRect();
+                   const field = host.querySelector('#tonk-register-email');
+                   const sheet = host.querySelector('.fabb-task');
                    return {
-                     label: label?.textContent?.trim() || '',
-                     status: status?.textContent?.trim() || '',
-                     placeholder: input?.getAttribute('placeholder'),
-                     inputHeight: input?.getBoundingClientRect().height || 0,
-                     inputFontSize: inputStyle?.fontSize || '',
-                     inputBorder: inputStyle?.borderTopWidth || '',
-                     inputOutline: inputStyle?.outlineWidth || '',
-                     inputOutlineStyle: inputStyle?.outlineStyle || '',
-                     inputBackground: inputStyle?.backgroundColor || '',
-                     statusFontSize: statusStyle?.fontSize || '',
-                     headHeight: head?.getBoundingClientRect().height || 0,
-                     discWidth: disc?.getBoundingClientRect().width || 0,
-                     titleRight: title?.getBoundingClientRect().right || 0,
-                     headRight: head?.getBoundingClientRect().right || 0,
-                     bodyBackground: rowStyle?.backgroundColor || '',
-                     explanationBackground: explanationStyle?.backgroundColor || '',
-                     explanationBorder: explanationStyle?.borderTopWidth || '',
-                     dismiss: dismiss?.textContent?.trim() || '',
-                     action: action?.textContent?.trim() || '',
-                     actionDisabled: action?.disabled ?? false,
-                     footerDomOrder: !!(dismiss?.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING),
-                     footerAligned: Math.abs((dismissRect?.top || 0) - (actionRect?.top || 0)) < 1,
-                     footerWidthDelta: Math.abs((dismissRect?.width || 0) - (actionRect?.width || 0))
+                     label: field.labels[0]?.textContent.trim(),
+                     focused: document.activeElement === field,
+                     autocomplete: field.autocomplete,
+                     width: sheet.getBoundingClientRect().width,
+                     actionHidden: host.querySelector('#tonk-register-action').hidden,
+                     cancel: host.querySelector('#tonk-register-dismiss').textContent
                    };"#,
                 Vec::new(),
             )
@@ -2154,35 +2135,14 @@ pub(crate) mod tests {
         let form = form.json();
         anyhow::ensure!(
             form["label"] == "email address"
-                && form["status"]
-                    == "Enter your email to continue. We’ll check whether you already have a Tonk account."
-                && form["inputHeight"].as_f64() == Some(48.0)
-                && form["inputFontSize"] == "18px"
-                && form["placeholder"].is_null()
-                && form["inputBorder"] == "0px"
-                // An inactive headless window can retain activeElement while
-                // :focus-visible is false; its nonvisible "none" outline
-                // still reports the browser's 3px default outline width.
-                && (form["inputOutlineStyle"] == "none"
-                    || (form["inputOutlineStyle"] == "solid" && form["inputOutline"] == "2px"))
-                && form["inputBackground"] == form["bodyBackground"]
-                && form["statusFontSize"] == "18px"
-                && form["headHeight"].as_f64() == Some(48.0)
-                && form["discWidth"].as_f64() == Some(18.0)
-                && (form["headRight"].as_f64().unwrap_or_default()
-                    - form["titleRight"].as_f64().unwrap_or_default()
-                    - 18.0)
-                    .abs()
-                    < 1.0
-                && form["bodyBackground"] == form["explanationBackground"]
-                && form["explanationBorder"] == "0px"
-                && form["dismiss"] == "cancel"
-                && form["action"] == "continue"
-                && form["actionDisabled"] == true
-                && form["footerDomOrder"] == true
-                && form["footerAligned"] == true
-                && form["footerWidthDelta"].as_f64().unwrap_or(f64::MAX) < 1.0,
-            "the contained account form drifted from the FABB reference: {form}"
+                && form["focused"] == true
+                && form["autocomplete"] == "username webauthn"
+                && form["width"]
+                    .as_f64()
+                    .is_some_and(|w| w > 0.0 && w <= 480.0)
+                && form["actionHidden"] == true
+                && form["cancel"] == "cancel",
+            "contained account task: {form}"
         );
 
         driver
@@ -2497,33 +2457,14 @@ pub(crate) mod tests {
         enter_hub(&driver).await?;
         hub_style_applied(&driver).await?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let count = driver
-                .execute(
-                    "return document.querySelectorAll('[data-new-space]').length;",
-                    Vec::new(),
-                )
-                .await?
-                .json()
-                .as_u64()
-                .unwrap_or_default();
-            if count == 2 {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the Hub never rendered both create controls; found {count}",
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        wait_for_displayed(&driver, "[data-start-sheet]").await?;
 
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
                 r#"const top = document.querySelector('.hub-top').getBoundingClientRect();
-                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
-                   const line = document.querySelector('[data-spaces-sheet] .hub-line').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-start-sheet]').getBoundingClientRect();
+                   const line = document.querySelector('[data-start-sheet] .hub-line').getBoundingClientRect();
                    const mobile = getComputedStyle(document.querySelector('.mobile-nav'));
                    const logo = document.querySelector('.hub-logo').getBoundingClientRect();
                    const account = document.querySelector('.mobile-nav a[href="/settings"]');
@@ -2542,10 +2483,10 @@ pub(crate) mod tests {
             )
             .await?;
         let desktop = desktop.json();
-        // One 680px column, centred: the top and the sheet share its edges.
-        assert_eq!(desktop["topWidth"], 680, "{desktop}");
-        assert_eq!(desktop["sheetWidth"], 680, "{desktop}");
-        assert_eq!(desktop["sheetLeft"], (1200 - 680) / 2, "{desktop}");
+        // One 480px column, centred: the top and the sheet share its edges.
+        assert_eq!(desktop["topWidth"], 480, "{desktop}");
+        assert_eq!(desktop["sheetWidth"], 480, "{desktop}");
+        assert_eq!(desktop["sheetLeft"], (1200 - 480) / 2, "{desktop}");
         assert_eq!(desktop["lineHeight"], 48, "{desktop}");
         assert_eq!(desktop["logoHeight"], 22, "{desktop}");
         assert_eq!(desktop["mobileDisplay"], "none");
@@ -2559,7 +2500,7 @@ pub(crate) mod tests {
                 r#"const viewport = innerWidth;
                    const nav = document.querySelector('.mobile-nav');
                    const navRect = nav.getBoundingClientRect();
-                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-start-sheet]').getBoundingClientRect();
                    const visibleNew = [...document.querySelectorAll('[data-new-space]')]
                      .filter(element => element.getClientRects().length > 0);
                    return {
@@ -2578,12 +2519,9 @@ pub(crate) mod tests {
             .await?;
         let mobile = mobile.json();
         if mobile["viewport"].as_i64().unwrap_or_default() <= 600 {
-            assert_eq!(mobile["navDisplay"], "grid");
-            assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
+            assert_eq!(mobile["navDisplay"], "none");
             assert_eq!(mobile["navItems"], 3);
-            // The line's `new space` and the bar's, until the bar's future
-            // is settled.
-            assert_eq!(mobile["visibleNew"], 2);
+            assert_eq!(mobile["visibleNew"], 0);
             assert_eq!(mobile["overflow"], false);
             // 16px at the sides.
             assert_eq!(mobile["sheetLeft"], 16, "{mobile}");
@@ -2599,7 +2537,7 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_hub_row_actions_beside_the_row(env: TestEnvironment) -> Result<()> {
+    async fn it_places_space_actions_in_the_expanded_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
@@ -2616,7 +2554,7 @@ pub(crate) mod tests {
             let layout = driver.execute(
                 r#"const card = document.querySelector(arguments[0]);
                    const link = card.querySelector('.hub-open').getBoundingClientRect();
-                   const action = card.querySelector('[data-space-actions-open]').getBoundingClientRect();
+                   const action = card.querySelector('.hub-toggle').getBoundingClientRect();
                    return {
                      toolbar: !!document.querySelector('.collection-heading, .collection-search'),
                      overflow: document.documentElement.scrollWidth > innerWidth,
@@ -2635,14 +2573,8 @@ pub(crate) mod tests {
                 assert_eq!(layout["rowHeight"], 48, "{layout}");
             }
         }
-        element(&driver, &format!("{card} [data-space-actions-open]"))
-            .await?
-            .click()
-            .await?;
-        element(&driver, &format!("{card} [data-space-rename-open]"))
-            .await?
-            .click()
-            .await?;
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        click(&driver, &format!("{card} [data-space-rename-open]")).await?;
         element(&driver, &format!("{card} [data-space-rename-input]")).await?;
         driver.quit().await?;
         Ok(())
@@ -2897,7 +2829,7 @@ pub(crate) mod tests {
 
         // The taken address offers sign-in...
         type_into_register_dialog(&driver, existing_email).await?;
-        await_register_action(&driver, "log in with passkey").await?;
+        await_register_action(&driver, "sign in with passkey").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
             0,
@@ -2907,7 +2839,7 @@ pub(crate) mod tests {
         // ...and editing to a free one offers creation, in the same
         // cluster, with nothing to undo in between.
         type_into_register_dialog(&driver, available_email).await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
             0,
@@ -2926,7 +2858,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
         type_into_register_dialog(&driver, "one-action@example.com").await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
 
         click_register_action(&driver).await?;
         element(&driver, "#tonk-register-name")
@@ -2983,10 +2915,10 @@ pub(crate) mod tests {
 
         let email = "retry-committed@example.com";
         type_into_register_dialog(&driver, email).await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
         click(&driver, "#tonk-register-action").await?;
         type_into_settled_row(&driver, "display name", "Retry Name").await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
 
         let first = driver
             .execute(
@@ -3015,7 +2947,7 @@ pub(crate) mod tests {
                 Vec::new(),
             )
             .await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
         let retried = driver
             .execute(
                 r#"return {
@@ -3529,7 +3461,7 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         enter_hub(&driver).await?;
-        click(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        open_hub_create(&driver).await?;
         let form = "space-create[data-inline] form[data-space-create-form]";
         wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
         element(&driver, &format!("{form} input[name=name]"))
@@ -3551,7 +3483,7 @@ pub(crate) mod tests {
 
     /// SPACE-14: the Hub creates one independently identified copy.
     #[dialog_common::test]
-    async fn it_duplicates_a_space_from_the_hub_menu(env: TestEnvironment) -> Result<()> {
+    async fn it_duplicates_a_space_from_the_expanded_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let source = create_space(&driver, "Original space").await?;
@@ -3560,7 +3492,7 @@ pub(crate) mod tests {
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let card = format!(".space-card[data-space-subject='{source}']");
-        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        click(&driver, &format!("{card} .hub-toggle")).await?;
         click(&driver, &format!("{card} [data-space-duplicate-open]")).await?;
         let form = format!("{card} [data-space-duplicate]");
         let input = wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
@@ -3900,7 +3832,7 @@ pub(crate) mod tests {
         // the account-specific step; starting a ceremony before that can
         // create an orphan passkey for an address that already has one.
         let idle = register_action_label(&driver).await?;
-        assert_eq!(idle, "continue");
+        assert_eq!(idle, "");
         let disabled = driver
             .execute(
                 r#"return document.querySelector('#tonk-register-action')?.disabled ?? null;"#,
@@ -3914,9 +3846,9 @@ pub(crate) mod tests {
         );
 
         type_into_register_dialog(&driver, "nobody@example.com").await?;
-        let label = await_register_action(&driver, "create a passkey").await?;
+        let label = await_register_action(&driver, "make account").await?;
         assert_eq!(
-            label, "create a passkey",
+            label, "make account",
             "an address nobody registered is the create branch",
         );
 
@@ -3937,7 +3869,7 @@ pub(crate) mod tests {
         // listened for that request the dialog still reported success,
         // so the credential count is what tells the difference.
         click_register_action(&driver).await?;
-        type_into_settled_row(&driver, "what should people call you?", "Nobody").await?;
+        type_into_settled_row(&driver, "display name", "Nobody").await?;
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
@@ -4034,52 +3966,15 @@ pub(crate) mod tests {
         hub_style_applied(&driver).await?;
         driver.set_window_rect(0, 0, 390, 480).await?;
         let card = format!(".space-card[data-space-subject='{key}']");
-        wait_for_displayed(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} .hub-toggle")).await?;
         driver
             .execute(
                 "document.querySelector(arguments[0]).scrollIntoView({block: 'center'});",
-                vec![serde_json::json!(format!(
-                    "{card} [data-space-actions-open]"
-                ))],
+                vec![serde_json::json!(format!("{card} .hub-toggle"))],
             )
             .await?;
-        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
-        wait_for_displayed(&driver, &format!("{card} .space-menu")).await?;
-        let menu_bounds = driver
-            .execute(
-                "const menu = document.querySelector(arguments[0]); \
-                       const bounds = menu.getBoundingClientRect(); \
-                       const viewport = window.visualViewport; \
-                       const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect(); \
-                       return {open: menu.getAttribute('open'), left: bounds.left, \
-                       right: bounds.right, top: bounds.top, bottom: bounds.bottom, \
-                       viewportLeft: viewport?.offsetLeft ?? 0, \
-                       viewportRight: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth), \
-                       viewportTop: viewport?.offsetTop ?? 0, \
-                       viewportBottom: Math.min((viewport?.offsetTop ?? 0) + \
-                         (viewport?.height ?? innerHeight), nav?.height > 0 ? nav.top : Infinity)};",
-                vec![serde_json::json!(format!("{card} .space-menu"))],
-            )
-            .await?;
-        let bounds = menu_bounds.json();
-        assert_eq!(
-            bounds["open"], "true",
-            "the card menu must stay open: {bounds}"
-        );
-        for (side, edge, direction) in [
-            ("left", "viewportLeft", 1.0),
-            ("top", "viewportTop", 1.0),
-            ("right", "viewportRight", -1.0),
-            ("bottom", "viewportBottom", -1.0),
-        ] {
-            let distance = (bounds[side].as_f64().unwrap_or_default()
-                - bounds[edge].as_f64().unwrap_or_default())
-                * direction;
-            assert!(
-                distance >= 7.0,
-                "the menu crosses the {side} viewport edge: {bounds}"
-            );
-        }
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        wait_for_displayed(&driver, &format!("{card} .hub-own")).await?;
         click(&driver, &format!("{card} [data-space-rename-open]")).await?;
         wait_for_displayed(&driver, &format!("{card} [data-space-rename-dialog]")).await?;
 
@@ -4099,7 +3994,7 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_removes_a_space_without_letting_focus_escape_the_sealed_guest(
+    async fn it_cancels_and_confirms_removal_in_the_expanded_row(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -4112,111 +4007,20 @@ pub(crate) mod tests {
         enter_hub(&driver).await?;
         let remove = format!("space-remove[data-space-subject='{key}']");
         let opener_selector = format!("{remove} [data-space-remove-open]");
-        let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
-        let submit_selector = format!("{dialog_selector} .m-go");
-        let row = wait_for_displayed(&driver, &format!(".hub-row:has({remove})")).await?;
-        // Park on the row once it has held still: its stylesheet lands a
-        // beat after it renders, and a pointer aimed at where the row was
-        // hovers nothing once it moves.
-        let measure = |driver: &WebDriver, row: &WebElement| {
-            let driver = driver.clone();
-            let row = row.clone();
-            async move {
-                driver
-                    .execute(
-                        "const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round);",
-                        vec![row.to_json()?],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-            }
-        };
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        let parked = loop {
-            let before = measure(&driver, &row).await?;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let after = measure(&driver, &row).await?;
-            if before == after || tokio::time::Instant::now() >= deadline {
-                break after;
-            }
-        };
-        driver
-            .action_chain()
-            .move_to_element_center(&row)
-            .perform()
-            .await?;
-        click(
-            &driver,
-            &format!(".hub-row:has({remove}) [data-space-actions-open]"),
-        )
-        .await?;
-        let opener = match wait_for_displayed(&driver, &opener_selector).await {
-            Ok(opener) => opener,
-            Err(error) => {
-                // What the pointer is over now, against where the row was
-                // when the pointer parked on it.
-                let hover = driver
-                    .execute(
-                        "const row = arguments[0]; const r = row.getBoundingClientRect();
-                         const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-                         const verbs = row.querySelector('.verbs');
-                         return {
-                           connected: row.isConnected, hovered: row.matches(':hover'),
-                           rect: [r.left, r.top, r.width, r.height].map(Math.round),
-                           under: at ? at.tagName + '.' + at.className : null,
-                           underInRow: !!(at && row.contains(at)),
-                           verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
-                           rows: document.querySelectorAll('.hub-row').length,
-                           scrollY: window.scrollY,
-                         };",
-                        vec![row.to_json()?],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-                    .unwrap_or(serde_json::Value::Null);
-                return Err(error.context(format!(
-                    "the remove verb never showed; parked={parked} now={hover}"
-                )));
-            }
-        };
-        opener.click().await?;
+        let dialog_selector = format!("{remove} hub-row-task[data-space-remove-dialog]");
+        let submit_selector = format!("{dialog_selector} [data-space-remove-submit]");
+        hub_style_applied(&driver).await?;
+        click(&driver, &format!(".hub-row:has({remove}) .hub-toggle")).await?;
+        click(&driver, &opener_selector).await?;
         wait_for_displayed(&driver, &dialog_selector).await?;
 
-        for _ in 0..8 {
-            driver.action_chain().send_keys(Key::Tab).perform().await?;
-            driver.enter_default_frame().await?;
-            let outer = driver
-                .execute(
-                    r#"return document.activeElement?.matches('tonk-site > iframe') || false;"#,
-                    Vec::new(),
-                )
-                .await?;
-            assert_eq!(
-                outer.json(),
-                true,
-                "Tab must not escape the sealed Hub while removal stays open"
-            );
-
-            enter_hub(&driver).await?;
-            let guest = driver
-                .execute(
-                    r#"const dialog = document.querySelector(arguments[0]);
-                       const active = document.activeElement;
-                       return {
-                         open: dialog?.open || false,
-                         inside: !!dialog && (active === dialog || dialog.contains(active))
-                       };"#,
-                    vec![serde_json::json!(dialog_selector)],
-                )
-                .await?;
-            assert_eq!(guest.json()["open"], true);
-            assert_eq!(
-                guest.json()["inside"],
-                true,
-                "Tab focus left the open removal dialog: {}",
-                guest.json()
-            );
-        }
+        let safe_focus = driver
+            .execute(
+                "return document.activeElement?.matches('[data-row-cancel]');",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(safe_focus.json(), true, "the safe answer starts focused");
 
         driver
             .action_chain()
@@ -4226,7 +4030,7 @@ pub(crate) mod tests {
         let restored = driver
             .execute(
                 r#"return {
-                     open: document.querySelector(arguments[0])?.open || false,
+                     open: !document.querySelector(arguments[0])?.hidden,
                      opener: document.activeElement?.matches('[data-space-remove-open]') || false
                    };"#,
                 vec![serde_json::json!(dialog_selector)],
@@ -4243,7 +4047,7 @@ pub(crate) mod tests {
         wait_for_displayed(&driver, &dialog_selector).await?;
         let association = driver
             .execute(
-                r#"const button = document.querySelector(arguments[0]).querySelector('.m-go');
+                r#"const button = document.querySelector(arguments[0]).querySelector('[data-space-remove-submit]');
                    const form = document.querySelector(arguments[0]).querySelector('form[data-remove]');
                    return {
                      attribute: button?.getAttribute('form') || null,
@@ -4336,7 +4140,7 @@ pub(crate) mod tests {
         // command dispatched, answer written, subscription delivered.
         let email = "alice@web.mail";
         type_into_register_dialog(&driver, email).await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
 
         // 11–12. Running it waits on the platform, and says so.
         let before = credential_count(&driver, &authenticator).await?;
@@ -4491,9 +4295,9 @@ pub(crate) mod tests {
         let presentation = driver
             .execute(
                 r#"const dialog = document.querySelector('#tonk-register');
-                   const panel = dialog.querySelector('.ocol').getBoundingClientRect();
+                   const panel = dialog.querySelector('.fabb-task').getBoundingClientRect();
                    return {
-                     radius: getComputedStyle(dialog.querySelector('.ocol')).borderTopLeftRadius,
+                     radius: getComputedStyle(dialog.querySelector('.fabb-task')).borderTopLeftRadius,
                      width: panel.width,
                      modal: dialog.matches(':modal'),
                      anchored: dialog.hasAttribute('data-anchored'),
@@ -4512,11 +4316,11 @@ pub(crate) mod tests {
         let presentation = presentation.json();
         assert_eq!(presentation["modal"], true, "{presentation}");
         assert_eq!(presentation["anchored"], true, "{presentation}");
-        assert_eq!(presentation["radius"], "25px", "{presentation}");
-        assert_eq!(presentation["width"], 360, "{presentation}");
+        assert_eq!(presentation["radius"], "12px", "{presentation}");
+        assert_eq!(presentation["width"], 480, "{presentation}");
         assert_ne!(presentation["heading"], "none", "{presentation}");
         assert_ne!(presentation["cancel"], "none", "{presentation}");
-        assert_eq!(presentation["action"], "continue", "{presentation}");
+        assert_eq!(presentation["action"], "", "{presentation}");
         assert_eq!(presentation["disabled"], true, "{presentation}");
         assert!(
             presentation["right"].as_f64().unwrap_or(-1.0) >= 8.0,
@@ -4553,7 +4357,7 @@ pub(crate) mod tests {
         // reloaded from here on, so what the trigger shows next can only
         // come from its live account-name subscription.
         type_into_register_dialog(&driver, "hub-one-step@example.com").await?;
-        await_register_action(&driver, "create a passkey").await?;
+        await_register_action(&driver, "make account").await?;
         click_register_action(&driver).await?;
         type_into_settled_row(&driver, "display name", "Hub Owner").await?;
         await_settled_row(&driver, "passkey").await?;
@@ -4866,9 +4670,9 @@ pub(crate) mod tests {
 
         open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
         type_into_register_dialog(&driver, taken).await?;
-        let label = await_register_action(&driver, "log in with passkey").await?;
+        let label = await_register_action(&driver, "sign in with passkey").await?;
         assert_eq!(
-            label, "log in with passkey",
+            label, "sign in with passkey",
             "a registered address must offer sign-in, not a second signup",
         );
 
@@ -4893,7 +4697,7 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         open_register_dialog_from_a_space(&driver, &env, "Tap Bound").await?;
         type_into_register_dialog(&driver, taken).await?;
-        await_register_action(&driver, "log in with passkey").await?;
+        await_register_action(&driver, "sign in with passkey").await?;
 
         let started_in_click = driver
             .execute(
@@ -4952,7 +4756,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&second).await?;
         raise_cluster_from_hub(&second, &env).await?;
         type_into_register_dialog(&second, EMAIL).await?;
-        await_register_action(&second, "log in with passkey").await?;
+        await_register_action(&second, "sign in with passkey").await?;
         click_register_action(&second).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         while second.find(By::Css("#tonk-register")).await.is_ok() {
@@ -5145,7 +4949,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
         type_into_register_dialog(&driver, EMAIL).await?;
-        await_register_action(&driver, "log in with passkey").await?;
+        await_register_action(&driver, "sign in with passkey").await?;
 
         driver
             .execute(
@@ -5236,9 +5040,9 @@ pub(crate) mod tests {
         type_into_register_dialog(&driver, taken).await?;
         type_into_register_dialog(&driver, "someone-else-entirely@example.com").await?;
 
-        let label = await_register_action(&driver, "create a passkey").await?;
+        let label = await_register_action(&driver, "make account").await?;
         assert_eq!(
-            label, "create a passkey",
+            label, "make account",
             "the dialog must answer about what is typed now, not what was typed before",
         );
 
@@ -5366,7 +5170,7 @@ pub(crate) mod tests {
                     // row below it says where its confirmation got to.
                     // The newest is the step being reported on.
                     let seen = "";
-                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                    for (const row of document.querySelectorAll("#tonk-register .register-record")) {
                         const k = row.querySelector(".k");
                         if (!k || k.textContent.trim() !== noun) continue;
                         const v = row.querySelector(".v");
@@ -5405,7 +5209,7 @@ pub(crate) mod tests {
                     const done = arguments[arguments.length - 1];
                     const [noun, value] = [arguments[0], arguments[1]];
                     const contained = !!document.querySelector('#tonk-register:is([data-fabb-task], [data-account-task])');
-                    for (const row of document.querySelectorAll("#tonk-register .orow")) {
+                    for (const row of document.querySelectorAll("#tonk-register .fabb-field")) {
                         const k = row.querySelector(".k");
                         const label = k?.textContent.trim();
                         if (label !== noun && !(contained && noun === 'display name' &&
@@ -6165,8 +5969,8 @@ pub(crate) mod tests {
     /// Wait for the cluster's action row to offer `expected`.
     ///
     /// The row is hidden until the lookup answers, and its label IS the
-    /// routing decision: "create a passkey" for an address nobody has,
-    /// "log in with passkey" for one that is taken. Waiting on it
+    /// routing decision: "make account" for an address nobody has,
+    /// "sign in with passkey" for one that is taken. Waiting on it
     /// asserts the whole loop — command dispatched, answer written,
     /// subscription delivered, cluster rendered.
     async fn await_register_action(driver: &WebDriver, expected: &str) -> Result<String> {
@@ -6208,6 +6012,26 @@ pub(crate) mod tests {
     /// Make a space from the inline row under the spaces line, then open
     /// it from its new row, the way a person goes on to it. The hub stays
     /// put after `make space`, so the helper presses the row's link.
+    async fn open_hub_create(driver: &WebDriver) -> Result<()> {
+        element(driver, "[data-spaces-sheet][data-list=ready]").await?;
+        element(
+            driver,
+            "[data-account-link]:is([data-state=empty],[data-state=ready])",
+        )
+        .await?;
+        if element(driver, "[data-start-sheet]")
+            .await?
+            .is_displayed()
+            .await?
+        {
+            click(driver, "[aria-controls=help-body]").await?;
+            click(driver, "[aria-controls=help-without]").await?;
+            click(driver, "[data-start-create]").await
+        } else {
+            click(driver, "[data-spaces-sheet] [data-new-space]").await
+        }
+    }
+
     async fn submit_hub_wizard_with(driver: &WebDriver, name: &str) -> Result<()> {
         enter_hub(driver).await?;
         let before = driver
@@ -6219,7 +6043,7 @@ pub(crate) mod tests {
             .await?
             .json()
             .clone();
-        click(driver, "[data-spaces-sheet] [data-new-space]").await?;
+        open_hub_create(driver).await?;
         let form = "space-create[data-inline] form[data-space-create-form]";
         wait_for_displayed(driver, &format!("{form} input[name=name]")).await?;
         element(driver, &format!("{form} input[name=name]"))
@@ -6855,6 +6679,7 @@ pub(crate) mod tests {
             )
             .await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        click(&driver, &format!("{row} space-links [data-link-submit]")).await?;
         wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         let first = guest_copied_text(&driver).await?;
         enter_guest(&driver).await?;
@@ -6867,6 +6692,7 @@ pub(crate) mod tests {
 
         // A second open link is not the default: it is removed, not reset.
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        click(&driver, &format!("{row} space-links [data-link-submit]")).await?;
         wait_for_displayed(
             &driver,
             &format!("{row} .hub-link [data-link-ask='remove']"),
@@ -9550,18 +9376,18 @@ pub(crate) mod tests {
             .execute(
                 r#"
             const host = document.querySelector('#tonk-register');
-            const card = host.querySelector('.ocol');
+            const card = host.querySelector('.fabb-task');
             return { task: host.hasAttribute('data-account-task'),
                 radius: getComputedStyle(card).borderRadius,
                 width: Math.round(card.getBoundingClientRect().width),
-                body: !!host.querySelector('.account-task-body') };
+                body: !!host.querySelector('.fabb-request') };
         "#,
                 Vec::new(),
             )
             .await?;
         assert_eq!(presentation.json()["task"], true, "{presentation:?}");
-        assert_eq!(presentation.json()["radius"], "25px", "{presentation:?}");
-        assert_eq!(presentation.json()["width"], 360, "{presentation:?}");
+        assert_eq!(presentation.json()["radius"], "12px", "{presentation:?}");
+        assert_eq!(presentation.json()["width"], 480, "{presentation:?}");
         assert_eq!(presentation.json()["body"], true, "{presentation:?}");
         let email = "local-space-link-fresh-account@example.com";
         run_cluster_ceremony(&driver, email).await?;
