@@ -4,10 +4,29 @@ use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// The capability a browser passlink conveys on its space subject.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PasslinkRole {
+    /// Read space data.
+    Read,
+    /// Read and write space data.
+    #[default]
+    Write,
+    /// Administer the space and its access.
+    Admin,
+}
+
 /// Request to mint an open or root-targeted invitation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateInviteRequest {
+    /// Desired role. Older callers grant write.
+    #[serde(default)]
+    pub role: PasslinkRole,
+    /// Signed access deadline, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Link base. Browser callers may omit it to use their request origin.
     #[serde(default, alias = "base_url", skip_serializing_if = "Option::is_none")]
     pub base_url: Option<Url>,
@@ -73,6 +92,12 @@ impl InvitationKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvitationSummary {
+    /// Access conveyed by this invitation.
+    #[serde(default)]
+    pub role: PasslinkRole,
+    /// Earliest deadline in its authority chain, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Exact revocation target CID.
     pub target_cid: String,
     /// Open or root-targeted invitation.
@@ -190,6 +215,8 @@ mod tests {
     #[test]
     fn it_keeps_invitation_lists_secret_free() {
         let summary = InvitationSummary {
+            role: PasslinkRole::Write,
+            expires_at: None,
             target_cid: "bafycid".into(),
             kind: InvitationKind::Scoped,
             recipient_root: Some(root()),

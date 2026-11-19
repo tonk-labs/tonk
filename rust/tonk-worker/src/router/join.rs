@@ -249,6 +249,11 @@ impl From<JoinFailure> for TonkWorkerError {
         match kind {
             JoinFailureKind::Malformed => TonkWorkerError::Router(message),
             JoinFailureKind::AudienceMismatch => TonkWorkerError::Forbidden(message),
+            JoinFailureKind::Expired => TonkWorkerError::Upstream {
+                status: 410,
+                code: Some("PASSLINK_EXPIRED".into()),
+                message,
+            },
             JoinFailureKind::Revoked => TonkWorkerError::Upstream {
                 status: 403,
                 code: Some("CREDENTIAL_REVOKED".to_string()),
@@ -282,10 +287,11 @@ mod failure_vocabulary {
     use super::{AuthorizeError, JoinFailure, JoinFailureKind};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 7] = [
+    const KINDS: [JoinFailureKind; 8] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
+        JoinFailureKind::Expired,
         JoinFailureKind::Unavailable,
         JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
@@ -301,6 +307,7 @@ mod failure_vocabulary {
                 "This passlink is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
+                "This passlink expired. Ask for a new one.",
                 "Tonk could not reach this space. Try again.",
                 "This space's host declined the invite. Its owner needs to check the space's plan.",
                 "Tonk could not join this space.",
@@ -318,6 +325,7 @@ mod failure_vocabulary {
                 "malformed",
                 "audience-mismatch",
                 "revoked",
+                "expired",
                 "unavailable",
                 "refused",
                 "claim-failed",
@@ -917,7 +925,9 @@ async fn prepare_parsed_join(
     // Audience: an open invite redelegates to whoever redeems it; a
     // targeted one only ever redeems for the DID it names.
     let claimed = invite.clone().claim(&member).await.map_err(|error| {
-        if open {
+        if invite.is_expired() {
+            JoinFailure::new(JoinFailureKind::Expired, "signed passlink deadline reached")
+        } else if open {
             JoinFailure::claim_failed(format!("invite did not extend: {error}"))
         } else {
             JoinFailure::audience_mismatch(format!("invite is not for this account: {error}"))
@@ -1037,62 +1047,63 @@ async fn perform_join(
         }
     }
 
-    // The claim below commits into the content branch directly, not
-    // through the reactor: a branch an earlier release wrote (a renewal,
-    // or a head the pull just adopted) is moved to this release's format
-    // first, once per process, as every reactor commit is. A failure is
-    // logged; the commit reports the refusal.
-    if let Err(error) = tonk
-        .reactor
-        .repository(prepared.subject.repo_key())
-        .branch(DEFAULT_BRANCH)
-        .migrate_once(&tonk.operator)
-        .await
-    {
-        log!(
-            "join: migrating '{}' failed: {error}",
-            prepared.subject.repo_key()
-        );
-    }
-
-    // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them. Nothing
-    // holds other writers of this branch off meanwhile (a space's seeding
-    // commits into it in the background), so a commit that loses the
-    // head's race is computed again on the head that won.
-    enum ClaimTry {
-        Read(JoinFailure),
-        Commit(dialog_repository::CommitError),
-    }
-    impl From<dialog_repository::CommitError> for ClaimTry {
-        fn from(error: dialog_repository::CommitError) -> Self {
-            Self::Commit(error)
-        }
-    }
-    let (claimed, claiming) = (&branch, &prepared);
-    claimed
-        .transact(|transaction| async move {
-            let (changes, _already_claimed) = claim_changes(
-                tonk,
-                claimed,
-                &tonk.operator,
-                &claiming.invitation,
-                &claiming.invitation_execution,
-                &claiming.member,
-                &claiming.subject,
-            )
+    let reach = effective_command(prepared.chain.proofs().map(|hop| hop.command()))
+        .map(ToString::to_string);
+    // A read-only join mounts the remote and records it in the account below.
+    // A roster commit would leave an unpushable local head on the content branch.
+    let can_write = matches!(reach.as_deref(), Some("/" | "/use"));
+    if can_write {
+        // The claim below commits into the content branch directly, not
+        // through the reactor: a branch an earlier release wrote (a renewal,
+        // or a head the pull just adopted) is moved to this release's format
+        // first, once per process, as every reactor commit is. A failure is
+        // logged; the commit reports the refusal.
+        if let Err(error) = tonk
+            .reactor
+            .repository(prepared.subject.repo_key())
+            .branch(DEFAULT_BRANCH)
+            .migrate_once(&tonk.operator)
             .await
-            .map_err(ClaimTry::Read)?;
-            Ok::<_, ClaimTry>(transaction.assert(changes))
-        })
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| match error {
-            ClaimTry::Read(failure) => failure,
-            ClaimTry::Commit(error) => {
-                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+        {
+            log!(
+                "join: migrating '{}' failed: {error}",
+                prepared.subject.repo_key()
+            );
+        }
+
+        // Every claim, including a renewal, lands its roster/provenance/name
+        // facts as an ordinary commit; the next sync tick pushes them. Nothing
+        // holds other writers of this branch off meanwhile (a space's seeding
+        // commits into it in the background), so a commit that loses the
+        // head's race is computed again on the head that won.
+        enum ClaimTry {
+            Read(JoinFailure),
+            Commit(dialog_repository::CommitError),
+        }
+        impl From<dialog_repository::CommitError> for ClaimTry {
+            fn from(error: dialog_repository::CommitError) -> Self {
+                Self::Commit(error)
             }
-        })?;
+        }
+        let admin = reach.as_deref() == Some("/");
+        let (claimed, claiming) = (&branch, &prepared);
+        claimed
+            .transact(|transaction| async move {
+                let (changes, _already_claimed) =
+                    claim_changes(tonk, claimed, &tonk.operator, claiming, admin)
+                        .await
+                        .map_err(ClaimTry::Read)?;
+                Ok::<_, ClaimTry>(transaction.assert(changes))
+            })
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| match error {
+                ClaimTry::Read(failure) => failure,
+                ClaimTry::Commit(error) => {
+                    JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+                }
+            })?;
+    }
 
     // The reactor may hold a handle from an earlier attempt at this key;
     // the pull and commit moved the head underneath it. Leaving a stale
@@ -1111,7 +1122,9 @@ async fn perform_join(
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     save_authority(tonk, &prepared.subject, prepared.chain.clone()).await?;
-    retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
+    if can_write {
+        retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
+    }
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
@@ -1501,6 +1514,9 @@ fn classify_pull(error: &PullError) -> JoinFailure {
 /// reads a log.
 fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
     match authorization {
+        AuthorizeError::Expired { .. } => {
+            JoinFailure::new(JoinFailureKind::Expired, "remote access has expired")
+        }
         AuthorizeError::Revoked { .. } => JoinFailure::revoked("remote access has been revoked"),
         AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
             JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
@@ -1642,11 +1658,16 @@ async fn claim_changes<Env: BranchEnv>(
     tonk: &TonkState,
     branch: &Branch,
     env: &Env,
-    invitation: &Invitation,
-    invitation_execution: &InvitationExecution,
-    member: &Did,
-    subject: &Did,
+    claiming: &PreparedJoin,
+    admin: bool,
 ) -> Result<(Changes, bool), JoinFailure> {
+    let PreparedJoin {
+        invitation,
+        invitation_execution,
+        member,
+        subject,
+        ..
+    } = claiming;
     let membership = Membership::new(member.clone(), subject.clone());
 
     // The three roster reads land in three separate index regions, and on
@@ -1729,7 +1750,12 @@ async fn claim_changes<Env: BranchEnv>(
         MemberName::new(membership.this().clone(), display_name).assert(&mut changes);
     }
     if !already_roled {
-        MemberRole::member(membership.this().clone()).assert(&mut changes);
+        let role = if admin {
+            MemberRole::admin(membership.this().clone())
+        } else {
+            MemberRole::member(membership.this().clone())
+        };
+        role.assert(&mut changes);
     }
     if !already_stamped && !self_invite {
         InvitedVia::new(membership.this().clone(), invitation.this().clone()).assert(&mut changes);
@@ -3277,13 +3303,13 @@ pub(crate) mod tests {
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
 
-        // A claimer (not the inviter) joins as a plain member.
+        // This fixture grants the space root command, which admits an admin.
         let roles = content_member_roles(&state, &key).await;
         let role = roles
             .iter()
             .find(|r| r.this == membership_entity)
             .expect("role stamped on the claimer's membership");
-        assert_eq!(role.role.0.to_string(), MemberRole::MEMBER);
+        assert_eq!(role.role.0.to_string(), MemberRole::ADMIN);
     }
 
     /// Claiming an invite names the claimer on the repo meta.

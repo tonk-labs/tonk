@@ -20,7 +20,9 @@ process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS ??= '1';
  * instead of an empty one: the same person on another browser.
  */
 export async function launch({ headed = false, trace, passkey } = {}) {
-  const browser = await chromium.launch({ headless: !headed });
+  // Exercise the passkey ceremony in full Chromium. The headless shell can
+  // stall after approval before the browser reaches the OAuth callback.
+  const browser = await chromium.launch({ channel: 'chromium', headless: !headed });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   if (trace) await context.tracing.start({ screenshots: true, snapshots: true });
   const page = await context.newPage();

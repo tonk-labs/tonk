@@ -22,9 +22,10 @@ use ::axum::{
 };
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
-use dialog_effects::Use;
+use dialog_effects::{Use, method};
 use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -32,6 +33,7 @@ use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
 use tonk_schema::{Invitation, InvitationExecution, InvitationListed, InvitationMinted};
+use tonk_worker_api::PasslinkRole;
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -106,6 +108,42 @@ pub async fn create_invite(
     mint_invite(state, repo_name, origin, request, None, None).await
 }
 
+/// Highest passlink role this device can grant on this space.
+#[wasm_compat]
+pub async fn share_role(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+) -> Result<Json<Option<PasslinkRole>>, TonkWorkerError> {
+    let tonk = state.read().await;
+    let repository = tonk
+        .profile
+        .space(&repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(format!("space '{repo}': {e}")))?;
+    let subject = Subject::from(repository.did());
+    let access = tonk.profile.access();
+    let role = if access
+        .claim(subject.clone())
+        .perform(&tonk.operator)
+        .await
+        .is_ok()
+    {
+        Some(PasslinkRole::Admin)
+    } else if access
+        .claim(subject.attenuate(Use))
+        .perform(&tonk.operator)
+        .await
+        .is_ok()
+    {
+        Some(PasslinkRole::Write)
+    } else {
+        None
+    };
+    Ok(Json(role))
+}
+
 /// Mint an agent handoff for the current browser account, never the space owner.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn create_agent_handoff(
@@ -143,8 +181,8 @@ pub(super) async fn mint_invite(
     // A link that replaces an open one lists in its place, so a reset
     // default passlink stays the default. Read before the guard below:
     // listing takes the state itself.
-    let place = match request.replaces.as_deref() {
-        None => None,
+    let (place, role, expires_at) = match request.replaces.as_deref() {
+        None => (None, request.role, request.expires_at),
         Some(target) => {
             let Json(listed) =
                 super::revoke_invite::list(State(state.clone()), Path(repo_name.clone())).await?;
@@ -158,7 +196,7 @@ pub(super) async fn mint_invite(
                         "the link {target} to replace is not an open link of this space"
                     ))
                 })?;
-            Some(replaced.place())
+            (Some(replaced.place()), replaced.role, replaced.expires_at)
         }
     };
 
@@ -253,15 +291,72 @@ pub(super) async fn mint_invite(
     {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
-    let delegation: UcanDelegation = tonk
-        .profile
-        .access()
-        .claim(Subject::from(repository.did()).attenuate(Use))
-        .delegate(audience_did.clone())
-        .meta(meta)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
+    // Even a read passlink can only be issued by someone who can share.
+    let access = tonk.profile.access();
+    let subject = Subject::from(repository.did());
+    let deadline = expires_at
+        .map(|seconds| {
+            let deadline = Timestamp::try_from(i128::from(seconds))
+                .map_err(|_| TonkWorkerError::Router("invalid passlink expiry".into()))?;
+            if deadline <= Timestamp::now() {
+                return Err(TonkWorkerError::Router(
+                    "passlink expiry must be in the future".into(),
+                ));
+            }
+            Ok(deadline)
+        })
+        .transpose()?;
+    let delegation: UcanDelegation = match role {
+        PasslinkRole::Read => {
+            access
+                .claim(subject.clone().attenuate(Use))
+                .perform(&tonk.operator)
+                .await
+                .map_err(|_| {
+                    TonkWorkerError::Forbidden("write access is required to make a passlink".into())
+                })?;
+            let claim = access.claim(subject.attenuate(Use).attenuate(method::Get));
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+        PasslinkRole::Write => {
+            let claim = access.claim(subject.attenuate(Use));
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+        PasslinkRole::Admin => {
+            let claim = access.claim(subject);
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+    }
+    .map_err(|e| {
+        TonkWorkerError::Forbidden(format!("cannot delegate the requested access: {e}"))
+    })?;
 
     let invite = Invite::new(
         delegation.into_chain(),
@@ -1214,6 +1309,32 @@ mod tests {
                     .unwrap(),
             "the replacing link lists ahead of the link made before it"
         );
+
+        // Verify the signed link itself and the management projection together.
+        let expires = super::Timestamp::now().to_unix() + 86400;
+        for (role, command) in [("read", "/use/get"), ("write", "/use"), ("admin", "/")] {
+            let (status, bytes) = call(
+                "POST",
+                invite.clone(),
+                serde_json::json!({ "role": role, "expiresAt": expires }).to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+            let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
+            assert_eq!(parsed.chain.ability(), command);
+            assert_eq!(parsed.chain.expiration().unwrap().to_unix(), expires);
+            let CreateInviteResponse::Open { target_cid, .. } = minted else {
+                panic!("expected open invite")
+            };
+            let listed = rows().await;
+            let row = listed
+                .iter()
+                .find(|r| Some(&r.target_cid) == target_cid.as_ref())
+                .unwrap();
+            assert_eq!(serde_json::to_value(row.role).unwrap(), role);
+            assert_eq!(row.expires_at, Some(expires));
+        }
 
         // Replacing a link this space doesn't list is refused.
         let (status, _) = call(
