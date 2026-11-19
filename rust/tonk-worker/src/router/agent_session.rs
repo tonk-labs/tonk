@@ -123,9 +123,9 @@ impl std::fmt::Display for Laps {
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
     match choice.access.as_str() {
         "read" => Ok(AgentAccess::Read),
-        "write" => Ok(AgentAccess::ReadWrite),
+        "write" | "share" => Ok(AgentAccess::ReadWrite),
         other => Err(TonkWorkerError::Router(format!(
-            "unknown access `{other}`; choose read or write"
+            "unknown access `{other}`; choose read, write, or share"
         ))),
     }
 }
@@ -165,6 +165,7 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
 struct Target {
     subject: Did,
     access: AgentAccess,
+    share: bool,
     remote: url::Url,
     label: String,
 }
@@ -238,6 +239,7 @@ async fn targets(
         targets.push(Target {
             subject: repository.did(),
             access,
+            share: space.access == "share",
             remote,
             label,
         });
@@ -539,12 +541,12 @@ async fn authorize_inner(
     let signer = Signer::from(root.clone());
     let mut granted = Vec::new();
     for target in targets {
-        let chains = grant(
+        let scopes = approval_scopes(&target.subject, target.access, target.share);
+        let chains = grant_scopes(
             &tonk,
             &signer,
             &agent_did,
-            &target.subject,
-            target.access,
+            &scopes,
             &target.remote,
             now,
             expires,
@@ -1101,15 +1103,51 @@ pub(super) async fn grant(
     now: Timestamp,
     expires: Timestamp,
 ) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
-    let scopes = agent_grant_scopes(subject, access);
+    grant_scopes(
+        tonk,
+        issuer,
+        agent,
+        &agent_grant_scopes(subject, access),
+        remote,
+        now,
+        expires,
+    )
+    .await
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn approval_scopes(subject: &Did, access: AgentAccess, share: bool) -> Vec<dialog_ucan::Scope> {
+    let mut scopes = agent_grant_scopes(subject, access);
+    if share {
+        scopes.push(dialog_ucan::Scope {
+            subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+            command: dialog_ucan_core::command::Command(vec!["use".into()]),
+            parameters: Default::default(),
+        });
+    }
+    scopes
+}
+
+async fn grant_scopes(
+    tonk: &crate::TonkState,
+    issuer: &Signer,
+    agent: &Did,
+    scopes: &[dialog_ucan::Scope],
+    remote: &url::Url,
+    now: Timestamp,
+    expires: Timestamp,
+) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
     let mut ancestors = Vec::new();
-    for chain in issuer_ancestors(tonk, &scopes, now, expires).await? {
+    for chain in issuer_ancestors(tonk, scopes, now, expires).await? {
         let proofs: Vec<_> = chain.proofs().cloned().collect();
         let reach = proofs
             .iter()
             .position(|link| link.audience() == &issuer.did())
             .ok_or_else(|| {
-                TonkWorkerError::Forbidden(format!("{} holds no proof for {subject}", issuer.did()))
+                TonkWorkerError::Forbidden(format!(
+                    "{} holds no proof for the requested space",
+                    issuer.did()
+                ))
             })?;
         let mut kept = dialog_ucan_core::DelegationChain::new(proofs[0].clone());
         for link in &proofs[1..=reach] {
@@ -1121,7 +1159,7 @@ pub(super) async fn grant(
         agent,
         issuer.clone(),
         ancestors,
-        &scopes,
+        scopes,
         remote,
         now,
         expires,
@@ -1265,12 +1303,12 @@ mod tests {
                 .perform(&tonk.operator)
                 .await?
                 .did();
-            let chains = grant(
+            let scopes = approval_scopes(&subject, access, name == "Plans");
+            let chains = grant_scopes(
                 &tonk,
-                &tonk.profile.credential().signer().clone(),
+                tonk.profile.credential().signer(),
                 &agent,
-                &subject,
-                access,
+                &scopes,
                 &remote,
                 now,
                 expires,
@@ -1304,7 +1342,7 @@ mod tests {
                 .count();
             assert_eq!(mine, space.chains.len(), "chains for {}", space.name);
         }
-        assert_eq!(retained.len(), 3 + 6);
+        assert_eq!(retained.len(), 3 + 6 + 1);
 
         let names: Vec<tonk_schema::SpaceName> = branch
             .handle()
@@ -1345,6 +1383,7 @@ mod tests {
                 .get(&space.subject)
                 .unwrap_or_else(|| panic!("{} is listed: {access:?}", space.name));
             assert_eq!((entry.read, entry.write), (read, write), "{}", space.name);
+            assert_eq!(entry.share, space.name == "Plans");
             assert_eq!(entry.name.as_deref(), Some(space.name.as_str()));
             assert_eq!(entry.address.as_deref(), Some(remote.as_str()));
             assert_eq!(entry.expires, Some(expires.to_unix()), "{}", space.name);
@@ -1358,7 +1397,8 @@ mod tests {
         for space in &granted {
             let chains =
                 super::super::hosted::access::space_chains(&tonk, &agent, &space.subject).await?;
-            assert_eq!(chains.len(), space.chains.len(), "{}", space.name);
+            assert_eq!(chains.len(), if space.name == "Plans" { 6 } else { 3 });
+            assert!(chains.iter().all(|chain| chain.ability() != "/use"));
             for chain in &chains {
                 assert_eq!(chain.issuer(), &space.subject, "rooted at {}", space.name);
                 assert_eq!(chain.audience(), &agent);

@@ -52,7 +52,7 @@ pub struct AgentSpaceAccess {
     subject: Did,
     key: String,
     name: Option<String>,
-    /// `read`, or `write` for read and write.
+    /// The approved access level: read, write, or full access with sharing.
     access: &'static str,
     /// When the earliest of its grants lapses, unix seconds.
     expires_at: Option<u64>,
@@ -294,24 +294,25 @@ pub async fn list(
         }
         marked.push(did.clone());
         let mut by_space =
-            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
+            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool, bool)>::new();
         for (chain, _, issued) in grants(&tonk, &did).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
             let entry = by_space
                 .entry(subject.to_string())
-                .or_insert((subject, false, expires, false));
+                .or_insert((subject, false, expires, false, false));
             entry.1 |= write;
             entry.2 = match (entry.2, expires) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
             entry.3 |= issued == Issued::Link;
+            entry.4 |= chain.ability() == "/use";
         }
         let key = did.repo_key().to_owned();
         let mut spaces = Vec::new();
-        for (_, (subject, write, expires_at, via_link)) in by_space {
+        for (_, (subject, write, expires_at, via_link, share)) in by_space {
             // A space joined from a link may not be one of the person's:
             // the agent space's directory names it then.
             let name = match name(&tonk, &subject).await {
@@ -323,7 +324,13 @@ pub async fn list(
                 key: subject.repo_key().to_owned(),
                 name,
                 subject,
-                access: if write { "write" } else { "read" },
+                access: if share {
+                    "share"
+                } else if write {
+                    "write"
+                } else {
+                    "read"
+                },
                 expires_at,
                 via_link,
                 removal,

@@ -397,6 +397,11 @@ impl SpaceWriterObject {
             let document = request.text().await?;
             return worker::Response::try_from(writer.propose(document).await);
         }
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::SHARE_ROUTE.trim_start_matches('/')
+        {
+            return worker::Response::try_from(writer.propose_passlink());
+        }
         // Leaving a space, held by the agent space's own writer.
         if method == worker::Method::Post
             && path == tonk_worker::propose::LEAVE_ROUTE.trim_start_matches('/')

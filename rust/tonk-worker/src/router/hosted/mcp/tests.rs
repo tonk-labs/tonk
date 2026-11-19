@@ -662,6 +662,7 @@ async fn a_session_id_of_another_token_is_refused() {
     assert_eq!(
         names,
         [
+            "tonk_create_share_link",
             "tonk_create_space",
             "tonk_create_space_confirm",
             "tonk_evaluate",
@@ -766,10 +767,11 @@ async fn evaluate_offers_to_confirm_first_and_draws_its_result_in_the_card() {
         super::super::card::CARD_URI
     );
     assert_eq!(evaluate["_meta"]["openai/widgetAccessible"], true);
-    // The answers are the card's; asking to leave is the model's, and
-    // shows the card.
+    // The model can ask to leave or share. Only the card can answer.
     for tool in super::super::propose::tools() {
-        if tool["name"] == super::super::propose::LEAVE {
+        if tool["name"] == super::super::propose::LEAVE
+            || tool["name"] == super::super::propose::SHARE
+        {
             assert_eq!(
                 tool["_meta"]["ui"]["resourceUri"],
                 super::super::card::CARD_URI
@@ -995,6 +997,14 @@ concept!: &mcp-note
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
                 };
             }
+            if parts.uri.path() == crate::router::hosted::join::LINK_ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let request = serde_json::from_slice(&body).unwrap();
+                return match writer.join_link(&request).await {
+                    Ok(answer) => rpc(StatusCode::OK, serde_json::to_value(answer).unwrap()),
+                    Err(error) => rpc(StatusCode::UNPROCESSABLE_ENTITY, json!({"error":error})),
+                };
+            }
             if parts.uri.path() == crate::router::hosted::creation::CREATE_ROUTE {
                 let body = body.collect().await.unwrap().to_bytes();
                 let request = serde_json::from_slice(&body).unwrap();
@@ -1045,6 +1055,9 @@ concept!: &mcp-note
                 path if path == crate::router::hosted::propose::DISMISS_ROUTE => {
                     let body = body.collect().await.unwrap().to_bytes();
                     writer.dismiss(&id(&body))
+                }
+                path if path == crate::router::hosted::propose::SHARE_ROUTE => {
+                    writer.propose_passlink()
                 }
                 path if path == crate::router::hosted::propose::LEAVE_ROUTE => {
                     let body = body.collect().await.unwrap().to_bytes();
@@ -1187,6 +1200,122 @@ concept!: &mcp-note
             let value = serde_json::from_str(&text).unwrap_or(json!(text));
             (value, error)
         }
+    }
+
+    #[dialog_common::test]
+    async fn an_approved_passlink_opens_the_granted_space() {
+        use crate::router::hosted::{join, propose};
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::generate().await.unwrap();
+        let space = Ed25519Signer::generate().await.unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        for did in [agent.did(), space.did()] {
+            service
+                .address
+                .provision_subject(did.as_ref())
+                .await
+                .unwrap();
+        }
+        approve(
+            &agent,
+            &remote,
+            &space,
+            &["get", "put"],
+            Some("Notes"),
+            Some(&remote),
+            remote.as_str(),
+        )
+        .await;
+        let writers = NativeWriters {
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        let args = json!({"space":space.did()});
+        assert_eq!(
+            client.result(propose::SHARE, args.clone()).await["isError"],
+            true
+        );
+        let expires = Timestamp::try_from(i128::from(Timestamp::now().to_unix() + 3600)).unwrap();
+        let grant = DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(Signer::from(space.clone()))
+                .audience(&agent.did())
+                .subject(UcanSubject::Specific(space.did()))
+                .command(vec!["use".into()])
+                .meta(tonk_invite::home_address_meta(&remote))
+                .expiration(expires)
+                .try_build()
+                .await
+                .unwrap(),
+        );
+        let own = owner(&agent, &remote, "share-approval").await;
+        let approval = SpaceWriter::open(&scratch_root(), &own, &agent.did(), &remote)
+            .await
+            .unwrap();
+        approval.approve(&[grant], &[]).await.unwrap();
+        approval.close().await;
+        let proposal = client.result(propose::SHARE, args).await;
+        assert_eq!(proposal["isError"], false, "{proposal}");
+        assert!(proposal["_meta"]["passlink"].is_null());
+        let answer = proposal["structuredContent"]["card"]["answers"][1]["arguments"].clone();
+        let other_connection = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        assert_eq!(
+            other_connection
+                .result(propose::APPLY, answer.clone())
+                .await["isError"],
+            true
+        );
+        let card = Client::connect(&endpoint, bearer).await;
+        let result = card.result(propose::APPLY, answer.clone()).await;
+        assert_eq!(result["isError"], false, "{}", result["content"]);
+        let link = result["_meta"]["passlink"].as_str().unwrap();
+        assert!(!result["content"].to_string().contains(link));
+        assert!(!result["structuredContent"].to_string().contains(link));
+        let offer = join::read_link(link, None).await.unwrap();
+        assert_eq!(offer.subject, space.did());
+        assert!(offer.write);
+        let recipient = Ed25519Signer::generate().await.unwrap();
+        let grants = offer
+            .grant(
+                &recipient.did(),
+                tonk_invite::connection::AgentAccess::ReadWrite,
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            grants
+                .iter()
+                .all(|chain| chain.expiration() == Some(expires))
+        );
+        assert_eq!(card.result(propose::APPLY, answer).await["isError"], true);
+        // A different account's agent redeems the bearer through MCP and writes.
+        service
+            .address
+            .provision_subject(recipient.did().as_ref())
+            .await
+            .unwrap();
+        let guest = Client::connect(&endpoint, token(&recipient, &remote).await).await;
+        let joined = guest
+            .result(join::ACCEPT, json!({"link":link,"access":"write"}))
+            .await;
+        assert_eq!(joined["isError"], false, "{}", joined["content"]);
+        let saved = guest
+            .result(
+                "tonk_evaluate",
+                json!({"space":space.did(),"document":SCHEMA}),
+            )
+            .await;
+        assert_eq!(saved["isError"], false, "{}", saved["content"]);
+        service.stop().await.unwrap();
     }
 
     /// How long after a revocation the agent may still be answered. The

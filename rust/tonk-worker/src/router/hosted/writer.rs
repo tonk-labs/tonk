@@ -222,6 +222,12 @@ pub struct SpaceWriter {
     refuse_push: AtomicBool,
 }
 
+/// Only a consumed sharing proposal can select the passlink operation.
+enum WriteOperation {
+    Request(Request<Body>),
+    Passlink,
+}
+
 impl SpaceWriter {
     /// Open the writer of `space` for `session`, its peers kept under the
     /// directory `root` (which nothing else may use), syncing with `remote`
@@ -313,12 +319,14 @@ impl SpaceWriter {
     /// [`Self::write`], key commands included: for a confirmed one.
     async fn write_any(&self, request: Request<Body>) -> Response<Body> {
         let mut steps = Steps::start();
-        let mut response = self.write_timed(request, &mut steps).await;
+        let mut response = self
+            .write_timed(WriteOperation::Request(request), &mut steps)
+            .await;
         steps.insert(response.headers_mut());
         response
     }
 
-    async fn write_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
+    async fn write_timed(&self, operation: WriteOperation, steps: &mut Steps) -> Response<Body> {
         let _turn = self.lock.lock().await;
         steps.lap("lock");
         if self.stale.load(Ordering::SeqCst) {
@@ -339,7 +347,23 @@ impl SpaceWriter {
         if let Err(error) = pulled {
             return error.answer("PULL_FAILED");
         }
-        let response = peer.call(self.on_branch(request)).await;
+        let response = match operation {
+            WriteOperation::Request(request) => peer.call(self.on_branch(request)).await,
+            WriteOperation::Passlink => {
+                let tonk = peer.state.read().await.clone();
+                match super::super::create_invite::hosted_passlink(
+                    &tonk,
+                    &self.space,
+                    &self.agent,
+                    &self.remote,
+                )
+                .await
+                {
+                    Ok(url) => json_answer(serde_json::json!({"passlink":url})),
+                    Err(error) => return axum::response::IntoResponse::into_response(error),
+                }
+            }
+        };
         if !response.status().is_success() {
             steps.lap("eval");
             return response;
@@ -510,6 +534,10 @@ impl SpaceWriter {
                     ),
                 );
             }
+            // Notation and the named MCP tool use the same connection-bound share card.
+            if key.name == "tonk/invite" {
+                return json_answer(serde_json::json!({"request_passlink":true}));
+            }
         }
         let revision = evaluation["revision_before"].clone();
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
@@ -521,6 +549,19 @@ impl SpaceWriter {
         };
         let (id, expires) = self.proposals.hold(document, revision, seen, effect, now);
         json_answer(super::propose::held(&id, expires, evaluation))
+    }
+
+    /// Hold a dedicated passlink request without depending on the space's notation library.
+    pub fn propose_passlink(&self) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(
+            String::new(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            super::propose::Effect::Passlink,
+            now,
+        );
+        json_answer(serde_json::json!({"proposal":{"id":id,"expires":expires}}))
     }
 
     /// Write the change held as `id`, once, as [`Self::write`] does, and
@@ -557,6 +598,11 @@ impl SpaceWriter {
                 })),
                 Err(error) => failure(StatusCode::BAD_GATEWAY, "LEAVE_FAILED", &error),
             };
+        }
+        if taken.effect == super::propose::Effect::Passlink {
+            return self
+                .write_timed(WriteOperation::Passlink, &mut Steps::start())
+                .await;
         }
         if taken.effect == super::propose::Effect::Command {
             // A key command alone: what the person confirmed is the command

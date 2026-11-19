@@ -43,6 +43,11 @@ pub const APPLY_ROUTE: &str = "/api/proposals/apply";
 /// The writer's route that drops a held change (`POST`, `{"id"}`).
 pub const DISMISS_ROUTE: &str = "/api/proposals/dismiss";
 
+/// Hold a passlink request on the selected space writer.
+pub const SHARE_ROUTE: &str = "/api/proposals/share-link";
+/// Model-visible request for a passlink.
+pub const SHARE: &str = "tonk_create_share_link";
+
 /// The agent space writer's route that holds leaving a space (`POST`,
 /// `{"space"}`), answering the held proposal's id.
 pub const LEAVE_ROUTE: &str = "/api/proposals/leave";
@@ -87,6 +92,8 @@ pub enum Effect {
     /// person confirmed the command and the inputs the document spells
     /// out, so nothing else can come along with it.
     Command,
+    /// Mint an ordinary share link after the person approves.
+    Passlink,
     /// Leave the space the document names: drop every grant the agent
     /// space holds for it.
     Leave,
@@ -298,6 +305,7 @@ pub fn tools() -> Vec<Value> {
             },
             "id": { "type": "string", "minLength": 1, "maxLength": 64 },
             // The space a held leave is for, so its answer can name it.
+            "share": {"type":"boolean","description":"Answer a passlink card."},
             "leave": {
                 "type": "string",
                 "pattern": "^did:key:[A-Za-z0-9]+$",
@@ -311,6 +319,13 @@ pub fn tools() -> Vec<Value> {
         "openai/visibility": "private",
     });
     vec![
+        json!({
+            "name": SHARE, "title": "Create a Tonk share link",
+            "description": "Ask the person to make a passlink for a space with sharing enabled. Anyone with the approved link can join and write. The card provides the link after approval.",
+            "inputSchema":{"type":"object","properties":{"space":{"type":"string","pattern":"^did:key:[A-Za-z0-9]+$"}},"required":["space"],"additionalProperties":false},
+            "annotations":{"readOnlyHint":true,"openWorldHint":false},
+            "_meta":super::card::tool_meta()
+        }),
         json!({
             "name": LEAVE,
             "title": "Leave a Tonk space",
