@@ -224,7 +224,7 @@ pub struct SpaceWriter {
 
 /// Only a consumed sharing proposal can select the passlink operation.
 enum WriteOperation {
-    Request(Request<Body>),
+    Request(Box<Request<Body>>),
     Passlink,
 }
 
@@ -320,7 +320,7 @@ impl SpaceWriter {
     async fn write_any(&self, request: Request<Body>) -> Response<Body> {
         let mut steps = Steps::start();
         let mut response = self
-            .write_timed(WriteOperation::Request(request), &mut steps)
+            .write_timed(WriteOperation::Request(Box::new(request)), &mut steps)
             .await;
         steps.insert(response.headers_mut());
         response
@@ -348,7 +348,7 @@ impl SpaceWriter {
             return error.answer("PULL_FAILED");
         }
         let response = match operation {
-            WriteOperation::Request(request) => peer.call(self.on_branch(request)).await,
+            WriteOperation::Request(request) => peer.call(self.on_branch(*request)).await,
             WriteOperation::Passlink => {
                 let tonk = peer.state.read().await.clone();
                 match super::super::create_invite::hosted_passlink(
