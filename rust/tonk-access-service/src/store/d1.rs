@@ -331,6 +331,47 @@ impl Store for D1Store {
         Ok(changed_rows(&result) > 0)
     }
 
+    async fn add_created_space(
+        &self,
+        consumer: &str,
+        owner: &str,
+        now: u64,
+        grant: &str,
+    ) -> Result<bool, StoreError> {
+        let result = self
+            .0
+            .prepare(super::ADD_CREATED_SPACE)
+            .bind(&[
+                consumer.into(),
+                owner.into(),
+                JsValue::from_f64(now as f64),
+                grant.into(),
+            ])
+            .map_err(map_err)?
+            .run()
+            .await
+            .map_err(map_err)?;
+        Ok(changed_rows(&result) > 0)
+    }
+
+    async fn created_spaces(&self, owner: &str) -> Result<Vec<String>, StoreError> {
+        #[derive(serde::Deserialize)]
+        struct Row {
+            creation_grant: String,
+        }
+        let rows = self
+            .0
+            .prepare(super::CREATED_SPACES)
+            .bind(&[owner.into()])
+            .map_err(map_err)?
+            .all()
+            .await
+            .map_err(map_err)?
+            .results::<Row>()
+            .map_err(map_err)?;
+        Ok(rows.into_iter().map(|row| row.creation_grant).collect())
+    }
+
     async fn suspend_subscription(
         &self,
         consumer: &str,

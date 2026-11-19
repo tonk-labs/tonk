@@ -153,7 +153,7 @@ pub struct AgentAuthorization {
     /// again to an app of the same provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The spaces the agent may reach.
+    /// Spaces chosen during authorization.
     pub spaces: Vec<AgentSpaceChoice>,
 }
 
