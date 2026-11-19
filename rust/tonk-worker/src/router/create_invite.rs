@@ -271,51 +271,7 @@ pub(super) async fn mint_invite(
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    // Record the invitation on the repo's content branch: the durable
-    // half of the invite. The content branch syncs across replicas, so
-    // the record converges where the roster lives. The URL (with its
-    // secret fragment) is never stored — only chain-derivable facts. A
-    // failure here fails the mint; the claim path can self-heal a missing
-    // record, but a mint that can't write its own repo's content branch
-    // is broken enough to surface.
-    //
-    // Route through the *reactor's* cached `main` handle (keyed by the
-    // routing key, the `{repo}` param) rather than a fresh
-    // `repository.branch().open()`: background sync pulls/publishes through
-    // the reactor's cached handle, so a commit on a separate handle leaves
-    // it pinned at a stale head and the next pull's CAS fails forever.
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
-    let kind = match &invite.audience {
-        InviteAudience::Open { .. } => "open",
-        InviteAudience::Scoped => "scoped",
-    };
-    let execution = InvitationExecution::new(&invitation, kind);
-    // When it was minted, so a list can keep the oldest open link first.
-    let minted_at = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or_default();
-    let minted = InvitationMinted::new(&invitation, minted_at);
-    let listed = place.map(|place| InvitationListed::new(&invitation, place));
-    let mut transaction = tonk
-        .reactor
-        .repository(&repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .assert(minted);
-    if let Some(listed) = listed {
-        transaction = transaction.assert(listed);
-    }
-    transaction
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
-
-    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+    record_invite(&tonk, &repo_name, &invite, place).await?;
 
     // An open invite's grant waits in the space as the ephemeral key's
     // ticket, and the link names only the space and the key's seed, on
@@ -377,6 +333,117 @@ pub(super) async fn mint_invite(
         },
     };
     Ok(Json(response))
+}
+
+/// Called only after a held passlink request has been approved. The writer's
+/// operator must prove the same /use capability as the browser account.
+pub(super) async fn hosted_passlink(
+    tonk: &crate::TonkState,
+    space: &dialog_varsig::Did,
+    agent: &dialog_varsig::Did,
+    remote: &Url,
+) -> Result<Url, TonkWorkerError> {
+    if space == agent {
+        return Err(TonkWorkerError::Forbidden(
+            "The agent's private space cannot be shared.".into(),
+        ));
+    }
+    let (holder, seed) = generate_ephemeral().await?;
+    let mut meta = home_address_meta(remote);
+    meta.extend(tonk_invite::inviter_meta(agent));
+    let repository = tonk
+        .profile
+        .space(space.as_ref())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    if let Some(name) =
+        super::repository::repository_display_name(tonk, &repository, space.as_ref()).await
+    {
+        meta.extend(tonk_invite::space_name_meta(&name));
+    }
+    let chain: UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(Subject::from(space.clone()).attenuate(Use))
+        .delegate(holder.did())
+        .meta(meta)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|_| {
+            TonkWorkerError::Forbidden(
+                "This connection needs full space access and sharing to make a passlink.".into(),
+            )
+        })?;
+    let invite = Invite::new(
+        chain.into_chain(),
+        InviteAudience::Open { seed },
+        Some(remote.clone()),
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+    let link = issue_ticket(tonk, remote, &invite.chain, seed)
+        .await
+        .ok_or_else(|| {
+            TonkWorkerError::Conflict("The space did not accept the passlink ticket.".into())
+        })?;
+    record_invite(tonk, space.as_ref(), &invite, None).await?;
+    Url::parse(&link).map_err(|error| TonkWorkerError::Internal(error.to_string()))
+}
+
+async fn record_invite(
+    tonk: &crate::TonkState,
+    repo_name: &str,
+    invite: &Invite,
+    place: Option<u64>,
+) -> Result<(), TonkWorkerError> {
+    // Record the invitation on the repo's content branch: the durable
+    // half of the invite. The content branch syncs across replicas, so
+    // the record converges where the roster lives. The URL (with its
+    // secret fragment) is never stored — only chain-derivable facts. A
+    // failure here fails the mint; the claim path can self-heal a missing
+    // record, but a mint that can't write its own repo's content branch
+    // is broken enough to surface.
+    //
+    // Route through the *reactor's* cached `main` handle (keyed by the
+    // routing key, the `{repo}` param) rather than a fresh
+    // `repository.branch().open()`: background sync pulls/publishes through
+    // the reactor's cached handle, so a commit on a separate handle leaves
+    // it pinned at a stale head and the next pull's CAS fails forever.
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
+    let kind = match &invite.audience {
+        InviteAudience::Open { .. } => "open",
+        InviteAudience::Scoped => "scoped",
+    };
+    let execution = InvitationExecution::new(&invitation, kind);
+    // When it was minted, so a list can keep the oldest open link first.
+    let minted_at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    let minted = InvitationMinted::new(&invitation, minted_at);
+    // A link that replaces another lists in the place of the one it replaces.
+    let listed = place.map(|place| InvitationListed::new(&invitation, place));
+    let mut transaction = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(invitation)
+        .assert(execution)
+        .assert(minted);
+    if let Some(listed) = listed {
+        transaction = transaction.assert(listed);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    retain_invite_authority(tonk, repo_name, &invite.chain).await
 }
 
 /// Leave an open invite's `chain` in its space as the ticket of the key
