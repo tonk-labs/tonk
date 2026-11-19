@@ -950,15 +950,17 @@ pub fn install() {
                     intent @ tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => {
                         run_recovery_phrase_card(intent, message.credential_id)
                     }
-                    // A browser signed in with a recovery phrase records
-                    // no passkey for the account, so the worker names
-                    // none. Approving an agent, removing one or deleting
-                    // the account then asks for the phrase, with the
-                    // passkey still on offer.
+                    // A browser signed in with a recovery phrase holds no
+                    // passkey for the account, and the worker says so.
+                    // Approving an agent, removing one or deleting the
+                    // account then asks for the phrase, with the passkey
+                    // still on offer. A missing credential id is not that
+                    // signal: approving and removing an agent name none on
+                    // purpose, so that any passkey of the account will do.
                     intent @ (tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
                     | tonk_worker_api::CustodyIntent::RevokeAgent(_)
                     | tonk_worker_api::CustodyIntent::PurgeAccount(_))
-                        if message.credential_id.is_none() =>
+                        if message.phrase_only =>
                     {
                         run_phrase_entry_card(intent)
                     }

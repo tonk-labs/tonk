@@ -125,7 +125,7 @@ pub(crate) async fn ask_for_passkey(
         .await;
         return;
     };
-    let credential_id = {
+    let (credential_id, phrase_only) = {
         let tonk = env.state().read().await;
         report_to(
             &tonk,
@@ -140,7 +140,8 @@ pub(crate) async fn ask_for_passkey(
         // another enrolled provider (for example 1Password) from offering its
         // passkey. The authorization handler verifies the recovered root DID
         // against this profile before minting the device grant.
-        if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+        let credential_id = if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_))
+        {
             None
         } else {
             super::identity::local_root(&tonk)
@@ -148,13 +149,18 @@ pub(crate) async fn ask_for_passkey(
                 .ok()
                 .map(|root| root.credential_id)
                 .filter(|id| !id.is_empty())
-        }
+        };
+        (
+            credential_id,
+            super::identity::signed_in_with_phrase(&tonk).await,
+        )
     };
-    if let Err(error) = super::navigate::request_webauthn_with(
+    if let Err(error) = super::navigate::request_webauthn_for(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(intent),
         credential_id,
+        phrase_only,
     )
     .await
     {
