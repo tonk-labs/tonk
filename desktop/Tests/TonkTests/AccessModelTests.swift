@@ -14,6 +14,22 @@ final class AccessModelTests: XCTestCase {
     ])
     XCTAssertEqual(members.map(\.did), ["did:key:zKai", "did:key:zLu"])
     XCTAssertEqual(members[1].invitation, "tonk:i")
+    XCTAssertFalse(members[1].isAgent)
+  }
+
+  func testRosterRowsCarryKindAndInviter() {
+    let members = AccessModel.members([
+      [
+        "this": "m1",
+        "fields": [
+          "member": "did:key:zBot", "name": "Standup Bot", "role": "tonk:member",
+          "inviter": "did:key:zKai", "kind": "tonk:agent",
+        ],
+      ]
+    ])
+    XCTAssertEqual(members[0].inviter, "did:key:zKai")
+    XCTAssertEqual(members[0].kind, "tonk:agent")
+    XCTAssertTrue(members[0].isAgent)
   }
 
   func testViewsAreTheHomeThenTheSpacesOwnDirectoriesByName() {

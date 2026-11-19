@@ -10,6 +10,19 @@ pub(crate) struct Member {
     pub did: String,
     pub role: String,
     pub invitation: Option<String>,
+    /// The account that issued the member's invite, when the roster
+    /// records it. Preferred over the invitation's own inviter, which
+    /// names the founder for a re-shared link.
+    pub inviter: Option<String>,
+    /// `tonk:agent` for an agent; absent for a person.
+    pub kind: Option<String>,
+}
+
+impl Member {
+    /// Whether the roster marks this member an agent.
+    pub fn is_agent(&self) -> bool {
+        self.kind.as_deref() == Some("tonk:agent")
+    }
 }
 
 pub(crate) struct Node<'a> {
@@ -52,9 +65,9 @@ pub(crate) fn layout<'a>(
             if m.role == "tonk:founder" {
                 Some(0)
             } else {
-                m.invitation
+                m.inviter
                     .as_ref()
-                    .and_then(|id| invitations.get(id))
+                    .or_else(|| m.invitation.as_ref().and_then(|id| invitations.get(id)))
                     .and_then(|did| indices.get(did.as_str()).copied())
                     .filter(|parent| sorted[*parent - 1].did != m.did)
             }
@@ -152,6 +165,8 @@ mod tests {
             name: did.into(),
             role: "tonk:member".into(),
             invitation: invitation.map(String::from),
+            inviter: None,
+            kind: None,
         }
     }
     #[test]
@@ -193,6 +208,39 @@ mod tests {
                 .all(|n| n.x >= 0.0 && n.y >= 0.0 && n.x <= graph.size && n.y <= graph.size)
         );
     }
+    #[test]
+    fn a_recorded_inviter_outranks_the_invitations_first_hop() {
+        // A re-shared link: the invitation's inviter is the founder, but
+        // the roster records the member who shared it.
+        let mut owner = member("a", None);
+        owner.role = "tonk:founder".into();
+        let mut reshared = member("c", Some("ac"));
+        reshared.inviter = Some("b".into());
+        let members = vec![owner, member("b", Some("ab")), reshared];
+        let graph = layout(
+            &members,
+            &BTreeMap::from([("ab".into(), "a".into()), ("ac".into(), "a".into())]),
+        );
+        let parent_of = |did: &str| {
+            graph
+                .nodes
+                .iter()
+                .find(|n| n.member.did == did)
+                .and_then(|n| n.parent)
+                .map(|p| graph.nodes[p - 1].member.did.clone())
+        };
+        assert_eq!(parent_of("b").as_deref(), Some("a"));
+        assert_eq!(parent_of("c").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn it_reads_an_agent_off_the_kind() {
+        let mut agent = member("a", None);
+        assert!(!agent.is_agent());
+        agent.kind = Some("tonk:agent".into());
+        assert!(agent.is_agent());
+    }
+
     #[test]
     fn cycles_and_absent_inviters_do_not_gain_a_space_edge() {
         let members = vec![

@@ -374,6 +374,8 @@ fn read_row(row: &JsValue) -> Option<Member> {
         did: field("member")?,
         role: field("role")?,
         invitation: field("invitation"),
+        inviter: field("inviter"),
+        kind: field("kind"),
     })
 }
 
@@ -642,14 +644,22 @@ fn render_rows(
             "tonk:admin" => "admin",
             _ => "member",
         };
+        // An agent traces back to whoever's link let it in.
         let relation = match node.parent {
             Some(0) => "owner of this space".to_string(),
+            Some(parent) if member.is_agent() => {
+                format!("joined via {}'s link", graph.nodes[parent - 1].member.name)
+            }
             Some(parent) => format!("invited by {}", graph.nodes[parent - 1].member.name),
             None => "invitation history unavailable".to_string(),
         };
+        if member.is_agent() {
+            let _ = row.set_attribute("data-kind", "agent");
+        }
         let description = format!(
-            "{} · {}{} · {}{}",
+            "{}{} · {}{} · {}{}",
             member.name,
+            if member.is_agent() { " · agent" } else { "" },
             role,
             if viewer == Some(&member.did) {
                 " · you"
@@ -683,6 +693,9 @@ fn render_rows(
         let tags = element("span", "mem-tags", "");
         if role != "member" {
             let _ = tags.append_child(&element("span", "mem-tag mem-role", role));
+        }
+        if member.is_agent() {
+            let _ = tags.append_child(&element("span", "mem-tag mem-agent", "agent"));
         }
         if viewer == Some(&member.did) {
             let _ = tags.append_child(&element("span", "mem-tag mem-you", "you"));

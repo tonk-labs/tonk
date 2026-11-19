@@ -386,6 +386,63 @@ async fn scrolled(bar: &HtmlElement, panel: &HtmlElement, top: f64) {
     settle::arrived(lens, "the lens follows the scroll").await;
 }
 
+/// An agent is tagged one and traces back to whoever's link let it in,
+/// using the inviter the roster records rather than the invitation's first
+/// hop (which names the founder for a re-shared link).
+#[dialog_common::test]
+async fn an_agent_is_tagged_and_traces_back_to_the_link_it_joined_through() {
+    let (bar, roster) = mount();
+    let owner = serde_json::json!({"this":"owner", "fields": {"name":"Owner", "member":"did:key:owner", "role":"tonk:founder"}});
+    let mut ada = member("ada", "Ada");
+    ada["fields"]["invitation"] = "owner-ada".into();
+    let mut bot = member("bot", "Standup Bot");
+    bot["fields"]["invitation"] = "owner-bot".into();
+    bot["fields"]["inviter"] = "did:key:ada".into();
+    bot["fields"]["kind"] = "tonk:agent".into();
+    deliver(&roster, "reset", serde_json::json!([owner, ada, bot]));
+    deliver_tag(
+        &roster,
+        "reset",
+        serde_json::json!([
+            {"this":"owner-ada", "fields":{"inviter":"did:key:owner"}},
+            {"this":"owner-bot", "fields":{"inviter":"did:key:owner"}}
+        ]),
+        "ui-member-invitations",
+    );
+    let panel = shadow(&bar, ".members-list");
+
+    assert!(
+        panel
+            .query_selector("line[data-from='did:key:ada'][data-to='did:key:bot']")
+            .unwrap()
+            .is_some(),
+        "the agent hangs off the member whose link it used"
+    );
+    let node = panel
+        .query_selector("[data-member='did:key:bot']")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.get_attribute("data-kind").as_deref(), Some("agent"));
+    let label = node.get_attribute("aria-label").unwrap();
+    assert!(label.contains("Standup Bot · agent"), "{label}");
+    assert!(label.contains("joined via Ada's link"), "{label}");
+    assert_eq!(
+        node.query_selector(".mem-agent")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("agent")
+    );
+    // A person carries no agent tag.
+    let person = panel
+        .query_selector("[data-member='did:key:ada']")
+        .unwrap()
+        .unwrap();
+    assert!(person.get_attribute("data-kind").is_none());
+    assert!(person.query_selector(".mem-agent").unwrap().is_none());
+}
+
 #[dialog_common::test]
 async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
     let (bar, roster) = mount();

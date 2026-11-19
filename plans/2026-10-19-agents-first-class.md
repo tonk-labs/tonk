@@ -34,9 +34,13 @@ See **Progress**. First inspected at 8d5035bea4, plus `feat/desktop-links`,
   check uses it, so a re-shared link credits the member who shared it, not the
   founder `Invitation.inviter` names. The member list prefers the stamp and
   falls back for older rows. For an agent, the stamp is "joined via Jack's
-  link". Remaining slices: FAB and Desktop show kind and inviter (Desktop
-  currently counts every roster row as a person); agent-link grants write a
-  roster row.
+  link".
+- **Roster provenance, slice 3 (display)**: on `feat/roster-kind-display`,
+  stacked on slice 2. The FAB reads `kind` and `inviter`, hangs each member
+  off the inviter the roster records (so a re-shared link draws under the
+  member who shared it), tags agents and words them "joined via Ada's link".
+  Desktop reads both, counts agent members as agents rather than people, and
+  badges them. Remaining: agent-link grants write a roster row.
 
 Motivating build: a shared team agent on Pi Durable in a Cloudflare Durable
 Object, reached first through a bot in the team Discord, acting in Tonk spaces.
