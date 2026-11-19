@@ -199,6 +199,7 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
             tonk_worker_api::PasskeyAddition {
                 account_did: root.root_did.to_string(),
                 endpoint: format!("{}ucan/", origin),
+                created_on: None,
             }
         };
         ask_for_passkey(
@@ -417,11 +418,44 @@ async fn authorize_device_inner(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(payload)
     };
-    let redirect = format!("{origin}settings");
+    // Back to the task page, which says the device is connected.
+    let redirect = connected_return(&origin, &authorization.name);
     tonk_worker_api::callback::delivery_url(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],
     )
+}
+
+/// Where a device's callback sends the browser once it has the grant: the
+/// device task page, carrying the device's name so "device connected" can
+/// name it. The callback adds the outcome (`link=ok`) to this address.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn connected_return(origin: &url::Url, name: &str) -> String {
+    let mut page = origin.clone();
+    page.set_path("/settings/link");
+    page.set_query(None);
+    page.set_fragment(None);
+    page.query_pairs_mut().append_pair("name", name);
+    page.to_string()
+}
+
+#[cfg(test)]
+mod connected_return_tests {
+    use super::connected_return;
+
+    #[dialog_common::test]
+    fn it_carries_the_device_name_back_to_the_task_page() {
+        assert_eq!(
+            connected_return(
+                &url::Url::parse("https://tonk.example/").unwrap(),
+                "Jack’s laptop & co"
+            ),
+            "https://tonk.example/settings/link?name=Jack%E2%80%99s+laptop+%26+co"
+        );
+    }
 }
 
 #[cfg(test)]

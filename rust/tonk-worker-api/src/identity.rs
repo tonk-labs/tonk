@@ -218,6 +218,11 @@ pub struct PasskeyAddition {
     /// The access service's `/ucan/` endpoint the custody cell
     /// resolves through.
     pub endpoint: String,
+    /// Browser/OS label recorded with the added passkey, filled in by the
+    /// page that creates it: the account's passkey list names each one by
+    /// it, so an added passkey without one would never be listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
 }
 
 /// The browser a custody handoff should link to the account it opens.

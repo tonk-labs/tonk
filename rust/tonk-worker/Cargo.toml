@@ -162,6 +162,10 @@ getrandom_0_3 = { workspace = true }
 axum = { workspace = true, features = ["tokio", "http1"] }
 
 [dev-dependencies]
+# Wasm unit tests run outside a service worker, so there is no served
+# `/library/` for a library document's `!include` to fetch: they read the
+# compiled-in copies, as a native worker does.
+tonk-library = { workspace = true }
 tonk-template = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }

@@ -2,7 +2,7 @@
    and the rest straight from `:root` (styles.css), where they alias the
    Web Awesome theme. Restating them here is how this file and the
    ceremony cluster once drifted to two palettes. */
-:is(tonk-account, tonk-activate, tonk-email-invite) {
+:is(tonk-account, tonk-email-invite) {
     display: grid;
     min-height: 100dvh;
     padding: 48px 16px 80px;
@@ -15,24 +15,24 @@
     -moz-osx-font-smoothing: grayscale;
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) *,
-:is(tonk-account, tonk-activate, tonk-email-invite) *::before,
-:is(tonk-account, tonk-activate, tonk-email-invite) *::after {
+:is(tonk-account, tonk-email-invite) *,
+:is(tonk-account, tonk-email-invite) *::before,
+:is(tonk-account, tonk-email-invite) *::after {
     box-sizing: border-box;
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) ::selection {
+:is(tonk-account, tonk-email-invite) ::selection {
     background: var(--ink);
     color: var(--on-ink);
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) :where(button, input) {
+:is(tonk-account, tonk-email-invite) :where(button, input) {
     margin: 0;
     border-radius: 0;
     font: inherit;
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) :where(button) {
+:is(tonk-account, tonk-email-invite) :where(button) {
     min-width: 0;
     padding: 0;
     border: 0;
@@ -44,11 +44,11 @@
     cursor: pointer;
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) :where(a) {
+:is(tonk-account, tonk-email-invite) :where(a) {
     color: inherit;
 }
 
-:is(tonk-account, tonk-activate, tonk-email-invite) :focus-visible {
+:is(tonk-account, tonk-email-invite) :focus-visible {
     outline: 0;
     box-shadow: inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);
 }
@@ -179,7 +179,7 @@
 }
 
 /* Keep the browser's native insertion caret, tinted to the current theme. */
-:is(tonk-account, tonk-activate, tonk-email-invite) input:is([type="text"], [type="email"]) {
+:is(tonk-account, tonk-email-invite) input:is([type="text"], [type="email"]) {
     caret-color: var(--ink);
 }
 
@@ -815,7 +815,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 }
 
 @media (max-width: 463px) {
-    :is(tonk-account, tonk-activate, tonk-email-invite) {
+    :is(tonk-account, tonk-email-invite) {
         padding-top: max(24px, env(safe-area-inset-top));
     }
 
@@ -898,7 +898,7 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
     tonk-account[data-busy="true"] .account__run[data-initiating="true"],
     .account__error[data-flash="true"],
     .account__inline-error[data-flash="true"],
-    :is(tonk-account, tonk-activate, tonk-email-invite) input:is([type="text"], [type="email"]) {
+    :is(tonk-account, tonk-email-invite) input:is([type="text"], [type="email"]) {
         animation: none;
     }
 }
@@ -906,35 +906,35 @@ tonk-account[data-busy="true"] .account__run[data-initiating="true"] {
 /* Activation and the emailed invitation are standalone faces of the current account task, not the
    legacy stack of individually framed blocks. Keep status/error visible even
    when a malformed link cannot show the confirmation panel. */
-:is(tonk-activate, tonk-email-invite) .account { width: min(360px, calc(100vw - 32px)); }
-:is(tonk-activate, tonk-email-invite) .account__ceremony {
+tonk-email-invite .account { width: min(360px, calc(100vw - 32px)); }
+tonk-email-invite .account__ceremony {
     border: 1.5px solid var(--ring); border-radius: 25px;
     background: var(--modal, var(--card)); overflow: hidden;
 }
-:is(tonk-activate, tonk-email-invite) .account__stack { gap: 0; }
-:is(tonk-activate, tonk-email-invite) .account__ceremony-head {
+tonk-email-invite .account__stack { gap: 0; }
+tonk-email-invite .account__ceremony-head {
     min-height: 48px; height: auto; padding: 14px 18px;
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
     font: 600 17px/1.1 var(--cond); text-align: right; letter-spacing: 0;
     box-shadow: none; background: var(--wash);
 }
-:is(tonk-activate, tonk-email-invite) .account__ceremony-head::before {
+tonk-email-invite .account__ceremony-head::before {
     content: ""; width: 18px; height: 18px; flex: 0 0 18px;
     border-radius: 50%; background: var(--ink);
 }
-:is(tonk-activate, tonk-email-invite) .account__narrator,
-:is(tonk-activate, tonk-email-invite) .account__working,
-:is(tonk-activate, tonk-email-invite) .account__error {
+tonk-email-invite .account__narrator,
+tonk-email-invite .account__working,
+tonk-email-invite .account__error {
     margin: 0; padding: 16px 18px 24px; box-shadow: none;
     background: var(--wash); font: 400 18px/1.5 var(--cond);
     letter-spacing: 0; color: var(--ink);
 }
-:is(tonk-activate, tonk-email-invite) .account__run {
+tonk-email-invite .account__run {
     width: 100%; min-height: 48px; height: auto; padding: 12px 18px;
     align-items: center; box-shadow: none;
     font: 600 17px/1.1 var(--cond); letter-spacing: 0;
 }
-:is(tonk-activate, tonk-email-invite) .account__run:active:not(:disabled) { scale: none; }
+tonk-email-invite .account__run:active:not(:disabled) { scale: none; }
 
 /* The invitation adds the task footer's secondary and primary pair, and one
    record row naming the signed-in email. */
