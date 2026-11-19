@@ -5867,6 +5867,30 @@ element!: &space-links
         : list.length === 2 ? `${list[0]} and ${list[1]}`
         : list.length === 3 ? `${list[0]}, ${list[1]} and ${list[2]}`
         : `${list[0]}, ${list[1]} and ${list.length - 2} others`
+    views: |
+      (self, routes, directories) => {
+        const paths = new Map([['/', 'Home']]);
+        const add = (path, label) => {
+          if (!path.startsWith('/') || /[{}?#%\\\x00-\x1f]/.test(path)) return;
+          const parts = path.slice(1).split('/');
+          if (parts.some(part => !part || part === '.' || part === '..')) return;
+          paths.set('/' + parts.map(encodeURIComponent).join('/'), label);
+        };
+        for (const { fields } of routes) {
+          const path = fields.path;
+          add(path, path.slice(1));
+        }
+        if (routes.some(row => row.fields.path === '/{*model}' && row.fields.concept === 'tonk:directory/route')) {
+          for (const row of directories) {
+            const model = row.this;
+            if (model.startsWith('tonk:') && model !== 'tonk:_') {
+              const name = model.slice(5);
+              add('/' + model, name);
+            }
+          }
+        }
+        return [...paths].map(([path, name]) => ({ path, name }));
+      }
     # Read everything the rows say, then draw them. A failed read says so;
     # it never reads as a space with no links.
     load: |
@@ -5877,7 +5901,15 @@ element!: &space-links
         const base = `/api/repository/${encodeURIComponent(subject)}`;
         const field = (the, as, optional) => ({ the, as, cardinality: 'one', ...(optional ? { optional: true } : {}) });
         try {
-          const [invites, members, connections] = await Promise.all([
+          const query = (fields) => self.api(`${base}/branch/main/query`, { predicate: { with: fields },
+          terms: Object.fromEntries(['this', ...Object.keys(fields)].map(name => [name, { '?': { name } }])) });
+        const [role, views] = await Promise.all([self.api(`${base}/invite`).catch(() => undefined),
+          Promise.all([query({ path: field('xyz.tonk.route/path', 'Text'), concept: field('xyz.tonk.route/concept', 'Entity') }),
+            query({ directory: field('xyz.tonk.view/directory', 'Text') })]).then(([routes, dirs]) => self.views(routes, dirs)).catch(() => null)]);
+        self._shareRole = role;
+        self._views = views;
+        if (self._linkKind === 'pass' && !role) self._linkKind = 'view';
+        const [invites, members, connections] = await Promise.all([
             self.api(`${base}/invites`),
             self.api(`${base}/branch/main/query`, {
               predicate: { with: {
@@ -5916,7 +5948,7 @@ element!: &space-links
             const used = usedBy(invite);
             rows.push({ kind: 'scoped', target: invite.targetCid, who: named || (used?.length === 1 ? used[0] : 'one person'), used });
           } else {
-            rows.push({ kind: 'open', target: invite.targetCid, used: usedBy(invite) });
+            rows.push({ kind: 'open', target: invite.targetCid, role: invite.role ?? 'write', until: invite.expiresAt, used: usedBy(invite) });
           }
         }
         const first = rows.find((row) => row.kind === 'open');
@@ -5954,15 +5986,25 @@ element!: &space-links
     link-form: |
       (self) => {
         const view = self._linkKind === 'view';
+        const role = self._linkRole;
+        const roles = self._shareRole === 'admin' ? ['read', 'write', 'admin'] : ['read', 'write'];
+        const radio = (name, value, label, hint, checked) => `<label class="hub-opt"><input type="radio" name="${name}" value="${value}" ${checked ? 'checked' : ''}><span>${label}</span>${hint ? `<small>${hint}</small>` : ''}</label>`;
+        const option = (value, label, selected) => `<option value="${self.esc(value)}" ${selected ? 'selected' : ''}>${self.esc(label)}</option>`;
+        const current = self._views?.find(item => item.path === self._linkView);
+        const id = 'new-link-' + self.esc(self.dataset.space);
+        const dates = [0, 1, 7, 30].map(days => option(days, days ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(Date.now() + days * 86400000)) : 'never', self._linkDays === days));
         return `<form class="hub-linkform" aria-label="new link">
           <div class="hub-lf-row"><span class="hub-lf-label">type</span><div class="hub-opts" role="radiogroup" aria-label="link type">
-            <label class="hub-opt"><input type="radio" name="kind" value="pass" ${view ? '' : 'checked'}><span>passlink</span><small>gives access</small></label>
-            <label class="hub-opt"><input type="radio" name="kind" value="view" ${view ? 'checked' : ''}><span>view</span><small>shows the home view</small></label>
-          </div></div>
-          <p class="hub-lf-note">${view ? 'Opens this space’s home view for people who already have access.' : 'Anyone holding this passlink can join the space.'}</p>
+            ${self._shareRole ? radio('kind', 'pass', 'passlink', 'gives access', !view) : ''}${radio('kind', 'view', 'view', 'shows one view', view)}</div></div>
+          ${view ? `<div class="hub-lf-row"><label class="hub-lf-label" for="${id}-view">shows</label><select id="${id}-view" name="view">${(self._views ?? []).map(item => option(item.path, item.name, item.path === self._linkView)).join('')}</select></div>`
+          : `<div class="hub-lf-row"><span class="hub-lf-label">role</span><div class="hub-opts" role="radiogroup" aria-label="role">${roles.map(r => radio('role', r, r, '', role === r)).join('')}</div></div>
+          <div class="hub-lf-row"><label class="hub-lf-label" for="${id}-exp">expires</label><select id="${id}-exp" name="expires">${dates.join('')}</select></div>`}
+          ${self._shareRole === null ? '<p class="hub-lf-note">You have read access, so you can only make links to views.</p>' : ''}
+          ${self._shareRole === 'write' && !view ? '<p class="hub-lf-note">You have write access, so a passlink can give at most write.</p>' : ''}
+          ${(view && !current || self._shareRole === undefined) ? '<p class="hub-lf-note">Link options are loading or unavailable. <button type="button" class="hub-btn" data-link-retry>try again</button></p>' : ''}
           ${view && self._manualView ? self.whole(self._manualView) : ''}
           <div class="hub-lf-acts"><button type="button" class="hub-btn" data-link-cancel>not now</button>
-            <button type="button" class="hub-btn hub-btn--main" data-link-submit>${view ? 'copy link to home view' : 'make passlink'}</button></div></form>`;
+            <button type="submit" class="hub-btn hub-btn--main" data-link-submit ${(view ? !current : !self._shareRole) ? 'disabled' : ''}>${view ? 'make link to ' + self.esc(current?.name ?? 'view') : 'make passlink with ' + role}</button></div></form>`;
       }
     choose-link: |
       (self, kind, focus) => {
@@ -5976,12 +6018,13 @@ element!: &space-links
       async (self, button) => {
         await self.act(button, 'copying', async () => {
           const url = self.closest('.hub-row')?.querySelector('.hub-open')?.getAttribute('href');
-          if (!url) return;
-          const address = new URL(url, window.tonk?.context?.origin ?? window.location.origin).href;
+          const view = self._views?.find(item => item.path === self._linkView);
+          if (!url || !view) return;
+          const address = new URL(url.replace(/\/$/, '') + (view.path === '/' ? '' : view.path), window.tonk?.context?.origin ?? window.location.origin).href;
           try {
             await navigator.clipboard.writeText(address);
             self.chooseLink(null, '[data-link-new]');
-            self.hub()?.note?.('Copied the link to the home view.');
+            self.hub()?.note?.(`Copied the link to ${view.name}.`);
           } catch (_) {
             self._manualView = address;
             self._error = 'Select the address and copy it.';
@@ -5997,7 +6040,7 @@ element!: &space-links
           const url = made.get(row.target);
           const what = row.kind === 'agent' ? `agent link <span class="hub-bot">bot</span>`
             : row.kind === 'scoped' ? `passlink for ${esc(row.who)}`
-            : `passlink${row.default ? ' <span class="hub-tag">default</span>' : ''}`;
+            : `passlink <span class="hub-link-role">${esc(row.role ?? 'write')}</span>${row.default ? ' <span class="hub-tag">default</span>' : ''}`;
           const gives = row.kind === 'agent' ? `${esc(row.who)} can reach this space`
             : row.kind === 'scoped' ? `only ${esc(row.who)} can join with it` : 'anyone with it can join';
           const until = row.until ? `until ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(row.until * 1000))}` : '';
@@ -6053,7 +6096,7 @@ element!: &space-links
     # opens on the press, while it still counts as one, and settles when
     # the worker answers. A link that `replaces` another lists in its place.
     mint: |
-      async (self, replaces) => {
+      async (self, replaces, options = {}) => {
         const subject = self.dataset.space;
         const base = `/api/repository/${encodeURIComponent(subject)}`;
         let settle;
@@ -6065,7 +6108,7 @@ element!: &space-links
           copied = navigator.clipboard.write([item]).then(() => true, () => false);
         } catch (_) { copied = Promise.resolve(false); }
         try {
-          const minted = await self.api(`${base}/invite`, replaces ? { replaces } : {});
+          const minted = await self.api(`${base}/invite`, replaces ? { replaces } : options);
           if (minted.targetCid) self.made().set(minted.targetCid, minted.url);
           settle.resolve(minted.url);
           return { url: minted.url, target: minted.targetCid, copied: await copied };
@@ -6089,9 +6132,10 @@ element!: &space-links
       (self, button) => self.act(button, 'making', async () => {
         self._error = '';
         let made;
-        try { made = await self.mint(); }
-        catch (_) {
-          self._error = 'Couldn’t make the link. Check your connection and try again.';
+        try {
+          made = await self.mint(null, { role: self._linkRole, ...(self._linkDays ? { expiresAt: Math.floor(Date.now() / 1000) + self._linkDays * 86400 } : {}) });
+        } catch (error) {
+          self._error = 'Couldn’t make the link. ' + error.message;
           self._focus = '[data-link-submit]';
           self.render();
           return;
@@ -6231,8 +6275,20 @@ element!: &space-links
           event.preventDefault();
         });
         self.addEventListener('change', event => {
-          const radio = event.target.closest('.hub-linkform input[name=kind]');
-          if (radio && !self._busy) self.chooseLink(radio.value, `input[name=kind][value="${radio.value}"]`);
+          const input = event.target;
+          if (!input.closest('.hub-linkform') || self._busy) return;
+          if (input.name === 'role') self._linkRole = input.value;
+          if (input.name === 'expires') self._linkDays = Number(input.value);
+          if (input.name === 'view') self._linkView = input.value;
+          self.chooseLink(input.name === 'kind' ? input.value : self._linkKind, input.matches('select') ? `select[name="${input.name}"]` : `input[name="${input.name}"]:checked`);
+        });
+        self.addEventListener('submit', event => {
+          if (!event.target.matches('.hub-linkform')) return;
+          event.preventDefault();
+          const button = event.target.querySelector('[data-link-submit]');
+          if (button.disabled || self._busy) return;
+          if (self._linkKind === 'view') self.copyView(button);
+          else self.make(button);
         });
         self.addEventListener('keydown', event => {
           if (event.key === 'Escape' && self._linkKind) {
@@ -6246,14 +6302,15 @@ element!: &space-links
           if (copy) { self.copy(copy); return; }
           const make = target?.closest?.('[data-link-new]');
           if (self._busy) return;
-          if (make) { self.chooseLink('pass', 'input[name=kind]:checked'); return; }
-          if (target.closest('[data-link-cancel]')) { self.chooseLink(null, '[data-link-new]'); return; }
-          const submit = target.closest('[data-link-submit]');
-          if (submit) {
-            if (self._linkKind === 'view') self.copyView(submit);
-            else self.make(submit);
+          if (target.closest('[data-link-retry]')) { self.load(); return; }
+          if (make) {
+            self._linkRole = 'write';
+            self._linkDays = 0;
+            self._linkView = '/';
+            self.chooseLink(self._shareRole === null ? 'view' : 'pass', 'input[name=kind]:checked');
             return;
           }
+          if (target.closest('[data-link-cancel]')) { self.chooseLink(null, '[data-link-new]'); return; }
           const ask = target?.closest?.('[data-link-ask]');
           if (ask) {
             self._ask = { what: ask.dataset.linkAsk, target: ask.dataset.target, kind: ask.dataset.kind };
