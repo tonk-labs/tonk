@@ -2150,7 +2150,7 @@ pub(crate) mod tests {
             open_hub_settings(&first, &env).await?;
             let listed = first
                 .execute(
-                    "return document.querySelectorAll('.passkey-card').length;",
+                    "return document.querySelectorAll('[data-settings-passkey-device]').length;",
                     Vec::new(),
                 )
                 .await?;
