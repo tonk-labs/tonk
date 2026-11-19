@@ -215,6 +215,7 @@ pub struct SpaceWriter {
     caps: ReadCaps,
     /// Changes proposed in this writer's session, until the person
     /// answers (see [`super::propose`]).
+    creations: super::propose::Proposals,
     proposals: super::propose::Proposals,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
@@ -260,6 +261,7 @@ impl SpaceWriter {
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
             caps: ReadCaps::default(),
+            creations: Default::default(),
             proposals: super::propose::Proposals::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
@@ -1284,3 +1286,193 @@ impl SpaceWriter {
 
 #[cfg(test)]
 mod tests;
+
+impl SpaceWriter {
+    async fn initialize_created_space(
+        &self,
+        space: &Did,
+        name: &str,
+        provider: &url::Url,
+    ) -> anyhow::Result<()> {
+        use super::super::repository;
+        use tonk_schema::prelude::DidExt as _;
+        // The directory entry is already visible. Another peer may write to the
+        // new space during seeding, so give the initializer its own origin.
+        let initializer = WriterKey::derive(&WriterSession {
+            seed: self.key.seed.clone(),
+            powerline: self.key.chain.clone(),
+            mcp_session: space.to_string(),
+            home: self.home.clone(),
+        })
+        .await?;
+        let peer = open_peer(
+            &initializer,
+            &format!("{}/create-{space}", self.root),
+            space,
+            provider,
+            (&self.agent, &self.home),
+        )
+        .await?;
+        let initialized = async {
+            let state = peer.state.read().await;
+            let own = repository::repository_name_claims(space, name, None)?;
+            let library = include_str!("../../../../tonk-core/assets/library/core.yaml");
+            repository::install_fresh_seed(&state, space.repo_key(), BRANCH, library, &own).await?;
+            drop(state);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/repository/{space}/branch/{BRANCH}/sync/push"))
+                .body(Body::empty())?;
+            let response = peer.call(request).await;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "push returned {}",
+                response.status()
+            );
+            Ok(())
+        }
+        .await;
+        peer.close().await;
+        initialized
+    }
+
+    /// Handle a proposal on the session writer that owns its confirmation.
+    pub async fn create_space(
+        &self,
+        provider: &url::Url,
+        request: super::creation::CreateRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        use super::card::{Agent, Card, Look, Place, Role};
+        use super::creation::{CONFIRM, CreateRequest};
+        use dialog_ucan_core::promise::Promised;
+        use serde_json::{Value, json};
+        use tonk_identity::created_space::{self, Handoff};
+        anyhow::ensure!(
+            self.space == self.agent,
+            "only an agent's own writer can create a space"
+        );
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let agent = Agent {
+            did: self.agent.to_string(),
+            name: None,
+        };
+        let result = |text: String, card: Card, space: Option<String>| json!({"content":[{"type":"text","text":text}],"structuredContent":{"card":card.to_value(),"space":space},"isError":false});
+        match request {
+            CreateRequest::Propose { name } => {
+                anyhow::ensure!(
+                    !name.trim().is_empty() && name.chars().count() <= 100,
+                    "Choose a name between 1 and 100 characters."
+                );
+                let (id, _) = self.creations.hold(
+                    name.clone(),
+                    Value::Null,
+                    Value::Null,
+                    super::propose::Effect::Create,
+                    now,
+                );
+                let say = format!(
+                    "Create {name}? You will own it. This agent will have read and write access until you revoke it or its grant expires."
+                );
+                let card = Card::ask(
+                    Place {
+                        did: String::new(),
+                        name: Some(name),
+                        item: None,
+                    },
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                )
+                .answer(
+                    "Cancel",
+                    Look::Link,
+                    CONFIRM,
+                    json!({"id":id,"approve":false}),
+                )
+                .answer(
+                    "Create space",
+                    Look::Main,
+                    CONFIRM,
+                    json!({"id":id,"approve":true}),
+                );
+                Ok(result(say, card, None))
+            }
+            CreateRequest::Answer {
+                id,
+                approve,
+                permission,
+            } => {
+                let held = self.creations.take(&id, now).map_err(|_| {
+                    anyhow::anyhow!("This creation request expired or was already answered.")
+                })?;
+                if !approve {
+                    return Ok(result(
+                        "Cancelled".into(),
+                        Card::strip(None, None, "Cancelled", agent),
+                        None,
+                    ));
+                }
+                let bytes = hex::decode(permission)?;
+                let permission = DelegationChain::try_from(bytes.as_slice())?;
+                anyhow::ensure!(
+                    permission.audience() == &self.agent
+                        && permission.ability() == "/provider/create-space",
+                    "invalid creation permission"
+                );
+                anyhow::ensure!(
+                    tonk_invite::home_address(&permission)?.as_ref() == Some(provider),
+                    "creation permission is for another service"
+                );
+                let owner = permission.issuer().clone();
+                let receipt =
+                    created_space::mint(&owner, &self.agent, &held.document, provider).await?;
+                let encoded = hex::encode(receipt.to_bytes()?);
+                let handoff = Handoff::read(receipt, &owner).await?;
+                let mut chain = permission;
+                for proof in self.key.chain.proofs() {
+                    chain = chain.push(proof.clone())?;
+                }
+                let key = Ed25519Signer::import(&*self.key.seed)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                let invocation = tonk_identity::request::build_device_invocation(
+                    key,
+                    &chain,
+                    created_space::CREATE.map(str::to_string).to_vec(),
+                    [("handoff".into(), Promised::String(encoded))]
+                        .into_iter()
+                        .collect(),
+                )
+                .await?;
+                super::super::http::post_cbor(provider, &invocation).await?;
+                let space = handoff.subject.to_string();
+                let entry = super::access::DirectoryEntry {
+                    space: handoff.subject.clone(),
+                    name: Some(held.document.clone()),
+                    address: Some(provider.to_string()),
+                };
+                self.retain_grants(&handoff.grants,&[entry]).await.map_err(|e|anyhow::anyhow!("Space {space} was provisioned for its owner, but saving the agent grants failed: {e}"))?;
+                self.initialize_created_space(&handoff.subject, &held.document, provider)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("Created {space}, but initializing its library failed: {e}")
+                    })?;
+                let say = format!(
+                    "Created {}. You own it and the agent has read and write access.",
+                    held.document
+                );
+                let card = Card::strip(
+                    Some(Place {
+                        did: space.clone(),
+                        name: Some(held.document),
+                        item: None,
+                    }),
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                );
+                Ok(result(say, card, Some(space)))
+            }
+        }
+    }
+}

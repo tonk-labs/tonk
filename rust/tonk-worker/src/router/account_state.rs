@@ -1589,7 +1589,111 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         project_member_names(tonk, &ready.subject, &name, profile_changed).await;
     }
 
+    if let Err(error) = recover_created_spaces(tonk, &ready).await {
+        log!("recover agent-created spaces: {error}");
+    }
     super::adopt::reconcile_account_spaces(tonk).await;
+    Ok(())
+}
+
+/// Import immutable custody receipts through the currently linked account.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn recover_created_spaces(
+    tonk: &TonkState,
+    ready: &ReadyAccountBranch,
+) -> anyhow::Result<()> {
+    use dialog_ucan::UcanDelegation;
+    use tonk_identity::created_space::{Handoff, LIST};
+    let Some(link) = super::account::account_link(tonk).await else {
+        return Ok(());
+    };
+    anyhow::ensure!(link.issuer() == &ready.subject, "account link changed");
+    let remote: url::Url = account_remote(tonk).await?.parse()?;
+    let request = tonk_identity::request::build_device_invocation(
+        tonk.profile.credential().signer().clone(),
+        &link,
+        LIST.map(str::to_string).to_vec(),
+        Default::default(),
+    )
+    .await?;
+    let response = super::http::post_cbor(&remote, &request).await?;
+    let receipts: Vec<String> = serde_json::from_slice(&response.body)?;
+    for receipt in receipts {
+        let bytes = hex::decode(receipt)?;
+        let grant = DelegationChain::try_from(bytes.as_slice())?;
+        let subject = grant.issuer().clone();
+        if dialog_repository::secrets::held_principal(tonk.profile.state(), &subject, &tonk.profile)
+            .await?
+            .is_some_and(|key| key.to == ready.subject)
+        {
+            continue;
+        }
+        let handoff = Handoff::read(grant, &ready.subject).await?;
+        let home = tonk_invite::home_address(&handoff.owner_grant)?
+            .ok_or_else(|| anyhow::anyhow!("space has no home"))?;
+        anyhow::ensure!(home == remote, "space handoff names a different home");
+        tonk.profile
+            .access()
+            .save(UcanDelegation(handoff.owner_grant.clone()))
+            .perform(&tonk.operator)
+            .await?;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await?;
+        // The signed owner grant also serves as the imported marker shared
+        // across devices. A later import must not restore revoked leaves.
+        let imported = main
+            .handle()
+            .delegations()
+            .issued_to(ready.subject.clone())
+            .perform(&tonk.operator)
+            .await?
+            .iter()
+            .any(|held| held.0.proof_cids() == handoff.owner_grant.proof_cids());
+        if !imported {
+            for leaf in &handoff.grants {
+                tonk_account::delegations::retain_space_delegation(
+                    main.handle(),
+                    leaf,
+                    &tonk.operator,
+                )
+                .await?;
+            }
+            let configuration = super::repository::space_config(home.as_str())?;
+            super::repository::record_space_mount(
+                tonk,
+                &subject,
+                &configuration,
+                Some(&handoff.name),
+            )
+            .await;
+        }
+        anyhow::ensure!(
+            super::adopt::ensure_space_mounted(tonk, subject.as_str()).await?,
+            "created space has no local mount"
+        );
+        if tonk_account::delegations::retain_space_delegation(
+            main.handle(),
+            &handoff.owner_grant,
+            &tonk.operator,
+        )
+        .await?
+        {
+            tonk.sync_queue
+                .mark_dirty(&ready.key, super::sync::now_millis());
+        }
+        dialog_repository::secrets::hold_principal(
+            tonk.profile.state(),
+            &subject,
+            SeedKind::Space.held(),
+            dialog_repository::secrets::sealed_message(&ready.subject, handoff.sealed),
+            &tonk.profile,
+        )
+        .await?;
+    }
     Ok(())
 }
 

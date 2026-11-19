@@ -29,6 +29,7 @@ import {
   approve,
   revoke,
 } from './lib/browser.mjs';
+import { showCard } from './lib/card-host.mjs';
 import { showView } from './lib/view-host.mjs';
 
 const origin = new URL(process.env.TONK_E2E_ORIGIN ?? 'http://localhost:8787').origin;
@@ -331,6 +332,78 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       for (const name of ['access', 'writer', 'writer.pull', 'writer.eval', 'total']) {
         assert.ok(steps.includes(name), `${name} missing from ${timing}`);
       }
+    });
+
+    await step('the person approves a space requested by the agent and retains it after revocation', async () => {
+      const name = `Research / ${run}`;
+      const client = await connect();
+      const proposal = await call(client, 'tonk_create_space', { name });
+      assert.equal(proposal.structuredContent.card.kind, 'ask');
+      const before = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.ok(!before.some((space) => space.name === name));
+      let subject;
+      const create = (await client.listTools()).tools.find(tool => tool.name === 'tonk_create_space');
+      const { contents: [resource] } = await client.readResource({ uri: create._meta.ui.resourceUri });
+      const card = await showCard({
+        result: proposal,
+        resource: { html: resource.text, csp: resource._meta.ui.csp },
+        answers: {
+          tonk_create_space_confirm: async (args) => {
+            // ChatGPT answers a card on a fresh transport for the same connection.
+            const result = await call(await connect(), 'tonk_create_space_confirm', args);
+            subject = result.structuredContent.space;
+            return result;
+          },
+        },
+      });
+      try {
+        await card.card().getByRole('button', { name: 'Create space', exact: true }).click();
+        await card.card().getByRole('status').filter({ hasText: 'You own it' }).waitFor();
+        assert.ok(subject);
+      } finally {
+        await card.close();
+      }
+      await boot(person.page, origin);
+      assert.equal((await syncedSpaces(person.page, [name]))[name], subject);
+      const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
+      assert.equal(listed.find((space) => space.subject === subject)?.access, 'write');
+      await call(client, 'tonk_evaluate', { space: subject, document: NOTE });
+      await revoke(person.page, { agent, space: subject });
+      const readRefusal = await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
+        since: Date.now(), budget: REVOKE_BUDGET,
+      });
+      assert.match(readRefusal.text, /revoked|no access/i);
+      const refused = await client.callTool({
+        name: 'tonk_evaluate', arguments: { space: subject, document: note('revoked agent') },
+      });
+      assert.equal(refused.isError, true, 'agent write succeeded after revocation');
+      assert.match(JSON.stringify(refused.content), /revoked|no access/i);
+      const labels = await person.page.evaluate(async ([space, document, query]) => {
+        const branch = `/api/repository/${encodeURIComponent(space)}/branch/main`;
+        const sync = async (operation) => {
+          for (let attempt = 1; ; attempt++) {
+            const response = await fetch(branch + '/sync/' + operation, { method: 'POST' });
+            if (response.ok) return;
+            const { error } = await response.json();
+            if (response.status !== 503 || error?.code !== 'SYNC_UNAVAILABLE' || attempt >= 3)
+              throw new Error(`owner ${operation} returned ${response.status}: ${JSON.stringify(error)}`);
+            await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+          }
+        };
+        await sync('pull');
+        const write = await fetch(branch + '/evaluate?transact=true', {
+          method: 'POST', headers: { 'content-type': 'application/yaml' }, body: document,
+        });
+        if (!write.ok) throw new Error(await write.text());
+        await sync('push');
+        const read = await fetch(branch + '/evaluate?transact=false', {
+          method: 'POST', headers: { 'content-type': 'application/yaml' }, body: query,
+        });
+        if (!read.ok) throw new Error(await read.text());
+        return JSON.stringify((await read.json()).matches_after);
+      }, [subject, note('owner after revocation'), NOTES]);
+      assert.match(labels, /owner after revocation/);
+      assert.doesNotMatch(labels, /revoked agent/);
     });
 
     // A link the person shares in the chat, joined as the card joins it:

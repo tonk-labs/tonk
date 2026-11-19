@@ -442,6 +442,15 @@ async fn a_grant_in_the_token_opens_no_space() {
         assert!(error, "{tool} on an ungranted space: {text}");
         assert!(text.contains("has no access"), "{text}");
     }
+    let (text, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_create_space",
+        json!({"name":"No permission"}),
+    )
+    .await;
+    assert!(error && text.contains("Reconnect"), "{text}");
     let (text, error) =
         call_tool(&endpoint, &bearer, &session, "tonk_list_spaces", json!({})).await;
     assert!(!error, "{text}");
@@ -653,6 +662,8 @@ async fn a_session_id_of_another_token_is_refused() {
     assert_eq!(
         names,
         [
+            "tonk_create_space",
+            "tonk_create_space_confirm",
             "tonk_evaluate",
             "tonk_guide",
             "tonk_join_accept",
@@ -982,6 +993,17 @@ concept!: &mcp-note
                         json!({ "error": message, "code": code }),
                     ),
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
+                };
+            }
+            if parts.uri.path() == crate::router::hosted::creation::CREATE_ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let request = serde_json::from_slice(&body).unwrap();
+                return match writer.create_space(&self.remote, request).await {
+                    Ok(answer) => rpc(StatusCode::OK, answer),
+                    Err(error) => rpc(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        json!({"error":error.to_string()}),
+                    ),
                 };
             }
             let grants: Vec<String> = parts
@@ -1518,6 +1540,95 @@ concept!: &mcp-note
         drop(open);
         service.stop().await.unwrap();
         other.stop().await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn chat_created_space_requires_confirmation_and_is_listed() {
+        use crate::router::hosted::creation::{CONFIRM, CREATE};
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let remote: url::Url = service.address.ucan_endpoint().parse().unwrap();
+        let agent = Ed25519Signer::generate().await.unwrap();
+        let owner = Ed25519Signer::generate().await.unwrap();
+        service
+            .address
+            .activate_customer(&owner, "owner@example.test")
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let grant = tonk_identity::created_space::permission(
+            &owner,
+            &agent.did(),
+            &remote,
+            dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+        )
+        .await
+        .unwrap();
+        let another_connection =
+            issue_agent_session_with_grants(agent.clone(), &remote, std::slice::from_ref(&grant))
+                .await
+                .unwrap()
+                .token;
+        let bearer = issue_agent_session_with_grants(agent, &remote, &[grant])
+            .await
+            .unwrap()
+            .token;
+        let writers = NativeWriters {
+            remote,
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        let card = Client::connect(&endpoint, bearer).await;
+        let other = Client::connect(&endpoint, another_connection).await;
+        let ask = client.result(CREATE, json!({"name":"Research"})).await;
+        let buttons = &ask["structuredContent"]["card"]["answers"];
+        let approve = buttons[1]["arguments"].clone();
+        assert_eq!(
+            other.result(CONFIRM, approve.clone()).await["isError"],
+            true
+        );
+        assert_eq!(
+            client
+                .result(CONFIRM, buttons[0]["arguments"].clone())
+                .await["isError"],
+            false
+        );
+        assert_eq!(client.result(CONFIRM, approve).await["isError"], true);
+        let list = client.result("tonk_list_spaces", json!({})).await;
+        assert_eq!(
+            list["structuredContent"]["spaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let ask = client.result(CREATE, json!({"name":"Research"})).await;
+        let answer = &ask["structuredContent"]["card"]["answers"][1];
+        assert_eq!(answer["tool"], CONFIRM);
+        let receipt = card.result(CONFIRM, answer["arguments"].clone()).await;
+        let subject = receipt["structuredContent"]["space"]
+            .as_str()
+            .expect("creation receipt");
+        let list = client.result("tonk_list_spaces", json!({})).await;
+        assert!(
+            list["structuredContent"]["spaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["subject"] == subject
+                    && s["name"] == "Research"
+                    && s["access"] == "write")
+        );
+        service.stop().await.unwrap();
     }
 
     /// A command that changes who has access to a space or what it is

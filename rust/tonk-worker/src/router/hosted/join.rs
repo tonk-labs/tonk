@@ -571,7 +571,7 @@ pub struct LinkAnswer {
 }
 
 /// The reason a writer gives for refusing, as its `error`.
-async fn refusal(response: axum::http::Response<Body>) -> String {
+pub(super) async fn refusal(response: axum::http::Response<Body>) -> String {
     let body = response
         .into_body()
         .collect()
@@ -592,7 +592,7 @@ fn get(uri: &str) -> Request<Body> {
         .expect("static request")
 }
 
-async fn answer<T: serde::de::DeserializeOwned>(
+pub(super) async fn answer<T: serde::de::DeserializeOwned>(
     response: axum::http::Response<Body>,
 ) -> Result<T, String> {
     let status = response.status();
@@ -612,7 +612,7 @@ async fn answer<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&body).map_err(|error| error.to_string())
 }
 
-fn error(message: &str) -> Value {
+pub(super) fn error(message: &str) -> Value {
     json!({
         "content": [{ "type": "text", "text": message }],
         "isError": true,

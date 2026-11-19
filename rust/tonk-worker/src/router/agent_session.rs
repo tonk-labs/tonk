@@ -590,11 +590,27 @@ async fn authorize_inner(
         js_sys::Date::now() - started
     );
 
-    // The token is the session alone: what the agent may reach is in its
-    // own space, where the host reads it like any other space's content.
-    let issued = tonk_identity::agent::issue_agent_session(Signer::from(agent), &home)
-        .await
-        .map_err(|error| error.to_string())?;
+    // Each connection can request a new space for approval in chat.
+    let permissions = {
+        let tonk = state.read().await;
+        let provider = super::account_state::account_remote(&tonk)
+            .await
+            .map_err(said)?
+            .parse::<url::Url>()
+            .map_err(|error| error.to_string())?;
+        vec![
+            tonk_identity::created_space::permission(&root, &agent_did, &provider, expires)
+                .await
+                .map_err(|error| error.to_string())?,
+        ]
+    };
+    let issued = tonk_identity::agent::issue_agent_session_with_grants(
+        Signer::from(agent),
+        &home,
+        &permissions,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     tonk_common::log!(
         "agent {agent_did} {} with {} new space grant(s)",
         if authorization.agent.is_some() {
