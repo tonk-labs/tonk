@@ -2,7 +2,7 @@
 //! by the space and the session's writer DID), holding the [`SpaceWriter`]
 //! that signs every revision for the pair.
 //!
-//! The object keeps nothing durable. Its writer opens on the first request
+//! Pending space-creation cards survive eviction in object storage. The writer opens on the first request
 //! with the session the front hands in, and lives as long as the object
 //! stays in memory; an evicted object opens a new one on its next request,
 //! as the same writer key.
@@ -162,6 +162,7 @@ pub struct SpaceWriterObject {
     opened_at: Cell<usize>,
     high_water: usize,
     provisioner: Option<url::Url>,
+    creation_update: Mutex<()>,
     /// Requests being answered. The object recycles only at none.
     in_flight: Cell<usize>,
     /// A recycle alarm is set.
@@ -185,6 +186,7 @@ impl DurableObject for SpaceWriterObject {
             writer: Mutex::new(None),
             opened_at: Cell::new(0),
             high_water,
+            creation_update: Mutex::new(()),
             provisioner: crate::remote(&env).and_then(|url| url.parse().ok()),
             in_flight: Cell::new(0),
             recycling: Cell::new(false),
@@ -364,7 +366,24 @@ impl SpaceWriterObject {
                     "space provisioning is unavailable",
                 );
             };
-            return match writer.create_space(provider, body).await {
+            let decision = {
+                let _update = self.creation_update.lock().await;
+                let storage = self.state.storage();
+                let key = "pending-space-creations-v1";
+                let mut pending = storage
+                    .get::<tonk_worker::agent_create::PendingCreations>(key)
+                    .await?
+                    .unwrap_or_default();
+                let decision = match pending
+                    .decide(body, dialog_ucan_core::time::Timestamp::now().to_unix())
+                {
+                    Ok(decision) => decision,
+                    Err(reason) => return failure(StatusCode::UNPROCESSABLE_ENTITY, reason),
+                };
+                storage.put(key, &pending).await?;
+                decision
+            };
+            return match writer.create_space(provider, decision).await {
                 Ok(answer) => worker::Response::from_json(&answer),
                 Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
             };
