@@ -160,6 +160,10 @@ pub enum RegistrationCommand {
     ProviderAdd,
     /// `/custody/add`
     CustodyAdd,
+    /// Provision with a sealed owner receipt.
+    CreateSpace,
+    /// Recover owner receipts.
+    CreatedSpaces,
     /// `/use/put/subscription/suspend`
     Suspend,
     /// `/use/put/subscription/resume`
@@ -183,6 +187,12 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
         segments if segments == ACTIVATE_COMMAND => Some(RegistrationCommand::Activate),
         segments if segments == PROVIDER_ADD_COMMAND => Some(RegistrationCommand::ProviderAdd),
         segments if segments == CUSTODY_ADD_COMMAND => Some(RegistrationCommand::CustodyAdd),
+        segments if segments == tonk_identity::created_space::CREATE => {
+            Some(RegistrationCommand::CreateSpace)
+        }
+        segments if segments == tonk_identity::created_space::LIST => {
+            Some(RegistrationCommand::CreatedSpaces)
+        }
         segments if segments == SUSPEND_COMMAND => Some(RegistrationCommand::Suspend),
         segments if segments == RESUME_COMMAND => Some(RegistrationCommand::Resume),
         segments if segments == ARCHIVE_COMMAND => Some(RegistrationCommand::Archive),
@@ -200,6 +210,8 @@ pub enum Answer {
     Customer(Receipt),
     /// `/provider/add` answers the provisioned consumer.
     Subscription(ConsumerReceipt),
+    /// Account-owned receipts.
+    CreatedSpaces(Vec<String>),
     /// The operator commands answer with nothing to say: the effect is
     /// the row, and the gate is where it shows.
     Done,
@@ -271,6 +283,77 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     )
                     .await?,
                 ))
+            }
+            Some(RegistrationCommand::CreatedSpaces) => {
+                let chain = self
+                    .verified_chain(
+                        &tonk_identity::created_space::LIST,
+                        Some(CEREMONY_WINDOW_SECONDS),
+                    )
+                    .await?;
+                Ok(Answer::CreatedSpaces(
+                    self.store
+                        .created_spaces(chain.subject().as_str())
+                        .await
+                        .map_err(internal)?,
+                ))
+            }
+            Some(RegistrationCommand::CreateSpace) => {
+                #[derive(serde::Deserialize)]
+                struct Deposit {
+                    handoff: String,
+                }
+                let chain = self
+                    .verified_chain(
+                        &tonk_identity::created_space::CREATE,
+                        Some(CEREMONY_WINDOW_SECONDS),
+                    )
+                    .await?;
+                let deposit: Deposit = deserialize_arguments(chain.arguments())?;
+                let invalid = || RegistrationError::Invalid {
+                    message: "invalid space handoff".into(),
+                };
+                if deposit.handoff.len() > 131072 {
+                    return Err(invalid());
+                }
+                let bytes = hex::decode(&deposit.handoff).map_err(|_| invalid())?;
+                let grant = DelegationChain::try_from(bytes.as_slice()).map_err(|_| invalid())?;
+                let handoff = tonk_identity::created_space::Handoff::read(grant, chain.subject())
+                    .await
+                    .map_err(|_| invalid())?;
+                let owner = chain.subject();
+                let authorized_agent = chain.proofs().first().and_then(|cid| chain.delegation(cid));
+                if !authorized_agent.is_some_and(|grant| {
+                    grant.issuer() == owner
+                        && grant.audience() == &handoff.agent
+                        && grant.meta().get(tonk_invite::HOME_ADDRESS)
+                            == handoff.owner_grant.meta(tonk_invite::HOME_ADDRESS)
+                        && grant.command().0 == tonk_identity::created_space::CREATE
+                }) {
+                    return Err(RegistrationError::Forbidden {
+                        message: "handoff must grant the agent authorized by the owner".into(),
+                    });
+                }
+                let consent = handoff.owner_grant.proofs().next().ok_or_else(invalid)?;
+                self.verify_consent(consent, &handoff.subject, owner)
+                    .await?;
+                if !self
+                    .store
+                    .add_created_space(
+                        handoff.subject.as_str(),
+                        owner.as_str(),
+                        self.now,
+                        &deposit.handoff,
+                    )
+                    .await
+                    .map_err(internal)?
+                {
+                    return Err(RegistrationError::ConsumerProvided);
+                }
+                Ok(Answer::Subscription(ConsumerReceipt {
+                    consumer: handoff.subject,
+                    provider: owner.clone(),
+                }))
             }
             Some(RegistrationCommand::ProviderAdd) => {
                 let chain = self

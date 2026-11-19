@@ -450,6 +450,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
             "tools/list" => {
                 let mut tools = tools();
                 tools.extend(super::view::tools());
+                tools.extend(super::creation::tools());
                 tools.extend(super::join::tools());
                 tools.extend(super::propose::tools());
                 Ok(json!({ "tools": tools }))
@@ -694,6 +695,7 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 }
                 answer
             }
+            super::propose::SHARE => self.share_link(arguments, verified, bearer, call).await,
             super::propose::LEAVE => {
                 self.leave_space(arguments, verified, bearer, session, call)
                     .await
@@ -701,6 +703,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
             super::propose::APPLY | super::propose::DISMISS => {
                 self.answer_proposal(name, arguments, verified, bearer, session, call)
                     .await
+            }
+            super::creation::CREATE | super::creation::CONFIRM => {
+                super::creation::call(name, arguments, verified, self.writers, bearer).await
             }
             super::join::JOIN | super::join::ACCEPT => super::join::call(
                 name,
@@ -838,6 +843,11 @@ impl<W: Writers> McpEndpoint<'_, W> {
             return answer;
         }
         let held = parsed(&body);
+        if held["request_passlink"] == true {
+            return self
+                .share_link(&json!({"space":space}), verified, bearer, call)
+                .await;
+        }
         let id = held["proposal"]["id"]
             .as_str()
             .unwrap_or_default()
@@ -864,6 +874,67 @@ impl<W: Writers> McpEndpoint<'_, W> {
             },
             "isError": false,
         })
+    }
+
+    /// The connection-bound writer also serves a card reopened on a new MCP transport.
+    async fn share_link(
+        &self,
+        arguments: &Value,
+        verified: &Verified,
+        bearer: &str,
+        call: &mut Call,
+    ) -> Value {
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|s| s.parse::<Did>().ok())
+        else {
+            return tool_result(json!("Name the space for the passlink."), true);
+        };
+        let reached = match self
+            .reach(verified, bearer, SHARE_SESSION, &space, true, call)
+            .await
+        {
+            Ok(reached) => reached,
+            Err(error) => return error,
+        };
+        if !reached.granted.as_ref().is_some_and(|g| g.share) {
+            return tool_result(
+                json!(if reached.context.home {
+                    "The agent's private space cannot be shared."
+                } else {
+                    "Reconnect the agent and choose full access & sharing for this space."
+                }),
+                true,
+            );
+        }
+        let Some(request) = space_request(
+            super::propose::SHARE_ROUTE,
+            reached.granted.as_ref(),
+            "application/json",
+            "{}",
+        ) else {
+            return tool_result(json!("The space's directory entry is malformed."), true);
+        };
+        let (status, body) = self
+            .send(verified, bearer, SHARE_SESSION, &space, request, call)
+            .await;
+        let held = parsed(&body);
+        let Some(id) = held["proposal"]["id"]
+            .as_str()
+            .filter(|_| status.is_success())
+        else {
+            return tool_result(json!("Could not prepare the passlink request."), true);
+        };
+        use super::card::{Card, Look};
+        let context = reached.context;
+        let say = format!("Make a passlink for {}?", context.place.label());
+        let args = json!({"space":space,"id":id,"share":true});
+        let card = Card::ask(context.place, context.role, &say, context.agent)
+            .entry("who can join", "anyone who has the link")
+            .entry("access", "full space access, including writing and sharing")
+            .answer("not now", Look::Ring, super::propose::DISMISS, args.clone())
+            .answer("make passlink", Look::Main, super::propose::APPLY, args);
+        json!({"content":[{"type":"text","text":format!("{say} Waiting for approval in the card.")}],"structuredContent":{"card":card.to_value()},"isError":false})
     }
 
     /// `tonk_leave_space`: hold leaving a granted space on the agent
@@ -949,6 +1020,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
         session: &str,
         call: &mut Call,
     ) -> Value {
+        let sharing = arguments["share"] == true;
+        let session = if sharing { SHARE_SESSION } else { session };
         let apply = name == super::propose::APPLY;
         let Some(space) = arguments["space"]
             .as_str()
@@ -966,6 +1039,9 @@ impl<W: Writers> McpEndpoint<'_, W> {
             Ok(reached) => reached,
             Err(refused) => return refused,
         };
+        if sharing && apply && !reached.granted.as_ref().is_some_and(|g| g.share) {
+            return tool_result(json!("This connection no longer has sharing access."), true);
+        }
         // A held leave names the space it leaves; read it while the agent
         // still holds it, so the answer can name it.
         let leaving = match arguments["leave"].as_str() {
@@ -1093,6 +1169,18 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         }
         let written = parsed(&body);
+        if let Some(link) = written["passlink"].as_str() {
+            let message = format!("Created a passlink for {label}. Copy it from the card.");
+            let receipt = super::card::Card::strip(
+                Some(context.place.clone()),
+                context.role,
+                &message,
+                context.agent.clone(),
+            );
+            let mut result = card(receipt, message, false);
+            result["_meta"] = json!({"passlink":link});
+            return result;
+        }
         let moved = written["revision_before"] != written["revision_after"];
         let evaluation = without_revisions(written);
         let receipt = super::propose::receipt(context, &evaluation, moved);
@@ -1407,6 +1495,9 @@ fn list_spaces(access: &AgentAccess) -> Vec<Value> {
             if let Some(expires) = access.expires {
                 entry["expires"] = json!(super::access::rfc3339(expires));
             }
+            if access.share {
+                entry["canShare"] = json!(true);
+            }
             if access.agent {
                 entry["home"] = json!(true);
                 entry["about"] = json!(HOME);
@@ -1494,6 +1585,9 @@ fn read_guide(uri: &str) -> Option<Value> {
         "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": body }],
     }))
 }
+
+/// Share proposals survive a fresh transport on the same OAuth connection.
+const SHARE_SESSION: &str = "tonk/share-links";
 
 /// How a listing describes the agent's own space to the model.
 const HOME: &str = "This connection's own space. Only this connection writes \

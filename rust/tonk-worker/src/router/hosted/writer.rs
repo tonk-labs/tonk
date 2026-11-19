@@ -221,6 +221,12 @@ pub struct SpaceWriter {
     refuse_push: AtomicBool,
 }
 
+/// Only a consumed sharing proposal can select the passlink operation.
+enum WriteOperation {
+    Request(Box<Request<Body>>),
+    Passlink,
+}
+
 impl SpaceWriter {
     /// Open the writer of `space` for `session`, its peers kept under the
     /// directory `root` (which nothing else may use), syncing with `remote`
@@ -311,12 +317,14 @@ impl SpaceWriter {
     /// [`Self::write`], key commands included: for a confirmed one.
     async fn write_any(&self, request: Request<Body>) -> Response<Body> {
         let mut steps = Steps::start();
-        let mut response = self.write_timed(request, &mut steps).await;
+        let mut response = self
+            .write_timed(WriteOperation::Request(Box::new(request)), &mut steps)
+            .await;
         steps.insert(response.headers_mut());
         response
     }
 
-    async fn write_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
+    async fn write_timed(&self, operation: WriteOperation, steps: &mut Steps) -> Response<Body> {
         let _turn = self.lock.lock().await;
         steps.lap("lock");
         if self.stale.load(Ordering::SeqCst) {
@@ -337,7 +345,23 @@ impl SpaceWriter {
         if let Err(error) = pulled {
             return error.answer("PULL_FAILED");
         }
-        let response = peer.call(self.on_branch(request)).await;
+        let response = match operation {
+            WriteOperation::Request(request) => peer.call(self.on_branch(*request)).await,
+            WriteOperation::Passlink => {
+                let tonk = peer.state.read().await.clone();
+                match super::super::create_invite::hosted_passlink(
+                    &tonk,
+                    &self.space,
+                    &self.agent,
+                    &self.remote,
+                )
+                .await
+                {
+                    Ok(url) => json_answer(serde_json::json!({"passlink":url})),
+                    Err(error) => return axum::response::IntoResponse::into_response(error),
+                }
+            }
+        };
         if !response.status().is_success() {
             steps.lap("eval");
             return response;
@@ -508,6 +532,10 @@ impl SpaceWriter {
                     ),
                 );
             }
+            // Notation and the named MCP tool use the same connection-bound share card.
+            if key.name == "tonk/invite" {
+                return json_answer(serde_json::json!({"request_passlink":true}));
+            }
         }
         let revision = evaluation["revision_before"].clone();
         let now = dialog_ucan_core::time::Timestamp::now().to_unix();
@@ -519,6 +547,19 @@ impl SpaceWriter {
         };
         let (id, expires) = self.proposals.hold(document, revision, seen, effect, now);
         json_answer(super::propose::held(&id, expires, evaluation))
+    }
+
+    /// Hold a dedicated passlink request without depending on the space's notation library.
+    pub fn propose_passlink(&self) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(
+            String::new(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            super::propose::Effect::Passlink,
+            now,
+        );
+        json_answer(serde_json::json!({"proposal":{"id":id,"expires":expires}}))
     }
 
     /// Write the change held as `id`, once, as [`Self::write`] does, and
@@ -555,6 +596,11 @@ impl SpaceWriter {
                 })),
                 Err(error) => failure(StatusCode::BAD_GATEWAY, "LEAVE_FAILED", &error),
             };
+        }
+        if taken.effect == super::propose::Effect::Passlink {
+            return self
+                .write_timed(WriteOperation::Passlink, &mut Steps::start())
+                .await;
         }
         if taken.effect == super::propose::Effect::Command {
             // A key command alone: what the person confirmed is the command
@@ -1284,3 +1330,171 @@ impl SpaceWriter {
 
 #[cfg(test)]
 mod tests;
+
+impl SpaceWriter {
+    async fn initialize_created_space(
+        &self,
+        space: &Did,
+        name: &str,
+        provider: &url::Url,
+    ) -> anyhow::Result<()> {
+        use super::super::repository;
+        use tonk_schema::prelude::DidExt as _;
+        // The directory entry is already visible. Another peer may write to the
+        // new space during seeding, so give the initializer its own origin.
+        let initializer = WriterKey::derive(&WriterSession {
+            seed: self.key.seed.clone(),
+            powerline: self.key.chain.clone(),
+            mcp_session: space.to_string(),
+            home: self.home.clone(),
+        })
+        .await?;
+        let peer = open_peer(
+            &initializer,
+            &format!("{}/create-{space}", self.root),
+            space,
+            provider,
+            (&self.agent, &self.home),
+        )
+        .await?;
+        let initialized = async {
+            let state = peer.state.read().await;
+            let own = repository::repository_name_claims(space, name, None)?;
+            let library = include_str!("../../../../tonk-core/assets/library/core.yaml");
+            repository::install_fresh_seed(&state, space.repo_key(), BRANCH, library, &own).await?;
+            drop(state);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/repository/{space}/branch/{BRANCH}/sync/push"))
+                .body(Body::empty())?;
+            let response = peer.call(request).await;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "push returned {}",
+                response.status()
+            );
+            Ok(())
+        }
+        .await;
+        peer.close().await;
+        initialized
+    }
+
+    /// Handle a proposal on the session writer that owns its confirmation.
+    pub async fn create_space(
+        &self,
+        provider: &url::Url,
+        decision: super::creation::CreationDecision,
+    ) -> anyhow::Result<serde_json::Value> {
+        use super::card::{Agent, Card, Look, Place, Role};
+        use super::creation::{CONFIRM, CreationDecision};
+        use dialog_ucan_core::promise::Promised;
+        use serde_json::json;
+        use tonk_identity::created_space::{self, Handoff};
+        anyhow::ensure!(
+            self.space == self.agent,
+            "only an agent's own writer can create a space"
+        );
+        let agent = Agent {
+            did: self.agent.to_string(),
+            name: None,
+        };
+        let result = |text: String, card: Card, space: Option<String>| json!({"content":[{"type":"text","text":text}],"structuredContent":{"card":card.to_value(),"space":space},"isError":false});
+        match decision {
+            CreationDecision::Ask { id, name } => {
+                let say = format!(
+                    "Create {name}? You will own it. This agent will have read and write access until you revoke it or its grant expires."
+                );
+                let card = Card::ask(
+                    Place {
+                        did: String::new(),
+                        name: Some(name),
+                        item: None,
+                    },
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                )
+                .answer(
+                    "Cancel",
+                    Look::Link,
+                    CONFIRM,
+                    json!({"id":id,"approve":false}),
+                )
+                .answer(
+                    "Create space",
+                    Look::Main,
+                    CONFIRM,
+                    json!({"id":id,"approve":true}),
+                );
+                Ok(result(say, card, None))
+            }
+            CreationDecision::Cancel => Ok(result(
+                "Cancelled".into(),
+                Card::strip(None, None, "Cancelled", agent),
+                None,
+            )),
+            CreationDecision::Approve { name, permission } => {
+                let bytes = hex::decode(permission)?;
+                let permission = DelegationChain::try_from(bytes.as_slice())?;
+                anyhow::ensure!(
+                    permission.audience() == &self.agent
+                        && permission.ability() == "/provider/create-space",
+                    "invalid creation permission"
+                );
+                anyhow::ensure!(
+                    tonk_invite::home_address(&permission)?.as_ref() == Some(provider),
+                    "creation permission is for another service"
+                );
+                let owner = permission.issuer().clone();
+                let receipt = created_space::mint(&owner, &self.agent, &name, provider).await?;
+                let encoded = hex::encode(receipt.to_bytes()?);
+                let handoff = Handoff::read(receipt, &owner).await?;
+                let mut chain = permission;
+                for proof in self.key.chain.proofs() {
+                    chain = chain.push(proof.clone())?;
+                }
+                let key = Ed25519Signer::import(&*self.key.seed)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                let invocation = tonk_identity::request::build_device_invocation(
+                    key,
+                    &chain,
+                    created_space::CREATE.map(str::to_string).to_vec(),
+                    [("handoff".into(), Promised::String(encoded))]
+                        .into_iter()
+                        .collect(),
+                )
+                .await?;
+                super::super::http::post_cbor(provider, &invocation).await?;
+                let space = handoff.subject.to_string();
+                let entry = super::access::DirectoryEntry {
+                    space: handoff.subject.clone(),
+                    name: Some(name.clone()),
+                    address: Some(provider.to_string()),
+                };
+                self.retain_grants(&handoff.grants,&[entry]).await.map_err(|e|anyhow::anyhow!("Space {space} was provisioned for its owner, but saving the agent grants failed: {e}"))?;
+                self.initialize_created_space(&handoff.subject, &name, provider)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("Created {space}, but initializing its library failed: {e}")
+                    })?;
+                let say = format!(
+                    "Created {}. You own it and the agent has read and write access.",
+                    name
+                );
+                let card = Card::strip(
+                    Some(Place {
+                        did: space.clone(),
+                        name: Some(name),
+                        item: None,
+                    }),
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                );
+                Ok(result(say, card, Some(space)))
+            }
+        }
+    }
+}

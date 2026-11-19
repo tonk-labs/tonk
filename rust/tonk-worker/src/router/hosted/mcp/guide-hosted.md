@@ -18,6 +18,10 @@ A write to a `read` space is refused: ask the person to grant read and write
 rather than retrying or writing somewhere else. If you need a space that is not
 listed, ask the person to grant it to you.
 
+## Creating a space
+
+Call `tonk_create_space` with the requested name. The person confirms in the chat card. Wait for its receipt before using the new space. The person owns it and can revoke your read and write access in Tonk.
+
 ## Joining a space from a link
 
 When the person gives you a Tonk invite link (`/space/...#...`, `/@/...`, or
@@ -28,6 +32,13 @@ person; say so when you ask. Do not call it again or claim you joined until the
 card tells you; then the space is in `tonk_list_spaces`. If the host shows no
 card, ask the person to grant you the space in Tonk at {origin}. A link is a
 key to the space: never repeat it back or write it into a space.
+
+When someone asks for a share link that lets other people join, call
+`tonk_create_share_link` with the space's subject. Look for `canShare: true` in
+`tonk_list_spaces`. The person approves in chat and copies the passlink from the
+receipt. Anyone with it can join, write and share. If sharing is missing,
+the person can reconnect the agent and choose full access & sharing for that
+space. A view URL gives no access by itself.
 
 When the person asks you to leave a space granted to you, call
 `tonk_leave_space` with its subject. It leaves nothing: it shows a card, and

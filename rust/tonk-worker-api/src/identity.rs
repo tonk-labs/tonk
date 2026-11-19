@@ -162,18 +162,17 @@ pub struct AgentAuthorization {
     /// again to an app of the same provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The spaces the agent may reach.
+    /// Spaces chosen during authorization.
     pub spaces: Vec<AgentSpaceChoice>,
 }
 
-/// One space an agent may reach, and how: `read`, or `write` for read
-/// and write.
+/// A space and its approved level of access.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSpaceChoice {
     /// The space's routing key.
     pub key: String,
-    /// `read` or `write`.
+    /// `read`, `write`, or `share` for full space use including passlinks.
     pub access: String,
 }
 

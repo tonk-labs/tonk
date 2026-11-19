@@ -190,6 +190,25 @@ test('applying swaps the ask for a receipt that starts with you and the bot, and
   }
 });
 
+test('the approved passlink can be copied without sending it to the model', async () => {
+  const passlink = 'https://tonk.example/space/example#test-fragment';
+  const result = { ...strip('Created a passlink', false), _meta: { passlink } };
+  const shown = await showCard({ result: ask, answers: { tonk_proposal_apply: result } });
+  try {
+    await shown.card().click('button:text-is("change 2 items")');
+    const frame = shown.card();
+    await frame.waitForSelector('button:text-is("copy passlink")');
+    await frame.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: undefined }));
+    await frame.click('button:text-is("copy passlink")');
+    assert.equal(await frame.locator('input[aria-label="Passlink to copy"]').inputValue(), passlink);
+    const context = (await shown.asked()).filter((message) => message.method === 'ui/update-model-context');
+    assert.equal(context.length, 1);
+    assert.ok(!JSON.stringify(context).includes(passlink));
+  } finally {
+    await shown.close();
+  }
+});
+
 test('keep as is dismisses, and its receipt names no agent', async () => {
   const shown = await showCard({ result: ask, answers: ANSWERS });
   try {

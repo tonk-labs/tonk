@@ -52,6 +52,7 @@ erDiagram
         TEXT provider FK "DID (did:key): the customer who pays; required"
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
+        TEXT creation_grant "signed ownership receipt with a space key encrypted for the customer"
         INTEGER expires_at "when the subscription expires; null never does"
         INTEGER archived_at "when the data was dropped for non-payment; the row stays for billing"
         TEXT suspend_code "set while suspended; the reason a client matches on"

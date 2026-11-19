@@ -8,7 +8,6 @@
 //! service refuses stale ones.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dialog_credentials::Signer;
@@ -23,9 +22,8 @@ use dialog_varsig::Did;
 
 /// Build a device-signed account-service invocation container.
 ///
-/// `link` is the stored `root → device` delegation: its issuer is the
-/// account root (the invocation subject and audience), and its single
-/// proof is attached so the service can bind the device to the account.
+/// The account is the root issuer. Attach the ordered proof path to
+/// the signing device or scoped agent writer.
 pub async fn build_device_invocation(
     device: impl Into<Signer>,
     link: &DelegationChain,
@@ -33,31 +31,19 @@ pub async fn build_device_invocation(
     arguments: BTreeMap<String, Promised>,
 ) -> Result<Vec<u8>> {
     let root_did = link.issuer().clone();
-    debug_assert!(
-        link.proofs().count() == 1,
-        "build_device_invocation expects a single-hop root -> device link"
-    );
-    let delegation = link
-        .proofs()
-        .last()
-        .context("account link carries no delegation to prove the device")?
-        .clone();
-    let cid = delegation.to_cid();
-
     let invocation = InvocationBuilder::new()
         .issuer(device.into())
         .audience(&root_did)
         .subject(&root_did)
         .command(command)
         .arguments(arguments)
-        .proofs(vec![cid])
+        .proofs(link.proof_cids().to_vec())
         .expiration(Timestamp::five_minutes_from_now())
         .try_build()
         .await
         .context("failed to sign the device invocation")?;
 
-    let mut proofs = HashMap::new();
-    proofs.insert(cid, Arc::new(delegation));
+    let proofs = link.export().collect();
     InvocationChain::new(invocation, proofs)
         .to_bytes()
         .context("failed to serialize the device invocation")

@@ -74,6 +74,8 @@ pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Res
                 Some(
                     RegistrationCommand::ProviderAdd
                     | RegistrationCommand::CustodyAdd
+                    | RegistrationCommand::CreateSpace
+                    | RegistrationCommand::CreatedSpaces
                     | RegistrationCommand::Suspend
                     | RegistrationCommand::Resume
                     | RegistrationCommand::Archive,
@@ -139,7 +141,7 @@ async fn replicate_verdicts(answer: &crate::registration::Answer, env: &Env) {
         Answer::Customer(receipt) => receipt.customer.as_str().to_string(),
         // The operator commands answer nothing; their consumer rides
         // out the cached verdict's validity instead.
-        Answer::Done => return,
+        Answer::Done | Answer::CreatedSpaces(_) => return,
     };
     let kv = servability_kv(env);
     let now = Date::now().as_millis() / 1_000;

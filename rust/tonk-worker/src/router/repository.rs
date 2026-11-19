@@ -3554,7 +3554,7 @@ async fn run_pause_sync(
 ///
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
-fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
+pub(super) fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
@@ -5392,7 +5392,7 @@ fn claim_identity(claim: &super::claim::RawClaim) -> (String, String, String) {
 
 /// The claims naming a new space, which ride its first install's record
 /// commit rather than the install commit an upgrade reverts.
-fn repository_name_claims(
+pub(super) fn repository_name_claims(
     subject: &Did,
     display_name: &str,
     description: Option<&str>,
@@ -5612,7 +5612,11 @@ const SEED_NONE: &str = "seed:none";
 /// A missing or unreadable library is a deployment fault, not a
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     String::from_utf8(fetch_library_bytes(url).await?)
         .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
@@ -5622,7 +5626,11 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
 /// library document includes (see [`super::library`]). Read from this
 /// worker's immutable generation first, then from the network with the
 /// HTTP cache sidestepped.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -5698,18 +5706,26 @@ async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
     fetch_standard_library(url).await
 }
 
-/// The native sibling of the fetch above: the same documents the
-/// service worker fetches from its served assets are compiled in from
+/// Native and hosted workers have no served asset directory. The documents
+/// the browser fetches from its service worker are compiled in from
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+)))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     embedded_standard_library(url)
 }
 
 #[cfg(any(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    all(target_arch = "wasm32", target_os = "unknown", test)
+    not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    )),
+    test
 ))]
 fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
@@ -5751,7 +5767,11 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 
 /// A language (`library::LANGUAGES`): generated, so not listed above;
 /// `tonk-library` bundles every document in a library subdirectory.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+)))]
 fn embedded_language(url: &str) -> Option<String> {
     let path = url
         .strip_prefix("/library/")
@@ -5762,7 +5782,11 @@ fn embedded_language(url: &str) -> Option<String> {
 
 /// The wasm tests embed no bundled library: a service worker fetches the
 /// served one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 fn embedded_language(_url: &str) -> Option<String> {
     None
 }
