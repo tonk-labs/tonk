@@ -1192,6 +1192,69 @@ async fn read_passkeys(
     Ok(passkeys)
 }
 
+/// When this account's recovery phrase was set up, or `None` when it has
+/// none. Joined the way [`read_passkeys`] joins: the account's envelopes
+/// by sender, then the phrase row on each envelope's custody DID.
+///
+/// A phrase cannot be revoked, so this is the whole of why a second one
+/// is refused: the first would keep working beside it.
+pub(crate) async fn recovery_phrase(tonk: &TonkState) -> Result<Option<u64>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let subject = super::identity::local_root(tonk)
+        .await
+        .map_err(|error| TonkWorkerError::NotFound(format!("no account is signed in: {error}")))?
+        .root_did;
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open account state: {error}")))?;
+    let envelopes: Vec<SecretMessage> = branch
+        .handle()
+        .query()
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::var("to"),
+            message: Term::var("message"),
+            from: Term::var("from"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("read the account envelopes: {error:?}"))
+        })?;
+    for envelope in envelopes {
+        if envelope
+            .from
+            .as_ref()
+            .is_none_or(|sender| sender.0 != subject.this())
+        {
+            continue;
+        }
+        let rows: Vec<tonk_schema::RecoveryPhrase> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::RecoveryPhrase> {
+                this: Term::from(envelope.to.0.clone()),
+                created_at: Term::var("created_at"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("read the recovery phrase: {error:?}"))
+            })?;
+        if let Some(row) = rows.into_iter().next() {
+            return Ok(Some(row.created_at.0));
+        }
+    }
+    Ok(None)
+}
+
 /// The most recently created passkey's metadata, for the account panel.
 ///
 /// Best-effort by design — the dashboard has an explicit unavailable state and
@@ -4133,7 +4196,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stale_profile_library() -> String {
         const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-        let marker = "<hub-collection class=\"stack chrome\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
+        let marker = "<hub-collection class=\"hub-rows\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
         let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
         let historical = CURRENT.replacen(marker, &stale, 1);
         assert_ne!(historical, CURRENT, "the historical fixture must differ");

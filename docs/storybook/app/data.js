@@ -241,12 +241,12 @@ window.STORYBOOK_DATA = {
       "variants": "Ready/unhydrated/revoked; Enter/blur; same/different value."
     },
     {
-      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration.",
-      "gaps": "Whole ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
+      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration. Worker: an added passkey is one /custody/add: the service writes its custody cell and then provisions its custody DID under the account, so a failed write leaves nothing provisioned and a new device can open the account with it; an account that is not activated is refused before the passkey is asked for, and nothing is queued.",
+      "gaps": "Whole-browser proof that the added passkey alone opens the account on a fresh browser, duplicate credential, fact/publish failure, reload and retry.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B14",
       "title": "Add another passkey.",
-      "variants": "Active customer; missing/legacy passkey metadata; PRF/cancel/error."
+      "variants": "Active customer; customer not yet activated; missing/legacy passkey metadata; PRF/cancel/error."
     },
     {
       "evidence": "Partial DOM rendering.",
@@ -255,6 +255,22 @@ window.STORYBOOK_DATA = {
       "id": "ACCT-B15",
       "title": "Inspect account summary and passkey facts.",
       "variants": "Service online/offline; metadata present/legacy; account unhydrated."
+    },
+    {
+      "evidence": "Whole real-browser flow (it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser) and the activation gate (it_offers_no_recovery_phrase_before_activation); worker authority tests refuse an unactivated account and a second phrase with nothing written, and the command refuses both before the passkey is asked for; access-service test provisions and publishes a phrase's cell and reads it back; identity tests for the BIP-39 encoding and the phrase custodian.",
+      "gaps": "Passkey cancel and failure on the card, provisioning or publish failure after the words were shown, reload mid-card, the settings card after sync to another device.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B16",
+      "title": "Set up the account's recovery phrase from settings: acknowledge it can never be revoked, write down (or copy) the 12 words the top document shows once in a centred dialog, enter three back, confirm with the passkey.",
+      "variants": "Active customer with no phrase; customer not yet activated; a phrase already set up; passkey cancel/error."
+    },
+    {
+      "evidence": "Whole real-browser sign-in reaching the same account root (it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser); identity tests refuse a wrong word count, an unknown word and a bad checksum before anything is fetched; approval refuses a phrase that opens another account.",
+      "gaps": "Whole-browser agent approval with the phrase, a phrase of another account at sign-in, sign-in before the phrase's cell is published.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B17",
+      "title": "Sign in on a fresh browser with only the recovery phrase (\"use a recovery phrase instead\" under \"log in with passkey\", which widens the dialog and gives the words a field sized for twelve), and approve an agent, remove one or delete the account with the phrase on a browser holding no passkey.",
+      "variants": "Fresh browser with no passkey; mistyped, unknown or reordered words; a phrase of another account; service offline."
     },
     {
       "evidence": "Partial unit/integration coverage.",
@@ -1029,7 +1045,8 @@ window.STORYBOOK_DATA = {
         "ACCT-B02",
         "ACCT-B05",
         "ACCT-B06",
-        "ACCT-B07"
+        "ACCT-B07",
+        "ACCT-B17"
       ],
       "name": "Create account",
       "source_paths": [
@@ -1095,12 +1112,14 @@ window.STORYBOOK_DATA = {
         "ACCT-B12",
         "ACCT-B13",
         "ACCT-B14",
-        "ACCT-B15"
+        "ACCT-B15",
+        "ACCT-B16"
       ],
       "name": "Account settings",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/styles.css"
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/custody_relay.rs"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",

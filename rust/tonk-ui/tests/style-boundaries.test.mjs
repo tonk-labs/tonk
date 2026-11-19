@@ -46,3 +46,7 @@ test("the in-space account ceremony wears the FABB's bright twin in both schemes
     "the backdrop dims the page in the page's own scheme",
   );
 });
+
+test("the guest iframe takes no margin, so the page is never taller than the window", () => {
+  assert.match(appStyles, /tonk-site > iframe \{\s*margin: 0;\s*\}/);
+});

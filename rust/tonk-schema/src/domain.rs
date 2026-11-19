@@ -349,6 +349,20 @@ pub mod recovery {
     pub struct DisplayName(pub String);
 }
 
+/// Attributes of an account's recovery phrase, keyed on the custody DID
+/// the phrase derives. A namespace of its own so a phrase never reads as
+/// a passkey: the passkey list requires `xyz.tonk.recovery` attributes a
+/// phrase does not have.
+pub mod recovery_phrase {
+    use super::Attribute;
+
+    /// When the phrase was set up, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery.phrase")]
+    #[pick(last)]
+    pub struct CreatedAt(pub u64);
+}
+
 pub mod device {
     use super::{Attribute, Entity};
 
@@ -1636,6 +1650,21 @@ pub mod command {
             pub struct Account(pub Entity);
         }
 
+        /// `tonk/add-recovery-phrase` — seal the account under the
+        /// recovery phrase the page staged.
+        pub mod add_recovery_phrase {
+            use dialog_corpus::Entity;
+            use dialog_query::Attribute;
+
+            /// The account to set a recovery phrase up for. As with
+            /// [`super::add_passkey::Account`], the verb carries no data
+            /// (the words never ride on a command), so this is what makes
+            /// it nameable.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.add-recovery-phrase")]
+            pub struct Account(pub Entity);
+        }
+
         /// `tonk/forget-invite` — drop a space's invite row once its
         /// link has been copied.
         pub mod forget_invite {
@@ -2447,6 +2476,19 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
+
+    /// When the invitation was minted, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct MintedAt(pub u64);
+
+    /// Where the invitation lists among its space's links, unix
+    /// milliseconds: the place of the link it replaced.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct ListedAt(pub u64);
 }
 
 /// Attributes that live on [`Remote`] entities only.

@@ -400,11 +400,28 @@ fn seed_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
 /// Read from the raw facts rather than declared on [`CreateSpace`] for
 /// the same reason the remote is: the command is matched name-only, so a
 /// declared field would make every create that omits it fail to decode.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 
+/// Whether the create asked, explicitly, to stay where it is: an `open`
+/// field that says no. A create that carries no `open` field still lands
+/// its creator in the new space, as every create did before the hub's
+/// inline row asked to stay.
+fn stays_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
+    use dialog_corpus::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
+        .is_some_and(|artifact| match &artifact.is {
+            Value::Boolean(open) => !*open,
+            Value::String(text) => matches!(text.trim(), "false" | "0"),
+            Value::Entity(uri) => uri.to_string() == "case:false",
+            _ => false,
+        })
+}
+
 /// Whether the create should navigate the caller into the new space.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(test)]
 fn open_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
     use dialog_corpus::Value;
 
@@ -586,6 +603,8 @@ pub(crate) struct CreateSpaceRequest {
     template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
+    /// The create asked to stay where it is rather than open the space.
+    stay: bool,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -623,6 +642,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
                     dialog_corpus::Value::Entity(value) => value.to_string(),
                     _ => String::new(),
                 }),
+            stay: stays_from_facts(facts),
         })
     }
 }
@@ -816,7 +836,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    doesn't wait on the network; the attach continues in the
     //    worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
+    if !request.stay {
+        crate::router::navigate::notify_navigate(env.client(), &href);
+    }
     report_space_creation(env.state(), &receipt, "created", &href).await;
     // Navigation must not wait for every Hub subscription to re-query.
     // The seed and initialized status are already committed at this point.
@@ -2298,7 +2320,7 @@ async fn run_invite(
     // use), so opening the Hub replicated the whole account. The state is
     // this device's view of a click it made; nothing about it needs the
     // space's branch. See `plan/share-intent.md`.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
@@ -2408,18 +2430,19 @@ async fn publish_share_blocked<'a>(
     use tonk_schema::command::ShareBlocked;
     use tonk_schema::domain::share;
 
+    let blocked = ShareBlocked {
+        this: subject.clone(),
+        blocked: share::Blocked(code.to_owned()),
+        detail: share::Detail(detail.to_owned()),
+        time: share::Time(time),
+    };
     let tonk = state.read().await;
     if let Err(error) = tonk
         .reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
         .overlay()
-        .assert(ShareBlocked {
-            this: subject.clone(),
-            blocked: share::Blocked(code.to_owned()),
-            detail: share::Detail(detail.to_owned()),
-            time: share::Time(time),
-        })
+        .assert(blocked.clone())
         .write()
         .perform(&tonk.operator)
         .await
@@ -2427,26 +2450,34 @@ async fn publish_share_blocked<'a>(
         log!("failed to publish share refusal for '{repo_name}': {error}");
     }
 
+    // The share control reads profile main, not the space: every
+    // subscription on one element shares the element's routing
+    // context, and the control's is profile main (see `PROFILE_WITH`
+    // in tonk-fab's share). A refusal only on the space never reached
+    // it, so every refused click waited out the control's timeout.
+    publish_share_fact(&tonk, blocked).await;
+
     // The same refusal in the shape the share control subscribes to, on
     // profile main for the reason the grant is. Only a terminal reason
     // becomes a terminal status: a refusal the user can repair (no
     // account yet, no remote yet) leaves the request open, because the
     // click has not finished failing — it is waiting on something.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
     )
     .await;
 }
 
-/// Publish the share control's view of an invite onto PROFILE main's
-/// overlay, keyed on the space's subject.
+/// Publish the share control's view of an invite (its state, or the
+/// refusal that ends it) onto PROFILE main's overlay, keyed on the
+/// space's subject.
 ///
 /// Overlay because the url carries the membership seed in its fragment
 /// and must not reach storage, and because the row is a per-session view
 /// of one click rather than a durable record — the durable record of a
 /// minted invite is `Invitation`, on the space.
-async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::InviteState) {
+async fn publish_share_fact<S: dialog_corpus::Statement>(tonk: &TonkState, fact: S) {
     let main = match tonk
         .reactor
         .profile_repository()
@@ -2460,7 +2491,7 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
             return;
         }
     };
-    main.state.assert_overlay(state);
+    main.state.assert_overlay(fact);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -8801,6 +8832,33 @@ mod remote_from_facts_tests {
         }
     }
 
+    /// The hub's inline row says `open=false`: the creator stays on the
+    /// hub. A create with no `open` field still opens the space.
+    #[test]
+    fn it_stays_only_when_the_create_says_not_to_open() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(
+            !super::stays_from_facts(&artifacts(changes)),
+            "a create carrying no `open` field still opens the space"
+        );
+        for (text, stays) in [("false", true), ("0", true), ("true", false), ("", false)] {
+            let of: Entity = "did:key:zCreate".parse().expect("entity");
+            let mut changes = Changes::new();
+            name_fact(&mut changes, &of);
+            the!("xyz.tonk.command.create-space/open")
+                .of(of)
+                .is(text.to_string())
+                .assert(&mut changes);
+            assert_eq!(
+                super::stays_from_facts(&artifacts(changes)),
+                stays,
+                "`open={text:?}`"
+            );
+        }
+    }
+
     #[test]
     fn it_reads_a_string_remote() {
         let of: Entity = "did:key:zCreate".parse().expect("entity");
@@ -10540,7 +10598,7 @@ route!: &foreign-profile-route
             "stale facet is gone: {after}"
         );
         assert!(
-            after.contains("create new space"),
+            after.contains("hub-rows"),
             "current facet resolves: {after}"
         );
         let mut delivered = Vec::new();
@@ -10552,7 +10610,7 @@ route!: &foreign-profile-route
         let asserted = serde_json::to_string(&delivered["asserted"]).unwrap();
         let retracted = serde_json::to_string(&delivered["retracted"]).unwrap();
         assert!(
-            !asserted.contains("no spaces yet") && asserted.contains("create new space"),
+            !asserted.contains("no spaces yet") && asserted.contains("hub-rows"),
             "the mounted view subscription receives the repaired facet: {delivered}"
         );
         assert!(
@@ -10577,7 +10635,10 @@ route!: &foreign-profile-route
             .await
             .expect("profile records resolve");
         assert_eq!(profile.len(), 1, "only the current profile record remains");
-        assert_eq!(profile[0].installed.this.to_string(), seed_version(CURRENT));
+        assert_eq!(
+            profile[0].installed.this.to_string(),
+            crate::router::library::version(CURRENT).await
+        );
         let assertions = assertions_at_version(&tonk, &session, &profile[0].installed.version.0)
             .await
             .expect("the recorded install revision exists");
@@ -11474,7 +11535,8 @@ mod tests {
         let record = installed()
             .await
             .expect("the first boot records its install");
-        assert_eq!(record.seed.to_string(), super::seed_version(&first));
+        let first_version = crate::router::library::version(&first).await;
+        assert_eq!(record.seed.to_string(), first_version);
         let seeded = head();
 
         super::reconcile_profile_library_from(&tonk, first.clone())
@@ -11496,7 +11558,10 @@ mod tests {
             .expect("a changed library upgrades");
         assert_ne!(head(), seeded, "an upgrade commits");
         let upgraded = installed().await.expect("the upgrade records itself");
-        assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
+        assert_eq!(
+            upgraded.seed.to_string(),
+            crate::router::library::version(&second).await
+        );
         let running: Vec<tonk_schema::SeedInstalled> = session
             .handle()
             .query()
@@ -11516,7 +11581,7 @@ mod tests {
         );
         assert_eq!(
             running[0].prior.0.to_string(),
-            super::seed_version(&first),
+            first_version,
             "the upgrade records what it replaced"
         );
         let paths = paths().await;
@@ -13021,6 +13086,27 @@ block/insert!:
         );
     }
 
+    /// A refusal reaches the share control where it listens: profile main.
+    ///
+    /// The control reads every share fact through one routing context,
+    /// profile main. With the refusal only on the space, a signed-out
+    /// copy-link click in the space bar waited out its 15-second timeout and
+    /// said "couldn't copy" instead of asking the person to sign in.
+    #[dialog_common::test]
+    async fn it_publishes_the_refusal_where_the_share_control_reads() {
+        let (_app, state, key) = fresh_repo_signed_out("test-refusal-on-profile").await;
+
+        run_invite_with_time(&state, &key, 5678.0).await;
+
+        let blocked = profile_share_blocked_rows(&state).await;
+        assert_eq!(blocked.len(), 1, "one refusal on profile main: {blocked:?}");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+        );
+        assert_eq!(blocked[0].2, 5678.0, "echoes the command's timestamp");
+    }
+
     /// POST a remote config to `key`, exactly as the topbar and the share
     /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
@@ -13149,6 +13235,38 @@ block/insert!:
         let env =
             crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
         let _ = super::run_invite(&env, repo, time).await;
+    }
+
+    /// Read back every `ShareBlocked` row on profile main (overlay
+    /// included) as `(blocked, detail, time)`.
+    async fn profile_share_blocked_rows(state: &AppState) -> Vec<(String, String, f64)> {
+        use dialog_query::{Output as _, Term};
+        use tonk_schema::command::ShareBlocked;
+
+        let tonk = state.read().await;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main opens");
+        let rows: Vec<ShareBlocked> = main
+            .handle()
+            .query()
+            .select(dialog_query::Query::<ShareBlocked> {
+                this: Term::var("this"),
+                blocked: Term::var("blocked"),
+                detail: Term::var("detail"),
+                time: Term::var("time"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("share-blocked query");
+        rows.into_iter()
+            .map(|row| (row.blocked.0, row.detail.0, row.time.0))
+            .collect()
     }
 
     /// Read back every `ShareBlocked` row on the repo's content branch overlay
@@ -14275,14 +14393,17 @@ route!: &probe/dropped
     #[dialog_common::test]
     async fn it_evaluates_both_shipped_libraries() {
         const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-        const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        // Sent as plain notation, which has no location to include from.
+        let profile = crate::router::library::inline_includes(include_str!(
+            "../../../tonk-core/assets/library/profile.yaml"
+        ));
 
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
 
         for (name, library, url) in [
             ("core", CORE, super::STANDARD_LIBRARY_URL),
-            ("profile", PROFILE, super::PROFILE_LIBRARY_URL),
+            ("profile", profile.as_str(), super::PROFILE_LIBRARY_URL),
         ] {
             let key = crate::router::tests::put_repo(&app, &format!("eval-{name}")).await;
             let tonk = state.read().await;

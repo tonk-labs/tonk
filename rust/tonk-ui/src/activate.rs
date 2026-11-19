@@ -15,11 +15,9 @@ use custom_elements::CustomElement;
 use js_sys::Reflect;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{HtmlButtonElement, HtmlElement, window};
+use web_sys::{HtmlElement, window};
 
-use crate::user_error::{self, AccountAction};
-
-const STYLE_ID: &str = "tonk-activate-styles";
+use crate::user_error::AccountAction;
 
 /// The top-document activation element.
 #[derive(Default)]
@@ -38,11 +36,10 @@ impl CustomElement for TonkActivate {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        this.set_inner_html(include_str!("activate.html"));
+        this.set_inner_html(&crate::task_page::page(include_str!("activate.html")));
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        ensure_stylesheet();
         if Reflect::get(this.as_ref(), &"__tonkActivateBound".into())
             .map(|value| value.is_truthy())
             .unwrap_or(false)
@@ -70,23 +67,6 @@ pub fn register() {
     TonkActivate::define("tonk-activate");
 }
 
-fn ensure_stylesheet() {
-    let Some(document) = window().and_then(|window| window.document()) else {
-        return;
-    };
-    if document.get_element_by_id(STYLE_ID).is_some() {
-        return;
-    }
-    let Ok(style) = document.create_element("style") else {
-        return;
-    };
-    let _ = style.set_attribute("id", STYLE_ID);
-    style.set_text_content(Some(include_str!("account.css")));
-    if let Some(head) = document.head() {
-        let _ = head.append_child(&style);
-    }
-}
-
 /// The invocation bytes the link carries, from `?ucan=<base64url>`.
 fn link_invocation() -> Result<Vec<u8>, String> {
     let search = window()
@@ -105,18 +85,23 @@ fn link_invocation() -> Result<Vec<u8>, String> {
     })
 }
 
-fn set_status(host: &HtmlElement, message: &str) {
-    if let Ok(Some(status)) = host.query_selector("#activate-working") {
-        status.set_text_content(Some(message));
-    }
-}
+/// What a failed activation says (gooey task-page.html #activate-failed):
+/// what stayed, and what to do. The link carries no address, so it names
+/// "your email" where the mock names it; the service's own words go to the
+/// console.
+const NOT_CONFIRMED: &str =
+    "Tonk couldn’t confirm your email, so nothing changed. Check your connection and try again.";
 
+/// A failure is the same step again, the reason last in the form, just
+/// above the button; focus goes to it, so it is what gets read out.
 fn show_error(host: &HtmlElement, message: &str) {
     if let Ok(Some(error)) = host.query_selector("#activate-error") {
         error.set_text_content(Some(message));
         let _ = error.remove_attribute("hidden");
+        if let Ok(error) = error.dyn_into::<HtmlElement>() {
+            let _ = error.focus();
+        }
     }
-    set_status(host, "");
 }
 
 fn clear_error(host: &HtmlElement) {
@@ -126,6 +111,9 @@ fn clear_error(host: &HtmlElement) {
     }
 }
 
+/// While the request is out the button waits in its own words (see
+/// [`crate::task_page::wait`]); `keep_disabled` leaves it unpressable once
+/// the link can't be presented again.
 fn set_busy(host: &HtmlElement, busy: bool, keep_disabled: bool) {
     if let Ok(Some(section)) = host.query_selector("#activate-confirm") {
         if busy {
@@ -134,15 +122,32 @@ fn set_busy(host: &HtmlElement, busy: bool, keep_disabled: bool) {
             let _ = section.remove_attribute("aria-busy");
         }
     }
-    if let Ok(Some(button)) = host.query_selector("#activate-accept")
-        && let Ok(button) = button.dyn_into::<HtmlButtonElement>()
-    {
-        button.set_disabled(busy || keep_disabled);
+    if let Ok(Some(button)) = host.query_selector("#activate-accept") {
+        if busy {
+            crate::task_page::wait(&button);
+        } else {
+            crate::task_page::settle(&button, keep_disabled);
+        }
+    }
+    // A button that can't be pressed again isn't shown.
+    if keep_disabled {
+        hide_actions(host);
     }
 }
 
-fn show_panel(host: &HtmlElement, selector: &str) {
-    for panel in ["#activate-confirm", "#activate-done"] {
+fn hide_actions(host: &HtmlElement) {
+    if let Ok(Some(actions)) = host.query_selector("#activate-confirm .fabb-actions") {
+        let _ = actions.set_attribute("hidden", "");
+    }
+}
+
+fn show_panel(host: &HtmlElement, selector: &str, focus: bool) {
+    for panel in [
+        "#activate-confirm",
+        "#activate-done",
+        "#activate-not-mine-done",
+        "#activate-expired",
+    ] {
         if let Ok(Some(element)) = host.query_selector(panel) {
             let outcome = if panel == selector {
                 element.remove_attribute("hidden")
@@ -152,16 +157,138 @@ fn show_panel(host: &HtmlElement, selector: &str) {
             let _ = outcome;
         }
     }
+    // A step that changes moves focus to its title; a message that is the
+    // whole page takes it instead, so it is what gets read out.
+    let target = host
+        .query_selector(&format!("{selector} > tonk-message[tabindex]"))
+        .ok()
+        .flatten()
+        .or_else(|| {
+            host.query_selector(&format!("{selector} .fabb-task-title"))
+                .ok()
+                .flatten()
+        });
+    if focus
+        && let Some(target) = target
+        && let Ok(target) = target.dyn_into::<HtmlElement>()
+    {
+        let _ = target.focus();
+    }
+}
+
+/// Not mine: nothing is sent, so the account stays unactivated, and the
+/// page says so. Activation needs this person's press either way, so a
+/// mail scanner that opens the link activates nothing.
+fn bind_not_mine(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
+    let target = host.clone();
+    let onclick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if pending.get() || terminal.replace(true) {
+            return;
+        }
+        show_panel(&target, "#activate-not-mine-done", true);
+    });
+    if let Ok(Some(button)) = host.query_selector("#activate-not-mine")
+        && let Ok(button) = button.dyn_into::<HtmlElement>()
+    {
+        button.set_onclick(Some(onclick.as_ref().unchecked_ref()));
+    }
+    onclick.forget();
+}
+
+/// An expired link sends a new one to the account it names. The service
+/// mails only the address it already holds and limits how often, so the
+/// request needs no key of the account's: a throwaway one signs it.
+fn bind_resend(host: &HtmlElement) {
+    let target = host.clone();
+    let pending = Rc::new(Cell::new(false));
+    let onclick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if pending.replace(true) {
+            return;
+        }
+        let host = target.clone();
+        let pending = pending.clone();
+        let Ok(Some(button)) = host.query_selector("#activate-resend") else {
+            return;
+        };
+        crate::task_page::wait(&button);
+        spawn_local(async move {
+            let sent = resend().await;
+            if let Err(error) = &sent {
+                web_sys::console::error_1(&format!("activation resend failed: {error}").into());
+            }
+            let (kind, heading, text) = if sent.is_ok() {
+                (
+                    "status",
+                    "link sent",
+                    "A new link is on its way to the address this one came to.",
+                )
+            } else {
+                (
+                    "error",
+                    "not sent",
+                    "Tonk couldn’t send a new link, so nothing changed. Check your connection and try again.",
+                )
+            };
+            if sent.is_ok() {
+                // Sent: nothing is left to do here.
+                if let Ok(Some(actions)) = host.query_selector("#activate-expired .fabb-actions") {
+                    let _ = actions.set_attribute("hidden", "");
+                }
+            } else {
+                crate::task_page::settle(&button, false);
+                pending.set(false);
+            }
+            if let Ok(Some(message)) = host.query_selector("#activate-expired-message") {
+                let _ = message.set_attribute("kind", kind);
+                let _ = message.set_attribute("heading", heading);
+                message.set_text_content(Some(text));
+                if let Ok(message) = message.dyn_into::<HtmlElement>() {
+                    let _ = message.focus();
+                }
+            }
+        });
+    });
+    if let Ok(Some(button)) = host.query_selector("#activate-resend")
+        && let Ok(button) = button.dyn_into::<HtmlElement>()
+    {
+        button.set_onclick(Some(onclick.as_ref().unchecked_ref()));
+    }
+    onclick.forget();
+}
+
+async fn resend() -> Result<(), String> {
+    let link = link_invocation()?;
+    let account = tonk_identity::request::activation_customer(&link)
+        .ok_or_else(|| "the link names no account".to_string())?;
+    let body = tonk_identity::request::build_anonymous_resend_invocation(&account)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    let response = reqwest::Client::new()
+        .post(format!("{}/ucan/", crate::api::origin()))
+        .header("content-type", "application/cbor")
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("the service answered {}", response.status()))
+    }
 }
 
 fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
     // A damaged link is visible before the button is pressed rather than
     // after: the page's one job is presenting the invocation it carries.
     if let Err(error) = link_invocation() {
+        show_panel(host, "#activate-confirm", false);
+        hide_actions(host);
         show_error(host, &error);
         return;
     }
-    show_panel(host, "#activate-confirm");
+    show_panel(host, "#activate-confirm", false);
+    bind_not_mine(host, pending.clone(), terminal.clone());
+    bind_resend(host);
 
     let target = host.clone();
     let action_pending = pending.clone();
@@ -196,7 +323,6 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                     return show_error(&host, &error);
                 }
             };
-            set_status(&host, "Activating…");
             attempt.checkpoint(tonk_analytics::account::Stage::AccessService);
             let response = reqwest::Client::new()
                 .post(format!("{}/ucan/", crate::api::origin()))
@@ -218,7 +344,7 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                     );
                     pending.set(false);
                     set_busy(&host, false, false);
-                    return show_error(&host, "The service could not be reached. Try again.");
+                    return show_error(&host, NOT_CONFIRMED);
                 }
             };
             let status = response.status();
@@ -246,13 +372,12 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 // this link, which a report from here never could.
                 set_busy(&host, false, true);
                 clear_error(&host);
-                set_status(&host, "");
                 // Tell this browser's worker now rather than at its next
                 // sweep: the probe records the activation and replays the
                 // custody publish and provisioning it deferred, so the
                 // hub this page hands back to is already served.
                 let _ = crate::api::customer_state().await;
-                show_panel(&host, "#activate-done");
+                show_panel(&host, "#activate-done", true);
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
                 attempt.finish(
                     tonk_analytics::account::Stage::AccessService,
@@ -265,10 +390,9 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 terminal.set(true);
                 pending.set(false);
                 set_busy(&host, false, true);
-                show_error(
-                    &host,
-                    "This activation link has expired. Sign in on your device to get a fresh one.",
-                );
+                // A link that no longer works is a wall, with a new link
+                // on offer in place of the old one.
+                show_panel(&host, "#activate-expired", true);
             } else {
                 let outcome = if status.is_server_error() {
                     tonk_analytics::account::AccountOutcome::retryable(
@@ -286,15 +410,12 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 set_busy(&host, false, false);
                 let message = body["error"]["message"]
                     .as_str()
-                    .unwrap_or("Activation failed. Try again.")
+                    .unwrap_or("no message")
                     .to_string();
                 web_sys::console::error_1(
                     &format!("account activation service refused the link: {message}").into(),
                 );
-                show_error(
-                    &host,
-                    &user_error::diagnostic(AccountAction::ActivateAccount, &message),
-                );
+                show_error(&host, NOT_CONFIRMED);
             }
         });
     });

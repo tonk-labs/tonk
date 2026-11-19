@@ -276,8 +276,8 @@ describe("boot script contract", () => {
     await new Promise(setImmediate);
     assert.equal(registrations, 1);
     assert.deepEqual(result.terminalFailures, [{
-      title: "Tonk couldn’t start",
-      message: "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+      title: "this page didn’t load",
+      message: "Tonk couldn’t start. Your local data is safe. Reload the page. If it keeps happening, check your connection or try another browser.",
     }]);
   });
 
@@ -300,8 +300,8 @@ describe("boot script contract", () => {
       1,
     );
     assert.deepEqual(result.terminalFailures, [{
-      title: "Tonk couldn’t start",
-      message: "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.",
+      title: "this page didn’t load",
+      message: "Tonk couldn’t start. Your local data is safe. Reload the page. If it keeps happening, check your connection or try another browser.",
     }]);
   });
 });

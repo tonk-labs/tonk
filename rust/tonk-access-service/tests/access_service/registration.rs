@@ -258,6 +258,22 @@ async fn enroll_container_parts(
     email: &str,
     custody: &Custody,
 ) -> (Vec<u8>, Option<ipld_core::cid::Cid>, ipld_core::cid::Cid) {
+    custody_container(customer, Some(email), custody).await
+}
+
+/// A `/custody/add` carrying `custody`'s material, issued by `customer`.
+async fn custody_add_container(customer: &Ed25519Signer, custody: &Custody) -> Vec<u8> {
+    custody_container(customer, None, custody).await.0
+}
+
+/// The one place a container carrying custody material is assembled:
+/// a `/customer/enroll` when `email` is given, a `/custody/add` when it
+/// is not.
+async fn custody_container(
+    customer: &Ed25519Signer,
+    email: Option<&str>,
+    custody: &Custody,
+) -> (Vec<u8>, Option<ipld_core::cid::Cid>, ipld_core::cid::Cid) {
     let key = Ed25519Signer::import(&custody.key_seed)
         .await
         .expect("custody signer");
@@ -327,13 +343,19 @@ async fn enroll_container_parts(
     let consent = consent.try_build().await.expect("consent");
     let consent_bytes = consent.encoded().to_vec();
 
+    let (command, email) = match email {
+        Some(email) => (
+            ["customer", "enroll"],
+            vec![("email".to_string(), Promised::String(email.to_string()))],
+        ),
+        None => (["custody", "add"], vec![]),
+    };
     let invocation = InvocationBuilder::new()
         .issuer(dialog_credentials::Signer::from(customer.clone()))
         .audience(&customer.did())
         .subject(&customer.did())
-        .command(vec!["customer".to_string(), "enroll".to_string()])
-        .arguments(BTreeMap::from([
-            ("email".to_string(), Promised::String(email.to_string())),
+        .command(command.iter().map(ToString::to_string).collect())
+        .arguments(BTreeMap::from_iter(email.into_iter().chain([
             (
                 "custody".to_string(),
                 Promised::String(custody_did.to_string()),
@@ -350,7 +372,7 @@ async fn enroll_container_parts(
                 "sealed".to_string(),
                 Promised::Link(dagcbor_cid(&custody.sealed)),
             ),
-        ]))
+        ])))
         .proofs(vec![])
         .expiration(Timestamp::five_minutes_from_now())
         .try_build()
@@ -1350,6 +1372,197 @@ async fn it_adds_a_second_passkey_to_an_existing_account(
         secret.signer().await?.did(),
         "the unwrapped secret derives the same account",
     );
+    Ok(())
+}
+
+/// Setting up a recovery phrase on an account and then signing in with
+/// it from a device that holds nothing but the twelve words, end to end
+/// against the live service (BUG-343).
+///
+/// The same custody flow as
+/// [`it_adds_a_second_passkey_to_an_existing_account`], with a phrase as
+/// the new custodian. Setup provisions the custody DID the phrase
+/// derives and publishes the account secret sealed under it. Sign-in
+/// starts over from the words alone: parse them, derive the same custody
+/// DID, resolve the cell, open the envelope, get the account back, and
+/// act for it from a new device. A different phrase reaches nothing.
+#[dialog_common::test]
+async fn it_sets_up_a_recovery_phrase_and_signs_in_with_it(
+    env: AccessServiceAddress,
+) -> anyhow::Result<()> {
+    use dialog_remote_s3::Permit;
+    use tonk_identity::account::Crypto;
+    use tonk_identity::envelope::{AccountSecret, Envelope, KekMethod};
+    use tonk_identity::phrase::RecoveryPhrase;
+    use tonk_identity::{custody, delegation};
+
+    let client = reqwest::Client::new();
+    let base = env.access_service_url.trim_end_matches('/').to_string();
+    let ucan = format!("{base}/ucan/");
+    let service_did: Did = env.service_did.parse()?;
+
+    // An account, enrolled and activated. Its root signer derives from
+    // the secret, so the account a phrase opens can be compared with it.
+    let secret = AccountSecret::generate()?;
+    let root = secret.signer().await?;
+    let container = enroll_container(&root, &service_did, "phrase@example.com").await;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(container)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "enrollment refused: {body}");
+    activate_over_http(&client, &base).await?;
+
+    // Setup. A new phrase, shown to the person once as twelve words.
+    let phrase = RecoveryPhrase::generate()?;
+    let words = phrase.words().to_string();
+    assert_eq!(words.split(' ').count(), 12);
+    let custodian = phrase.custodian().await?;
+    let custody_key = custodian.signer().await?;
+
+    // Add the phrase as a custodian with one `/custody/add`: the
+    // service writes the account secret sealed under the phrase into the
+    // custody cell, then provisions the custody DID the phrase derives
+    // under the account.
+    let device = Ed25519Signer::generate().await?;
+    let link = delegation::mint_device_delegation(root.clone(), &device.did()).await?;
+    let consent = custody::sign_custody_consent(custody_key.clone(), &root.did()).await?;
+    let sealed = custodian.account().adopt(secret).perform(&Crypto).await?;
+    assert!(matches!(sealed.envelope().method(), KekMethod::Phrase));
+    let sealed = sealed.envelope().encode();
+    let recovery = custody::sign_publish_invocation(
+        custody_key.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+    )
+    .await?;
+    let material = tonk_identity::request::CustodyMaterial {
+        custody: &custody_key.did(),
+        consent: &consent,
+        recovery: &recovery,
+        sealed: &sealed,
+    };
+    let add =
+        tonk_identity::request::build_custody_add_invocation(device.clone(), &link, &material)
+            .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "adding the phrase refused: {body}");
+
+    // A retry of the same request, after the cell is written, finishes
+    // rather than tripping on the create-only write.
+    let retry =
+        tonk_identity::request::build_custody_add_invocation(device, &link, &material).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(retry)
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(status, 200, "retrying the addition refused: {body}");
+    drop(phrase);
+    drop(custodian);
+
+    // Sign-in, on a device that has nothing but the words, typed the way
+    // a person might: capitalised and over two lines.
+    let typed = words.to_uppercase().replacen(' ', "\n", 6);
+    let recovered = RecoveryPhrase::parse(&typed)?.custodian().await?;
+    let resolve = custody::build_resolve_invocation(recovered.signer().await?).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        200,
+        "resolving the phrase's cell refused"
+    );
+    let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+    let fetched = permit.send().await?;
+    assert!(
+        fetched.status().is_success(),
+        "storage GET failed: {}",
+        fetched.status()
+    );
+    let bytes = fetched.bytes().await?.to_vec();
+    assert_eq!(bytes, sealed, "the phrase finds the envelope it published");
+
+    let account = recovered
+        .account()
+        .import(Envelope::decode(&bytes)?)
+        .perform(&Crypto)
+        .await?;
+    assert_eq!(
+        account.signer().await?.did(),
+        root.did(),
+        "the phrase opens the same account",
+    );
+
+    // Signed in: a new device acts for the recovered account. Linking it
+    // and provisioning through it (here, another custodian, as adding a
+    // passkey after recovering would) is refused unless the service
+    // accepts the recovered root's authority.
+    let recovered_root = account.into_secret().signer().await?;
+    let new_device = Ed25519Signer::generate().await?;
+    let new_link =
+        delegation::mint_device_delegation(recovered_root.clone(), &new_device.did()).await?;
+    let next_key = tonk_identity::envelope::custody_signer(&[31u8; 32]).await?;
+    let next_consent =
+        custody::mint_custody_consent(Signer::from(next_key.clone()), &root.did()).await?;
+    let add = tonk_identity::request::build_provider_add_invocation(
+        new_device,
+        &new_link,
+        &next_key.did(),
+        &next_consent,
+        Some("custody"),
+    )
+    .await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(add)
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        200,
+        "a device linked by the recovered account is refused: {}",
+        response.text().await.unwrap_or_default()
+    );
+
+    // Another phrase derives another custody DID, which holds nothing.
+    let stranger = RecoveryPhrase::generate()?.custodian().await?;
+    let resolve = custody::build_resolve_invocation(stranger.signer().await?).await?;
+    let response = client
+        .post(&ucan)
+        .header("Content-Type", "application/cbor")
+        .body(resolve)
+        .send()
+        .await?;
+    if response.status() == 200 {
+        let permit: Permit = serde_ipld_dagcbor::from_slice(&response.bytes().await?)?;
+        let fetched = permit.send().await?;
+        assert!(
+            !fetched.status().is_success(),
+            "another phrase found an envelope: {}",
+            fetched.status()
+        );
+    }
     Ok(())
 }
 
@@ -2657,6 +2870,278 @@ mod operator {
             verdict(&fixture, &space, unix_now()).await,
             None,
             "and the space is still served"
+        );
+        Ok(())
+    }
+}
+
+/// `/custody/add`: an active account adds a custodian — a passkey or a
+/// recovery phrase — by provisioning the custody space and writing its
+/// cell as one command.
+///
+/// Every refusal here is checked for what it did NOT do: a cell written
+/// for a request that was refused, or a row left beside a cell that was
+/// never written, is a custodian that half exists.
+mod custody_add {
+    use super::*;
+    use tonk_access_service::store::SubscriptionKind;
+    use tonk_access_service::vault::{Vault, VaultError};
+
+    /// A custodian whose key is not the enrollment's.
+    fn custodian() -> Custody {
+        Custody {
+            key_seed: [21u8; 32],
+            sealed: b"sealed-under-the-added-custodian".to_vec(),
+            ..Custody::default()
+        }
+    }
+
+    async fn custody_did(custody: &Custody) -> Did {
+        Ed25519Signer::import(&custody.key_seed)
+            .await
+            .expect("custody signer")
+            .did()
+    }
+
+    async fn active_customer(fixture: &Fixture) -> Ed25519Signer {
+        let customer = Ed25519Signer::generate().await.expect("customer");
+        fixture
+            .enroll_and_activate(&customer, "alice@example.com")
+            .await;
+        customer
+    }
+
+    #[dialog_common::test]
+    async fn it_writes_the_cell_and_provisions_the_custody_space() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = active_customer(&fixture).await;
+        let custody = custodian();
+        let cells = fixture.vault.sealed().len();
+
+        let container = custody_add_container(&customer, &custody).await;
+        let Answer::Subscription(receipt) = fixture.registration(&container).handle().await? else {
+            panic!("expected a consumer receipt");
+        };
+        let did = custody_did(&custody).await;
+        assert_eq!(receipt.consumer, did);
+        assert_eq!(receipt.provider, customer.did());
+        let sealed = fixture.vault.sealed();
+        assert_eq!(sealed.len(), cells + 1);
+        assert_eq!(sealed.last(), Some(&custody.sealed));
+        let row = fixture
+            .store
+            .consumer(did.as_str())
+            .await?
+            .expect("the custody space is provisioned");
+        assert_eq!(row.provider, customer.did().to_string());
+        assert_eq!(row.kind, SubscriptionKind::Custody);
+        Ok(())
+    }
+
+    /// Retrying a request that finished answers success and writes
+    /// nothing: the client cannot tell a lost answer from a lost
+    /// request.
+    #[dialog_common::test]
+    async fn it_answers_a_retry_without_writing_again() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = active_customer(&fixture).await;
+        let custody = custodian();
+        let container = custody_add_container(&customer, &custody).await;
+        fixture.registration(&container).handle().await?;
+        let cells = fixture.vault.sealed().len();
+
+        let container = custody_add_container(&customer, &custody).await;
+        let answer = fixture.registration(&container).handle().await?;
+        assert!(matches!(answer, Answer::Subscription(_)));
+        assert_eq!(fixture.vault.sealed().len(), cells);
+        Ok(())
+    }
+
+    /// A cell that landed before its row failed is finished by the
+    /// retry, not refused by the create-only write.
+    #[dialog_common::test]
+    async fn it_finishes_a_write_whose_row_never_landed() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = active_customer(&fixture).await;
+        let custody = custodian();
+        let container = custody_add_container(&customer, &custody).await;
+
+        // Land the cell alone, the way a request that failed between
+        // the write and the row leaves it.
+        let tokens = Container::from_bytes(&container)?.into_tokens();
+        let recovery: dialog_ucan_core::Invocation<dialog_varsig::AnySignature> =
+            serde_ipld_dagcbor::from_slice(&tokens[1])?;
+        let recovery = InvocationChain::new(recovery, HashMap::new()).to_bytes()?;
+        fixture.vault.publish(&recovery, &custody.sealed).await?;
+        let did = custody_did(&custody).await;
+        assert!(fixture.store.consumer(did.as_str()).await?.is_none());
+
+        let answer = fixture.registration(&container).handle().await?;
+        assert!(matches!(answer, Answer::Subscription(_)));
+        let row = fixture
+            .store
+            .consumer(did.as_str())
+            .await?
+            .expect("the retry provisions the custody space");
+        assert_eq!(row.provider, customer.did().to_string());
+        Ok(())
+    }
+
+    /// An account that has not confirmed its email adds no custodian.
+    /// Enrollment gives it its first; anything more waits for the
+    /// person to show they own the account.
+    #[dialog_common::test]
+    async fn it_refuses_an_account_that_is_not_active() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = Ed25519Signer::generate().await?;
+        let container = enroll_container(&customer, &fixture.service.did(), "a@example.com").await;
+        fixture.registration(&container).handle().await?;
+        let cells = fixture.vault.sealed().len();
+        let custody = custodian();
+
+        let container = custody_add_container(&customer, &custody).await;
+        let refused = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(refused, Err(RegistrationError::CustomerInactive)),
+            "{refused:?}"
+        );
+        assert_eq!(fixture.vault.sealed().len(), cells);
+        let did = custody_did(&custody).await;
+        assert!(fixture.store.consumer(did.as_str()).await?.is_none());
+        Ok(())
+    }
+
+    /// Material a custodian consented to for one account cannot be
+    /// presented by another: the consent's audience binds the write to
+    /// the account it was made for.
+    #[dialog_common::test]
+    async fn it_refuses_material_consented_to_another_account() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let victim = Ed25519Signer::generate().await?;
+        let thief = active_customer(&fixture).await;
+        let cells = fixture.vault.sealed().len();
+        let custody = Custody {
+            consent_audience: Some(victim.did()),
+            ..custodian()
+        };
+
+        let container = custody_add_container(&thief, &custody).await;
+        let refused = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(refused, Err(RegistrationError::Forbidden { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(fixture.vault.sealed().len(), cells);
+        let did = custody_did(&custody).await;
+        assert!(fixture.store.consumer(did.as_str()).await?.is_none());
+        Ok(())
+    }
+
+    /// A custody space another account provides is that account's way
+    /// in, and stays so.
+    #[dialog_common::test]
+    async fn it_refuses_a_custody_space_another_account_provides() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let first = active_customer(&fixture).await;
+        let custody = custodian();
+        let container = custody_add_container(&first, &custody).await;
+        fixture.registration(&container).handle().await?;
+
+        let second = Ed25519Signer::generate().await?;
+        fixture
+            .enroll_and_activate(&second, "bob@example.com")
+            .await;
+        let cells = fixture.vault.sealed().len();
+        let container = custody_add_container(&second, &custody).await;
+        let refused = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(refused, Err(RegistrationError::ConsumerProvided)),
+            "{refused:?}"
+        );
+        assert_eq!(fixture.vault.sealed().len(), cells);
+        let row = fixture
+            .store
+            .consumer(custody_did(&custody).await.as_str())
+            .await?
+            .expect("the first account still provides it");
+        assert_eq!(row.provider, first.did().to_string());
+        Ok(())
+    }
+
+    /// The write is checked like enrollment's: content other than the
+    /// carried envelope is refused before anything is written.
+    #[dialog_common::test]
+    async fn it_refuses_a_write_of_other_content() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = active_customer(&fixture).await;
+        let cells = fixture.vault.sealed().len();
+        let custody = Custody {
+            checksum_over: Some(b"something else".to_vec()),
+            ..custodian()
+        };
+
+        let container = custody_add_container(&customer, &custody).await;
+        let refused = fixture.registration(&container).handle().await;
+        assert!(
+            matches!(refused, Err(RegistrationError::Forbidden { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(fixture.vault.sealed().len(), cells);
+        assert!(
+            fixture
+                .store
+                .consumer(custody_did(&custody).await.as_str())
+                .await?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    /// Storage that cannot be reached.
+    struct UnreachableVault;
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl Vault for UnreachableVault {
+        async fn publish(&self, _: &[u8], _: &[u8]) -> Result<(), VaultError> {
+            Err(VaultError::Unavailable("storage is down".to_string()))
+        }
+    }
+
+    /// A write that fails provisions nothing, so the retry starts from
+    /// where the person left off rather than from a row pointing at an
+    /// empty cell.
+    #[dialog_common::test]
+    async fn it_provisions_nothing_when_the_write_fails() -> anyhow::Result<()> {
+        let fixture = Fixture::new().await;
+        let customer = active_customer(&fixture).await;
+        let custody = custodian();
+        let container = custody_add_container(&customer, &custody).await;
+
+        let registration = fixture.registration(&container);
+        let broken = Registration {
+            store: registration.store,
+            email: registration.email,
+            vault: &UnreachableVault,
+            service: registration.service,
+            service_seed: registration.service_seed,
+            origin: registration.origin,
+            activation_ttl: registration.activation_ttl,
+            now: registration.now,
+            container: registration.container,
+            revocations: registration.revocations,
+        };
+        let refused = broken.handle().await;
+        assert!(
+            matches!(refused, Err(RegistrationError::Internal { .. })),
+            "{refused:?}"
+        );
+        assert!(
+            fixture
+                .store
+                .consumer(custody_did(&custody).await.as_str())
+                .await?
+                .is_none()
         );
         Ok(())
     }

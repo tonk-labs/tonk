@@ -160,6 +160,14 @@ pub async fn custody_signer(entry_output: &[u8; 32]) -> Result<Ed25519Signer> {
         .map_err(|error| anyhow::anyhow!("failed to import the custody seed: {error}"))
 }
 
+/// The key-encryption key's bytes, derived from the entry function's
+/// output at [`CUSTODY_KEK_CONTEXT`]. For a custodian that keeps its
+/// KEK as bytes and builds the sealing and opening halves from them,
+/// as a recovery phrase does.
+pub(crate) fn custody_kek_bytes(entry_output: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    expand(entry_output, CUSTODY_KEK_CONTEXT)
+}
+
 /// Derive the key-encryption key from the entry function's output at
 /// [`CUSTODY_KEK_CONTEXT`].
 pub fn custody_kek(entry_output: &[u8; 32]) -> Kek<Recovery> {
@@ -182,7 +190,9 @@ pub enum KekMethod {
     Local,
     /// WebAuthn PRF evaluated at the two custody salts.
     Passkey,
-    /// Recovery phrase through Argon2id, split the same two ways.
+    /// A recovery phrase (see [`crate::phrase`]): its 128 bits are
+    /// stretched with HKDF into one entry value, split at the same two
+    /// salts a passkey's PRF is evaluated at.
     Phrase,
     /// A this-device wrapping under a locally held custodian keypair,
     /// the KEK random and sealed to the custodian's `did:key` (a
@@ -331,6 +341,11 @@ impl<C: Clearance> Envelope<C> {
             ciphertext,
             clearance: PhantomData,
         }
+    }
+
+    /// How this envelope's KEK is reached.
+    pub fn method(&self) -> KekMethod {
+        self.method
     }
 
     /// The AEAD nonce, for an opener that is not [`Kek::open_bytes`].

@@ -1313,8 +1313,13 @@ mod tests {
         .call1(&JsValue::NULL, &host_bridge())
         .unwrap();
         let host = document().create_element("space-create").unwrap();
+        // The `new space` dialog in the phone bar; the sheet's line opens
+        // an inline row instead.
         let markup = PROFILE_LIBRARY
-            .split_once("<space-create class=\"header-new\">")
+            .split_once("<nav class=\"mobile-nav\"")
+            .unwrap()
+            .1
+            .split_once("<space-create>")
             .unwrap()
             .1
             .split_once("</space-create>")
@@ -1658,7 +1663,7 @@ mod tests {
             let _ = host.set_attribute(name, value);
         }
         host.set_inner_html(
-            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog data-space-remove-dialog heading="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
+            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog role="group" data-space-remove-dialog aria-label="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
         );
         document()
             .body()
@@ -1770,7 +1775,7 @@ mod tests {
 
         assert_eq!(shown.length(), 1, "the opener shows the row's dialog");
         assert_eq!(
-            dialog.get_attribute("heading").as_deref(),
+            dialog.get_attribute("aria-label").as_deref(),
             Some("confirm leaving space"),
             "the dialog is prepared for the row's verb",
         );
@@ -2048,7 +2053,7 @@ mod tests {
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         // The bar beside the panel carries the link display the door reads.
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2091,7 +2096,7 @@ mod tests {
             ("search", "?via"),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2164,7 +2169,7 @@ mod tests {
             ("search", ""),
         ]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2296,17 +2301,17 @@ mod tests {
         bar.remove();
     }
 
-    /// A bare settings page with no account here goes to the account
-    /// page, where signing up happens, instead of raising the ceremony.
+    /// A bare settings page with no account here (just signed out, say)
+    /// goes back to your spaces, and never raises the ceremony itself.
     #[dialog_common::test]
-    async fn it_sends_an_unlinked_settings_page_to_the_account_page() {
+    async fn it_sends_an_unlinked_settings_page_back_to_the_spaces() {
         install_fake_host();
         install();
         let registers = record_bridge_calls("register");
         let navigations = record_bridge_calls("navigate");
         set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
@@ -2325,10 +2330,7 @@ mod tests {
             .expect("the link display");
         let _ = registration.set_attribute("data-state", "empty");
         settle_until(|| navigations.length() > before).await;
-        assert_eq!(
-            navigations.get(before).as_string().as_deref(),
-            Some("/account")
-        );
+        assert_eq!(navigations.get(before).as_string().as_deref(), Some("/"));
         assert_eq!(
             registers.length(),
             registered,
@@ -2349,7 +2351,7 @@ mod tests {
         let calls = record_bridge_calls("register");
         set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
         let bar = document().create_element("nav").expect("bar");
-        bar.set_class_name("hubbar");
+        bar.set_class_name("hub-top");
         bar.set_inner_html(
             r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
         );
@@ -2478,7 +2480,7 @@ mod tests {
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
             Some(
-                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings%2Flink"
             ),
             "declining answers the terminal on its callback and returns here"
         );
@@ -2513,16 +2515,10 @@ mod tests {
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
 
-        assert_eq!(
-            text_of(&host, "[data-link-heading]"),
-            "connect to your Tonk account"
-        );
+        // The task page's title and note are its markup's own words; the
+        // pane fills in only what the request names.
         assert_eq!(text_of(&host, "[data-link-name]"), "tonk.host");
         assert_eq!(text_of(&host, "[data-link-account]"), "person@example.com");
-        assert_eq!(
-            text_of(&host, "[data-link-explanation]"),
-            "approving gives this connection the same access to your account as this browser: every space, on every device. only approve if you started this connection yourself."
-        );
 
         let decline = host
             .query_selector("[data-link-decline]")
@@ -2533,7 +2529,7 @@ mod tests {
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
             Some(
-                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings%2Flink"
             ),
             "declining answers the page on its callback, keeping the request it named"
         );
@@ -2645,10 +2641,12 @@ mod tests {
         ]);
     }
 
-    /// Deleting is armed by the exact phrase, and what it deletes is
-    /// counted off the owned-space rows the view renders.
+    /// Deleting asks first, in place: `delete account` steps aside, the
+    /// question opens with focus on `keep account`, and the sentence counts
+    /// what goes off the owned-space rows the view renders. `keep account`
+    /// closes the question and puts `delete account` back.
     #[dialog_common::test]
-    async fn it_arms_the_deletion_on_the_exact_phrase_from_the_library() {
+    async fn it_asks_in_place_before_deleting_from_the_library() {
         set_context(&[
             ("origin", "https://tonk.test"),
             ("path", "/settings"),
@@ -2656,7 +2654,7 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"><button type="button" data-delete-account-open>delete</button><div data-delete-account-dialog><span data-delete-scope>loading</span><span data-delete-owned hidden><span data-owned-space><span data-space-name>Welcome</span></span><span data-owned-space><span data-space-name>Doomed Garden</span></span></span><label>type <b data-delete-confirm-label>delete account</b></label><input data-delete-confirm type="text"><button type="button" data-delete-account-submit data-email="owner@example.com" disabled>delete</button></div></div><p data-ceremony-status hidden></p>"#,
+            r#"<div class="pane" data-pane="account"><input data-settings-name value="Alex"><p data-delete-scope>loading</p><span data-delete-owned hidden><span data-owned-space>Welcome</span><span data-owned-space>Doomed Garden</span></span><button type="button" data-delete-account-open>delete account</button><div class="hub-ask" data-delete-ask hidden><p>Delete your account? This can’t be undone.</p><button type="button" data-ask-keep>keep account</button><button type="button" data-delete-account-submit data-email="owner@example.com">delete with passkey</button></div></div><p data-ceremony-status hidden></p>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
@@ -2669,37 +2667,34 @@ mod tests {
         settle_briefly().await;
         assert_eq!(
             text_of(&host, "[data-delete-scope]"),
-            "2 owned hosted spaces will be deleted: Welcome, Doomed Garden. Spaces you joined are left intact."
+            "Deletes Alex, the 2 spaces you own."
         );
+        let ask = host
+            .query_selector("[data-delete-ask]")
+            .expect("query")
+            .expect("the ask");
+        assert!(!ask.has_attribute("hidden"), "the question opens in place");
+        assert!(opener.has_attribute("hidden"), "delete account steps aside");
         let submit = host
             .query_selector("[data-delete-account-submit]")
             .expect("query")
             .expect("the submit");
         assert!(
-            submit.has_attribute("disabled"),
-            "nothing typed, nothing armed"
+            !submit.has_attribute("disabled"),
+            "the address is on it, so the answer is ready"
         );
 
-        let field: web_sys::HtmlInputElement = host
-            .query_selector("[data-delete-confirm]")
+        let keep = host
+            .query_selector("[data-ask-keep]")
             .expect("query")
-            .expect("the field")
-            .unchecked_into();
-        field.set_value("delete");
-        fire(&field, "input");
+            .expect("the safe answer");
+        fire(&keep, "click");
         settle_briefly().await;
         assert!(
-            submit.has_attribute("disabled"),
-            "a partial phrase does not arm"
+            ask.has_attribute("hidden"),
+            "keep account closes the question"
         );
-
-        field.set_value("delete account");
-        fire(&field, "input");
-        settle_until(|| !submit.has_attribute("disabled")).await;
-        assert!(
-            !submit.has_attribute("disabled"),
-            "the exact phrase arms the submit"
-        );
+        assert!(!opener.has_attribute("hidden"), "delete account comes back");
     }
 
     /// The ceremony row is worded for the person, and a terminal state
@@ -2713,7 +2708,7 @@ mod tests {
             ("hash", ""),
         ]);
         let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span>"#,
+            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span><section data-account-sheet><h2 data-account-line>account settings</h2><span data-account-receipt hidden></span><button data-account-retry hidden>try again</button><button type="button" data-add-passkey>add a passkey</button></section>"#,
         );
         settle_until(|| defined("account-settings")).await;
         settle_briefly().await;
@@ -2735,12 +2730,12 @@ mod tests {
         assert_eq!(text_of(&host, "[data-ceremony-status]"), "");
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="sign-in-via" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
         );
         settle_until(|| !status.has_attribute("hidden")).await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey: waiting for passkey\u{2026}"
+            "Signing in: waiting for passkey\u{2026}"
         );
         assert_eq!(
             host.get_attribute("data-ceremony-state").as_deref(),
@@ -2748,12 +2743,12 @@ mod tests {
         );
 
         rows.set_inner_html(
-            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="sign-in-via" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
         );
         settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey did not finish: no passkey"
+            "Signing in did not finish: no passkey"
         );
 
         // The cluster closing clears a transient line, not a verdict.
@@ -2761,8 +2756,53 @@ mod tests {
         settle_briefly().await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey did not finish: no passkey",
+            "Signing in did not finish: no passkey",
             "a refusal stays on screen after the cluster closes"
+        );
+
+        // Adding a passkey waits on its own button and answers in the
+        // sheet's line, in the mock's words, with try again.
+        let add = host
+            .query_selector("[data-add-passkey]")
+            .expect("query")
+            .expect("the add button");
+        // A row left from before a reload says nothing: the add it was
+        // waiting on is over.
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_briefly().await;
+        assert!(
+            add.get_attribute("aria-disabled").is_none(),
+            "a pending add from before this page holds nothing"
+        );
+        add.dyn_ref::<web_sys::HtmlElement>()
+            .expect("a button")
+            .click();
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_until(|| add.get_attribute("aria-disabled").as_deref() == Some("true")).await;
+        assert!(
+            status.has_attribute("hidden"),
+            "adding a passkey says nothing on the ground between the sheets"
+        );
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-of="state:ceremony" data-ceremony="add-passkey" data-ceremony-state="failed" data-ceremony-detail="cancelled" hidden></span>"#,
+        );
+        settle_until(|| text_of(&host, "[data-account-receipt]").contains("cancelled")).await;
+        assert_eq!(
+            text_of(&host, "[data-account-receipt]"),
+            "The passkey prompt was cancelled, so nothing was added."
+        );
+        let retry = host
+            .query_selector("[data-account-retry]")
+            .expect("query")
+            .expect("try again");
+        assert!(!retry.has_attribute("hidden"), "try again is offered");
+        assert!(
+            add.get_attribute("aria-disabled").is_none(),
+            "the button answers again"
         );
     }
 

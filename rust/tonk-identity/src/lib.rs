@@ -30,6 +30,7 @@ pub mod handoff;
 mod install;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod passkey;
+pub mod phrase;
 pub mod request;
 pub mod revocation;
 pub mod sealed;

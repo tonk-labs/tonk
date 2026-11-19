@@ -26,6 +26,10 @@ pub enum VaultError {
     /// invocation was verified before it got here.
     #[error("the custody cell could not be stored: {0}")]
     Unavailable(String),
+    /// The cell already holds content, and the create-only write was
+    /// refused: storage's 412.
+    #[error("the custody cell is already written: {0}")]
+    Exists(String),
 }
 
 /// Somewhere a custody cell can be put.
@@ -80,7 +84,7 @@ impl Vault for CapturedVault {
                 // What production answers: the permit carries
                 // `if-none-match: *`, so the second write of a cell is
                 // a 412, not a replacement.
-                return Err(VaultError::Unavailable(format!(
+                return Err(VaultError::Exists(format!(
                     "storage answered 412 Precondition Failed: {subject} already holds a cell"
                 )));
             }
@@ -135,6 +139,12 @@ impl<A: Redeemer + dialog_common::ConditionalSync> Vault for AuthorizedVault<A> 
             .upload(sealed.to_vec())
             .await
             .map_err(|error| VaultError::Unavailable(error.to_string()))?;
+        if response.status().as_u16() == 412 {
+            return Err(VaultError::Exists(format!(
+                "storage answered {}",
+                response.status()
+            )));
+        }
         if !response.status().is_success() {
             return Err(VaultError::Unavailable(format!(
                 "storage answered {}",

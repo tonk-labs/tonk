@@ -1249,6 +1249,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
             ProductResult::Blocked,
             Some(match blocked.code.as_str() {
                 tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                | tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
                 | tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION => FailureKind::AccessDenied,
                 tonk_worker_api::share::BLOCKED_NOT_SYNCED => FailureKind::LocalState,
                 _ => FailureKind::Unknown,
@@ -1256,7 +1257,10 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         );
     }
 
-    if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+    // Both account refusals use the same sign-in hand-off in the space bar.
+    if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+        || blocked.code == tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+    {
         abandon(state, &blocked.detail);
         set_state(host, ShareState::Blocked);
         if let Some(fab) = host
@@ -1268,7 +1272,7 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
             crate::shadow::emit(
                 &fab,
                 "fabb-account-needed",
-                &JsValue::from_str(tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT),
+                &JsValue::from_str(&blocked.code),
             );
         }
         return;
@@ -2145,6 +2149,36 @@ mod tests {
             state.borrow().pending.is_none(),
             "the clipboard write is abandoned, not left open"
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_sends_both_account_refusals_to_the_space_bar() {
+        let document = window().unwrap().document().unwrap();
+        let bar = document.create_element("tonk-fab").unwrap();
+        let host = fresh_host();
+        bar.append_child(&host).unwrap();
+        let reason = Rc::new(RefCell::new(None));
+        let observed = Rc::clone(&reason);
+        let _listener = crate::shadow::bind(&bar, "fabb-account-needed", move |event| {
+            *observed.borrow_mut() = event
+                .dyn_ref::<web_sys::CustomEvent>()
+                .and_then(|event| event.detail().as_string());
+        });
+
+        for code in [
+            tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED,
+        ] {
+            let state = Rc::new(RefCell::new(ShareStateCell::default()));
+            state.borrow_mut().pending_time = Some(42.0);
+            set_state(&host, ShareState::Copying);
+            let subscription = ShareBlockedBehaviour { state };
+
+            subscription.render_reset(&host, &js_sys::Array::of1(&blocked_row(code, 42.0)).into());
+
+            assert_eq!(read_state(&host), ShareState::Blocked);
+            assert_eq!(reason.borrow_mut().take().as_deref(), Some(code));
+        }
     }
 
     /// A refusal from an earlier click is a replay and must be ignored — the
