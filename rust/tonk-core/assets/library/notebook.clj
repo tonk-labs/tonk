@@ -1,5 +1,5 @@
-; Copied from Dialog's rust/dialog-notation/sketches/notebook.clj at c938ec9c78d86512b0ad8c3cff7ec8a2632006aa
-; (branch feat/notation-poc). Change it there and copy it again.
+; Copied from Dialog's rust/dialog-notation/sketches/notebook.clj at 7b7484a8cdd8904a2547ae0e2b0c5b935e23151a
+; (branch wip/engine-fold). Change it there and copy it again.
 
 ; notebook: a <tonk-notebook> document whose ```dialog-yaml fences are live
 ; cells, ported from tonk's rust/tonk-core/assets/library/notebook.yaml at
@@ -30,7 +30,7 @@
 
 ; A notebook: prose with live dialog query cells. Its content is the block
 ; sequence, every block keyed by a fractional position, in document order.
-(concept (notebook ?n title: ?title key: ?k block: ?b)
+(concept (notebook ?n title: ?title block: {?k ?b})
   ; The notebook's title.
   (xyz.tonk.notebook/title of: ?n is: ?title as: :text cardinality: :one)
   ; The notebook's blocks, in document order. `pick: :all` per entry in the
@@ -49,7 +49,7 @@
 ; The sequence alone, so a placement writes one entry.
 
 ; A notebook's block sequence, as standalone entries.
-(concept (notebook/blocks ?n key: ?k block: ?b)
+(concept (notebook/blocks ?n block: {?k ?b})
   ; The notebook's blocks, in document order.
   (xyz.tonk.notebook/?k of: ?n is: ?b as: :entity cardinality: :one by: :position))
 
@@ -81,8 +81,8 @@
 ; constraints and gives no spelling; this is the build's, `(< ?p : 10)`.
 ; YAML 129-132.
 (rule (block/stray-entry ?b at: ?at)
-  (notebook/blocks ?n key: ?first block: ?b)
-  (notebook/blocks ?n key: ?at block: ?b)
+  (notebook/blocks ?n block: {?first ?b})
+  (notebook/blocks ?n block: {?at ?b})
   (< ?first : ?at))
 
 ; One block of a notebook. It points back at its notebook so the block rows
@@ -239,34 +239,7 @@
 ; sequence, one `.notebook-order__item` per entry in position order carrying
 ; the entry's key, and the block rows carrying each block's source. Wrapped
 ; in <notebook-save> so Cmd/Ctrl+S saves it.
-(view notebook :ui
-  [:notebook-save {:style "display: block;"}
-    [:tonk-notebook {:data-subject ?n
-                     :data-notebook ?n
-                     :title ?title
-                     :on/blockedit (block/edit subject: .currentTarget.dataset.subject
-                                               source: .detail.source
-                                               notebook: .detail.notebook)
-                     :on/place (block/place subject: .currentTarget.dataset.subject
-                                            notebook: .detail.notebook
-                                            key: .detail.key)
-                     :on/remove (block/remove subject: .currentTarget.dataset.subject
-                                              notebook: .detail.notebook
-                                              key: .detail.removed)
-                     :on/titlechange (notebook/retitle subject: .detail.notebook
-                                                       title: .detail.title)
-                     :style "display: block;"}
-      ; GAP: a valueless HTML attribute. The design has no boolean term;
-      ; this is Hiccup's `true`. YAML 323.
-      [:div {:class "notebook-data" :hidden true}
-        [:div {:class "notebook-order"}
-          [:span {:class "notebook-order__item" :data-block ?b :data-key ?k}]]
-        ; GAP: a nested view with no entity. `<tonk-display
-        ; model=notebook/block>` renders every block's `directory` view; the
-        ; design's reference names an entity, `{:view :row :of ?t}`, and
-        ; not a concept. YAML 327.
-        {:view :directory :model notebook/block}]]]
-  (notebook ?n title: ?title key: ?k block: ?b))
+; Its view, `(view notebook :ui …)` as it was, is a query in notebook-views.clj.
 
 ; Every notebook: the directory view, what core's `/{*model}` route renders
 ; at `/space/{repo}/notebook`, one link per notebook. These rows are also the
@@ -275,31 +248,11 @@
 ; GAP: a view with no entity. A `directory` view renders every instance,
 ; its markup outside the per-entity element once; the design binds the
 ; view's entity when it renders. YAML 343-356.
-(view notebook :directory
-  [:div {:class "notebook-index"}
-    ; GAP: an HTML comment in a template, which Hiccup has no form for; it
-    ; is a source comment here. YAML 348-352.
-    ; Absolute, like every other link in the library. The guest believes it
-    ; is at a fake origin (`https://{label}.tonk.network/`), so a relative
-    ; `notebook/{this}` resolves against that origin's root rather than the
-    ; current path.
-    ; GAP: an attribute value built of several parts, `href="/notebook/{this}"`.
-    ; The design shows text children joined, `[:p ?count " open"]`, and no
-    ; attribute so built. YAML 353.
-    [:a {:class "notebook-index__item" :href ["/notebook/" ?n]}
-      [:span {:class "notebook-index__title"} ?title]]]
-  (notebook ?n title: ?title))
+; Its view, `(view notebook :directory …)` as it was, is a query in notebook-views.clj.
 
 ; The block rows the element reads: one per block, its source on the row.
 ; GAP: a view with no entity, as above. YAML 359-369.
-(view notebook/block :directory
-  [:div {:class "notebook-block-rows"}
-    [:div {:class "notebook-block-row"
-           :subject ?b
-           :data-block ?b
-           :data-notebook ?n
-           :data-source ?s}]]
-  (notebook/block ?b notebook: ?n source: ?s))
+; Its view, `(view notebook/block :directory …)` as it was, is a query in notebook-views.clj.
 
 ; The index, `/space/{repo}/notebook`, with no entity: its own route and its
 ; own concept, not the entity route with an optional field. A literal path
@@ -333,32 +286,7 @@
 ; notebook's real body, so nothing changes shape when the draft becomes a
 ; notebook. The nested display renders the notebook rows the switcher
 ; matches against.
-(view notebook/index-route :ui
-  [:tonk-notebook-index {:class "notebook-index"}
-    [:notebook-save {:style "display: block;"}
-      ; GAP: a valueless HTML attribute, `draft`. YAML 425.
-      ; GAP: an attribute value built of several parts, `with="{branch}@{repo}"`.
-      ; YAML 426.
-      [:tonk-notebook {:draft true
-                       :with [?branch "@" ?repo]
-                       :on/blockedit (block/edit subject: .currentTarget.dataset.subject
-                                                 source: .detail.source
-                                                 notebook: .detail.notebook)
-                       :on/place (block/place subject: .currentTarget.dataset.subject
-                                              notebook: .detail.notebook
-                                              key: .detail.key)
-                       :on/remove (block/remove subject: .currentTarget.dataset.subject
-                                                notebook: .detail.notebook
-                                                key: .detail.removed)
-                       :on/titlechange (notebook/retitle subject: .detail.notebook
-                                                         title: .detail.title)
-                       :style "display: block;"}]]
-    ; GAP: a nested view with no entity, of a named concept, read from
-    ; another branch and space, `<tonk-display with="{branch}@{repo}"
-    ; model=notebook>`. The design's reference names neither the concept
-    ; nor where to read. YAML 434.
-    {:view :directory :model notebook :with [?branch "@" ?repo]}]
-  (notebook/index-route ?site repo: ?repo branch: ?branch))
+; Its view, `(view notebook/index-route :ui …)` as it was, is a query in notebook-views.clj.
 
 ; One notebook, `/space/{repo}/notebook/{entity}`.
 ; GAP: a concept named by an entity, `tonk:notebook/route`, as above. YAML 439.
@@ -375,14 +303,7 @@
   ; The space branch, picked off the site entity.
   (xyz.tonk.site/branch of: ?site is: ?branch as: :text cardinality: :one))
 
-(view notebook/route :ui
-  [:div {:class "notebook-space"}
-    ; GAP: a nested view of a named concept, read from another branch and
-    ; space, `<tonk-display with="{branch}@{repo}" entity={entity}
-    ; model=notebook>`. The design's reference names the entity and the view
-    ; name, not the concept or where to read. YAML 463.
-    {:view :ui :of ?entity :model notebook :with [?branch "@" ?repo]}]
-  (notebook/route ?site entity: ?entity repo: ?repo branch: ?branch))
+; Its view, `(view notebook/route :ui …)` as it was, is a query in notebook-views.clj.
 
 ; Insert one block. The element names no entity: a block's identity derives
 ; from this command's body. It used to be minted from the document's block
@@ -529,7 +450,7 @@
 
 ; A placed block's position.
 (rule (block/position ?b at: ?k)
-  (notebook/blocks ?n key: ?k block: ?b)
+  (notebook/blocks ?n block: {?k ?b})
   (unless (block/stray-entry ?b at: ?k)))
 
 ; An inserted block's successor, so the position rules can recurse over it.
@@ -579,7 +500,7 @@
 ; Place an inserted block.
 ; GAP: a command's own entity, read with `of:` as above, the managing
 ; agent's opinion and not the design's. YAML 835.
-(rule (assert (notebook/blocks ?n key: ?k block: ?b))
+(rule (assert (notebook/blocks ?n block: {?k ?b}))
   (block/insert of: ?b notebook: ?n source: ?s next: ?x prev: ?p)
   (block/position ?b at: ?k))
 
@@ -594,7 +515,7 @@
 ; The entry lands under `xyz.tonk.notebook/<key>`.
 
 ; Persist a placement into the notebook's sequence.
-(rule (assert (notebook/blocks ?n key: ?k block: ?b))
+(rule (assert (notebook/blocks ?n block: {?k ?b}))
   (block/place subject: ?b notebook: ?n key: ?k))
 
 ; A placement leaves the block with one entry, the placed one. The element can
@@ -606,13 +527,13 @@
 ; GAP: a retract of one entry of a collection: the design's retract through
 ; a concept takes every field on the entity, and what it takes for a
 ; collection is open. YAML 885.
-(rule (retract (notebook/blocks ?n key: ?old block: ?b))
+(rule (retract (notebook/blocks ?n block: {?old ?b}))
   (block/place subject: ?b notebook: ?n key: ?k)
-  (notebook/blocks ?n key: ?old block: ?b)
+  (notebook/blocks ?n block: {?old ?b})
   (!= ?old is: ?k))
 
 ; Enter a moved block under its new position.
-(rule (assert (notebook/blocks ?n key: ?k block: ?b))
+(rule (assert (notebook/blocks ?n block: {?k ?b}))
   (block/move subject: ?b notebook: ?n key: ?k))
 
 ; Every entry the block held goes, not just `from`: a block entered twice is
@@ -620,9 +541,9 @@
 
 ; A moved block leaves every other entry it held.
 ; GAP: a retract of one entry of a collection, as above. YAML 916.
-(rule (retract (notebook/blocks ?n key: ?old block: ?b))
+(rule (retract (notebook/blocks ?n block: {?old ?b}))
   (block/move subject: ?b notebook: ?n key: ?k)
-  (notebook/blocks ?n key: ?old block: ?b)
+  (notebook/blocks ?n block: {?old ?b})
   (!= ?old is: ?k))
 
 ; Every entry the block holds, read from the sequence rather than the key the
@@ -630,9 +551,9 @@
 
 ; Retract a removed block's every entry from the notebook's sequence.
 ; GAP: a retract of one entry of a collection, as above. YAML 937.
-(rule (retract (notebook/blocks ?n key: ?k block: ?b))
+(rule (retract (notebook/blocks ?n block: {?k ?b}))
   (block/remove subject: ?b notebook: ?n)
-  (notebook/blocks ?n key: ?k block: ?b))
+  (notebook/blocks ?n block: {?k ?b}))
 
 ; The block's own facts go too. A block with a source and no entry is what
 ; the element treats as a placement that never landed, so a deleted block
@@ -645,13 +566,13 @@
 
 ; Seed.
 
-(assert (notebook id:notebook/scratch title: "Scratch" key: "N1" block: id:notebook/scratch/1))
+(assert (notebook id:notebook/scratch title: "Scratch" block: {"N1" id:notebook/scratch/1}))
 
 ; The YAML asserts `notebook` without its title; a write of some fields goes
 ; through a concept that holds only them.
-(assert (notebook/blocks id:notebook/scratch key: "N5" block: id:notebook/scratch/2))
+(assert (notebook/blocks id:notebook/scratch block: {"N5" id:notebook/scratch/2}))
 
-(assert (notebook/blocks id:notebook/scratch key: "N9" block: id:notebook/scratch/3))
+(assert (notebook/blocks id:notebook/scratch block: {"N9" id:notebook/scratch/3}))
 
 ; The seeded blocks are exactly what `split` produces from the projected
 ; document, or the first edit re-partitions the whole notebook: a heading is

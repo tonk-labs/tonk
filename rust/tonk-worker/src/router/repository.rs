@@ -5751,6 +5751,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/notebook.clj" => {
             Ok(include_str!("../../../tonk-core/assets/library/notebook.clj").to_owned())
         }
+        "/library/notebook-views.clj" => {
+            Ok(include_str!("../../../tonk-core/assets/library/notebook-views.clj").to_owned())
+        }
         "/library/core.clj" => {
             Ok(include_str!("../../../tonk-core/assets/library/core.clj").to_owned())
         }
@@ -7089,10 +7092,9 @@ async fn notation_claims(
     let core = fetch_library_document(NOTATION_CORE_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{NOTATION_CORE_URL}': {e}")))?;
-    let lowered =
-        tonk_analyzer::notation::notation_library_claims(&core, library, true, &tonk.operator)
-            .await
-            .map_err(|error| RepositoryError::Internal(format!("{source}: {error}")))?;
+    let lowered = tonk_analyzer::notation::notation_library_claims(&core, library, &tonk.operator)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("{source}: {error}")))?;
     // The Dialog-DB compiler refuses every view, and the back end lowers
     // a view from its description all the same; any other refusal would
     // install the library without that form, so it is an error.
@@ -16527,6 +16529,211 @@ concept!: &writer-app
             .collect()
     }
 
+    /// The notebook's page, written in the notation, kept current in a
+    /// real space by the notation's driver: the notebook installed from
+    /// `notebook.clj` through the worker's install path, its page
+    /// (`notebook/ui` of `notebook-views.clj`) watched on the space's
+    /// content branch, and a retitle posted through the worker's own
+    /// `/evaluate` path arriving as one attribute patch. Run at 10, 100
+    /// and 1000 blocks, it prints what each step cost.
+    ///
+    /// The measure is wall time around each call, in the profile the
+    /// test runs in, with the space kept in memory. A page holds the
+    /// first poll's tree; a change costs the command's evaluation (the
+    /// commit, tonk's work) and the poll that follows it (the view's).
+    #[dialog_common::test]
+    async fn a_notation_page_is_kept_current_by_the_driver() {
+        use tonk_analyzer::notation::live::{View, ViewPatch};
+
+        const NOTEBOOK: &str = "notebook:probe";
+        let core = embedded_standard_library("/library/core.clj").expect("core.clj");
+        let notebook = embedded_standard_library("/library/notebook.clj").expect("notebook.clj");
+        let views =
+            embedded_standard_library("/library/notebook-views.clj").expect("notebook-views.clj");
+        let started = std::time::Instant::now();
+        let view = View::compile(&[&core, &notebook, &views], "(notebook/ui ?n is: ?ui)")
+            .expect("the notebook's page compiles");
+        println!("compile notebook/ui: {:?}", started.elapsed());
+
+        let sizes: Vec<usize> = std::env::var("TONK_NOTATION_SIZES")
+            .ok()
+            .map(|sizes| {
+                sizes
+                    .split(',')
+                    .filter_map(|size| size.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![10, 100, 1000]);
+        for blocks in sizes {
+            let tonk = test_state().await;
+            let (key, _) = new_space(&tonk, CORE, "Notation page").await;
+            assert!(
+                install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_NOTATION_SOURCE)
+                    .await
+                    .expect("the notebook installs from the notation"),
+                "a first install installs"
+            );
+            // The notebook written as facts, each block's entry under a
+            // key of its own, in one commit. Creating it through the
+            // notebook's commands (`create_notation`, one `block/insert` a
+            // block) does not commit at 1000 blocks: the position each
+            // insert derives from its neighbour chains past the commit's
+            // fixpoint, "did not converge after 1001 rounds".
+            let entries = (1..=blocks)
+                .map(|at| format!("N{at:05}V: id:probe/{at}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut document = format!(
+                "notebook/named!:\n  this: {NOTEBOOK}\n  title: \"Plan\"\n\n\
+                 notebook/blocks!:\n  this: {NOTEBOOK}\n  block: {{{entries}}}\n\n"
+            );
+            for at in 1..=blocks {
+                document.push_str(&format!(
+                    "notebook/block!:\n  this: id:probe/{at}\n  notebook: {NOTEBOOK}\n  source: \"item {at}\"\n\n"
+                ));
+            }
+            let started = std::time::Instant::now();
+            author(&tonk, &key, &document).await;
+            let created = started.elapsed();
+
+            let session = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the content branch opens");
+            let entity: dialog_corpus::Entity = NOTEBOOK.parse().expect("an entity");
+            let mut page = view
+                .watch(session.handle(), Some(entity))
+                .expect("the page is watched");
+
+            let started = std::time::Instant::now();
+            let first = page.poll(&tonk.operator).await.expect("the first poll");
+            let rendered = started.elapsed();
+            assert_eq!(first.len(), 1, "the first poll inserts the page whole");
+            let html = page.html();
+            assert!(html.contains(r#"title="Plan""#), "{html}");
+            assert_eq!(
+                html.matches(r#"class="notebook-block-row""#).count(),
+                blocks,
+                "a row for each block"
+            );
+            assert_eq!(
+                html.matches(r#"class="notebook-order__item""#).count(),
+                blocks,
+                "an order item for each block"
+            );
+
+            let started = std::time::Instant::now();
+            assert!(
+                page.poll(&tonk.operator)
+                    .await
+                    .expect("a quiet poll")
+                    .is_empty(),
+                "nothing moved, nothing patched"
+            );
+            let quiet = started.elapsed();
+            let before = page.recomputes();
+
+            let started = std::time::Instant::now();
+            author(
+                &tonk,
+                &key,
+                &format!("notebook/retitle!:\n  subject: {NOTEBOOK}\n  title: \"Shopping\"\n"),
+            )
+            .await;
+            let command = started.elapsed();
+            let started = std::time::Instant::now();
+            let patches = page.poll(&tonk.operator).await.expect("the poll after");
+            let changed = started.elapsed();
+            assert!(
+                patches.iter().any(|patch| matches!(
+                    patch,
+                    ViewPatch::SetAttribute { name, value, .. }
+                        if name == "title" && value == "Shopping"
+                )),
+                "the retitle is an attribute patch: {patches:?}"
+            );
+            assert!(page.html().contains(r#"title="Shopping""#));
+            assert_eq!(
+                page.html(),
+                page.maintained_html(),
+                "the patches make the tree"
+            );
+            let retitled = page.recomputes();
+            let retitle_delivered = page.delivered();
+
+            // One item changes: the middle block's source is edited.
+            let rows = read_rows(
+                &tonk,
+                &key,
+                &format!(
+                    "notebook/block:\n  this: ?this\n  notebook: {NOTEBOOK}\n  source: \"item {}\"\n",
+                    blocks / 2 + 1
+                ),
+            )
+            .await;
+            let block = text(&rows[0], "this");
+            let started = std::time::Instant::now();
+            author(
+                &tonk,
+                &key,
+                &format!(
+                    "block/edit!:\n  subject: {block}\n  notebook: {NOTEBOOK}\n  source: \"edited\"\n"
+                ),
+            )
+            .await;
+            let edit_command = started.elapsed();
+            let started = std::time::Instant::now();
+            let edited = page
+                .poll(&tonk.operator)
+                .await
+                .expect("the poll after the edit");
+            let edit_changed = started.elapsed();
+            assert!(
+                edited.iter().any(|patch| matches!(
+                    patch,
+                    ViewPatch::SetAttribute { name, value, .. }
+                        if name == "data-source" && value == "edited"
+                )),
+                "the edit is an attribute patch: {edited:?}"
+            );
+            assert_eq!(
+                page.html(),
+                page.maintained_html(),
+                "the patches make the tree"
+            );
+            println!(
+                "blocks {blocks}: edit command {edit_command:?}, poll after {edit_changed:?}, \
+                 {} patches, rows delivered {:?}, recomputes {retitled:?} -> {:?}",
+                edited.len(),
+                page.delivered(),
+                page.recomputes(),
+            );
+            println!(
+                "blocks {blocks}: create {created:?}, first poll {rendered:?} ({} bytes), \
+                 quiet poll {quiet:?}, retitle command {command:?}, poll after {changed:?}, \
+                 {} patches {:?}, rows delivered {:?}, recomputes {:?} -> {:?}",
+                html.len(),
+                patches.len(),
+                patches
+                    .iter()
+                    .map(|patch| match patch {
+                        ViewPatch::Insert { .. } => "insert",
+                        ViewPatch::Remove { .. } => "remove",
+                        ViewPatch::SetText { .. } => "text",
+                        ViewPatch::SetAttribute { .. } => "attribute",
+                        ViewPatch::SetEvent { .. } => "event",
+                    })
+                    .collect::<Vec<_>>(),
+                retitle_delivered,
+                before,
+                retitled,
+            );
+        }
+    }
+
     /// The same commands in, the same facts out: two spaces on YAML core,
     /// one with the notebook installed from `notebook.yaml`, one from the
     /// notation sketch, run one script, and after every step read their
@@ -16661,27 +16868,23 @@ concept!: &writer-app
         );
         assert_eq!(differing, Vec::<&str>::new());
 
-        // Every view named by its concept's name renders alike. A route
-        // concept the YAML pins to an entity (`tonk:notebook/route`,
-        // `tonk:notebook/index-route`), the entity the router names as a
-        // site's concept, resolves only from YAML: the notation cannot
-        // pin a concept to an entity.
-        let pinned = |line: &&String| line.starts_with("tonk:") || line.contains("@tonk:");
-        let by_name = |lines: &[String]| -> Vec<String> {
-            lines.iter().filter(|line| !pinned(line)).cloned().collect()
-        };
-        assert_eq!(by_name(&outlines[0]), by_name(&outlines[1]));
+        // The notation's views are queries, which this revision of the
+        // notation does not store on the branch: they are kept current by
+        // `tonk_analyzer::notation::live` from the library's text
+        // (`a_notation_page_is_kept_current_by_the_driver`), so the outline,
+        // which reads tonk's stored views, finds none in the notation's
+        // space. Every view resolves in the YAML's.
         assert!(
             outlines[0]
                 .iter()
-                .filter(pinned)
-                .all(|line| line.contains("resolved=true"))
+                .all(|line| !line.contains("no view found")),
+            "{outlines:?}"
         );
         assert!(
             outlines[1]
                 .iter()
-                .filter(pinned)
-                .all(|line| line.contains("fails: no concept matched"))
+                .any(|line| line.contains("no view found for model `notebook`")),
+            "{outlines:?}"
         );
     }
 

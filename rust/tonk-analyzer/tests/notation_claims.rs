@@ -17,9 +17,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_corpus::{Changes, Instruction, Statement as _, Value};
-use dialog_notation::{Declaration, View, parse_written};
 use dialog_query::{DeductiveRule, InductiveRule, Parameters, Term};
 use tonk_analyzer::analysis::ExpressionAnalysis;
+use tonk_analyzer::notation::parse_written;
 use tonk_analyzer::notation::split;
 use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
@@ -330,18 +330,13 @@ struct NotationLibrary {
     durable: Vec<Instruction>,
     transient: Vec<Instruction>,
     forms: Vec<Form>,
-    declarations: Vec<Declaration>,
 }
 
 /// The module's `notation_library_claims`, its writes with a `when`
 /// read through a test operator.
-async fn notation_library_claims(
-    core: &str,
-    library: &str,
-    views: bool,
-) -> anyhow::Result<NotationLibrary> {
+async fn notation_library_claims(core: &str, library: &str) -> anyhow::Result<NotationLibrary> {
     let (operator, _) = dialog_peer::helpers::test_session_with_peer().await;
-    let library = tonk_analyzer::notation::notation_library_claims(core, library, views, &operator)
+    let library = tonk_analyzer::notation::notation_library_claims(core, library, &operator)
         .await
         .map_err(anyhow::Error::msg)?;
     Ok(NotationLibrary {
@@ -360,7 +355,6 @@ async fn notation_library_claims(
                 refused: form.refused,
             })
             .collect(),
-        declarations: library.declarations,
     })
 }
 
@@ -679,150 +673,6 @@ fn causes(yaml: &str, notation: &str) -> Vec<&'static str> {
     causes
 }
 
-/// The managing session's opinion of the bar for a view: template
-/// equivalence. Both texts are parsed with tonk's renderer's parser
-/// (`tonk_render::parse_fragment`) and compared as trees with each
-/// element's attributes sorted, comments dropped (the renderer drops
-/// them) and text trimmed, a text of whitespace alone dropped. The
-/// `bindings` records are compared as data.
-fn normalized(nodes: Vec<tonk_render::Node>) -> Vec<tonk_render::Node> {
-    nodes
-        .into_iter()
-        .filter_map(|node| match node {
-            tonk_render::Node::Comment(_) => None,
-            tonk_render::Node::Text(text) => {
-                let text = text.trim().to_string();
-                (!text.is_empty()).then_some(tonk_render::Node::Text(text))
-            }
-            tonk_render::Node::Element(mut element) => {
-                element.attrs.sort();
-                element.children = normalized(element.children);
-                Some(tonk_render::Node::Element(element))
-            }
-        })
-        .collect()
-}
-
-/// Per view: whether its facet claims are equal, whether the templates
-/// are equivalent, whether the bindings are equal as data.
-fn equivalence(yaml: &[Form], notation: &[Form]) -> (usize, usize, usize) {
-    println!("#### views: raw claims, equivalent templates, bindings as data");
-    let (mut raw, mut trees, mut bindings) = (0, 0, 0);
-    for form in yaml.iter().filter(|form| form.kind == "view") {
-        let Some(other) = notation.iter().find(|other| other.key == form.key) else {
-            continue;
-        };
-        let facets = |form: &Form| -> BTreeMap<String, String> {
-            form.claims
-                .durable
-                .iter()
-                .filter(|(the, _, _)| {
-                    the.starts_with("xyz.tonk.view/") && the != "xyz.tonk.view/bindings"
-                })
-                .map(|(the, _, is)| (the.clone(), text_of(is).unwrap_or_default()))
-                .collect()
-        };
-        let bound = |form: &Form| -> Option<String> {
-            let decoded = DECODED.lock().expect("decoded");
-            form.claims
-                .durable
-                .iter()
-                .find(|(the, _, _)| the == "xyz.tonk.view/bindings")
-                .and_then(|(_, _, is)| decoded.get(is).cloned())
-        };
-        let (ours, theirs) = (facets(form), facets(other));
-        let same_raw = !ours.is_empty() && ours == theirs;
-        let same_tree = !ours.is_empty()
-            && ours.len() == theirs.len()
-            && ours.iter().all(|(facet, text)| {
-                theirs.get(facet).is_some_and(|other| {
-                    normalized(tonk_render::parse_fragment(text))
-                        == normalized(tonk_render::parse_fragment(other))
-                })
-            });
-        let same_bindings = bound(form) == bound(other);
-        raw += usize::from(same_raw);
-        trees += usize::from(same_tree);
-        bindings += usize::from(same_bindings);
-        println!(
-            "== {} raw {same_raw} equivalent {same_tree} bindings {same_bindings}",
-            form.key
-        );
-        if !same_tree {
-            for (facet, text) in &ours {
-                println!(
-                    "  yaml     {facet} {}",
-                    tonk_render::serialize_nodes(&normalized(tonk_render::parse_fragment(text)))
-                );
-                if let Some(other) = theirs.get(facet) {
-                    println!(
-                        "  notation {facet} {}",
-                        tonk_render::serialize_nodes(&normalized(tonk_render::parse_fragment(
-                            other
-                        )))
-                    );
-                }
-            }
-        }
-        if !same_bindings {
-            println!("  yaml     bindings {:?}", bound(form));
-            println!("  notation bindings {:?}", bound(other));
-        }
-    }
-    println!("## views: raw {raw}, equivalent {trees}, bindings {bindings}");
-    (raw, trees, bindings)
-}
-
-/// For each view, what the YAML stores, and what the notation
-/// describes.
-fn views(yaml: &[Form], declarations: &[Declaration]) {
-    println!("#### views");
-    for form in yaml.iter().filter(|form| form.kind == "view") {
-        println!("== yaml {}", form.key);
-        for (the, of, is) in &form.claims.durable {
-            println!("  ({the}, {of}, {is})");
-            if let Some(text) = text_of(is) {
-                println!("{text}");
-            }
-            if let Some(decoded) = DECODED.lock().expect("decoded").get(is) {
-                println!("  {decoded}");
-            }
-        }
-    }
-    for form in yaml.iter().filter(|form| form.kind == "event") {
-        println!("== yaml {}", form.key);
-        for (the, of, is) in &form.claims.durable {
-            println!("  ({the}, {of}, {is})");
-        }
-    }
-    for declaration in declarations {
-        if let Declaration::View { description, view } = declaration {
-            println!("== notation view {} :{}", view.concept, view.name);
-            println!("  description {description:?}");
-            describe(view);
-        }
-    }
-}
-
-fn describe(view: &View) {
-    println!(
-        "  entity ?{} conditions {} variables {:?}",
-        view.entity,
-        view.conditions.len(),
-        view.variables()
-    );
-    for event in view.events() {
-        println!(
-            "  event :on/{} -> {} {:?}",
-            event.kind, event.command, event.fields
-        );
-    }
-    for nested in view.nested() {
-        println!("  nested {nested:?}");
-    }
-    println!("  template {:?}", view.template);
-}
-
 #[dialog_common::test]
 async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // A sketch other than the checkout's, for telling apart what moves
@@ -834,37 +684,24 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     };
     let core = CORE_SKETCH.to_owned();
     let yaml = yaml_forms(NOTEBOOK).await?;
-    let notation = notation_library_claims(&core, &sketch, true).await?;
-    VIEWS.store(true, std::sync::atomic::Ordering::Relaxed);
+    // At this revision of the notation a view is a query, which is not
+    // stored on the branch, so no view is lowered to tonk's view claims:
+    // a view is kept current by `tonk_analyzer::notation::live` instead.
+    let notation = notation_library_claims(&core, &sketch).await?;
     let as_it_is = bar("the notation as it is", &yaml, &notation.forms);
 
     // The adjustment, on the text and not the notation's behaviour:
     // a line of a concept or a command with no `cardinality:` reads
     // `cardinality: :one`, the pick the YAML's fields get by default.
     let adjusted: String = split(&sketch).iter().map(|form| read_one(form)).collect();
-    let adjusted = notation_library_claims(&core, &adjusted, true).await?;
+    let adjusted = notation_library_claims(&core, &adjusted).await?;
     let read_one = bar(
         "ADJUSTED: lines with no `cardinality:` read as `:one`",
         &yaml,
         &adjusted.forms,
     );
 
-    // The same two rows without the view back end, to tell what it
-    // moves from what a change of the notation moves.
-    let plain = notation_library_claims(&core, &sketch, false).await?;
-    VIEWS.store(false, std::sync::atomic::Ordering::Relaxed);
-    let without_views = bar("WITHOUT VIEWS: the notation as it is", &yaml, &plain.forms);
-    let adjusted_text: String = split(&sketch)
-        .iter()
-        .map(|form| crate::read_one(form))
-        .collect();
-    let plain_adjusted = notation_library_claims(&core, &adjusted_text, false).await?;
-    let without_views_read_one = bar("WITHOUT VIEWS: ADJUSTED", &yaml, &plain_adjusted.forms);
-    println!("## without views {without_views:?} {without_views_read_one:?}");
-
     rules(&yaml, &adjusted.forms);
-    let viewed = equivalence(&yaml, &notation.forms);
-    views(&yaml, &notation.declarations);
     println!("#### decoded records");
     for (hash, decoded) in DECODED.lock().expect("decoded").iter() {
         if hash.starts_with("record") {
@@ -882,28 +719,28 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         return Ok(());
     }
     // Pinned: a change to either side has to move these on purpose.
+    // Moved at dialog 7b7484a8 from 107 and 231 identical: the notebook's
+    // views are queries now, kept by `notation::live`, and no longer
+    // lowered to tonk's `xyz.tonk.view/*` and event claims.
     assert_eq!(
         as_it_is,
         Headline {
             yaml: 376,
-            identical: 107,
-            differently: 211,
-            not_at_all: 58,
-            only_notation: 277,
+            identical: 87,
+            differently: 207,
+            not_at_all: 82,
+            only_notation: 271,
         }
     );
     assert_eq!(
         read_one,
         Headline {
             yaml: 376,
-            identical: 231,
-            differently: 111,
-            not_at_all: 34,
-            only_notation: 153,
+            identical: 211,
+            differently: 107,
+            not_at_all: 58,
+            only_notation: 147,
         }
     );
-    // Of the five views: facet claims equal as bytes, templates
-    // equivalent, bindings equal as data.
-    assert_eq!(viewed, (0, 5, 5));
     Ok(())
 }
