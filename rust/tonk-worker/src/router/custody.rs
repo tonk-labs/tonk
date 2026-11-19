@@ -470,10 +470,35 @@ async fn perform(
             login(&state, source, &custodian, link).await
         }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
-            let holder = custodian_named(data, "holder")
-                .await?
-                .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
-            add_passkey(&state, &custodian, &holder, addition).await
+            // The account sheet follows the ceremony row, so the outcome is
+            // reported there, done or failed, as every other ceremony is.
+            let outcome = match custodian_named(data, "holder").await {
+                Ok(Some(holder)) => add_passkey(&state, &custodian, &holder, addition).await,
+                Ok(None) => Err("the handoff carried no holder passkey".to_string()),
+                Err(error) => Err(error),
+            };
+            let tonk = state.read().await;
+            match &outcome {
+                Ok(_) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::DONE,
+                        "",
+                    )
+                    .await
+                }
+                Err(error) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::FAILED,
+                        split_refusal(error).1,
+                    )
+                    .await
+                }
+            }
+            outcome
         }
         tonk_worker_api::CustodyIntent::AddRecoveryPhrase(addition) => {
             let phrase = phrase_custodian(data)
@@ -604,7 +629,12 @@ async fn add_passkey(
         added,
         &sealed,
         AddedCustodian::Passkey {
-            created_on: crate::onboarding::device_title(),
+            // The page's own label, so the account's passkey list names
+            // it; the device title when the page sent none.
+            created_on: addition
+                .created_on
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(crate::onboarding::device_title),
         },
     )
     .await?;

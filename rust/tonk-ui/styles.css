@@ -75,6 +75,24 @@
     --fabb-ring: rgb(56 24 42 / 85%);
 }
 
+/* Tonk's own pages in a browser (gooey's in-browser system, vendored in
+   assets/in-browser/) read their values from tonk-look.css. The knobs above
+   are the in-space bar's frost; on a task page they are unset, so its
+   sheet is paper, not frost. */
+.fabb-page {
+    --fabb-ink: initial;
+    --fabb-ink-soft: initial;
+    --fabb-on-ink: initial;
+    --fabb-hover: initial;
+    --fabb-press: initial;
+    --fabb-panel: initial;
+}
+/* Web Awesome colours every `label` with its own (dark-mode) label colour;
+   a task page's labels are ink, as fabb-forms.css draws them. */
+.fabb-page label {
+    color: inherit;
+}
+
 /* Chrome surfaces pan without a scrollbar (the fabb studies' L10):
    the page and the chrome guests keep scrolling, the bar itself never
    shows. Space CONTENT renders in its own inner frame with its own
@@ -418,6 +436,14 @@ tonk-component {
    sized by the element, and the guest's own view) decides height. */
 tonk-site {
     display: contents;
+}
+
+/* Web Awesome's native layer spaces an iframe from what follows it
+   (`iframe:has(+ *)`, 24px; 16px on a phone). The guest's iframe fills
+   the viewport, so that margin made the page taller than the window and
+   left it scrollable by that much. */
+tonk-site > iframe {
+    margin: 0;
 }
 
 /* Pre-stamp placeholder for a `<tonk-site>` guest display. Between the
@@ -2181,70 +2207,12 @@ account-settings .armfield:focus-visible { box-shadow: none; }
 /* an unarmed verb stays visibly off, not merely inert */
 account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
 account-settings .m-go:disabled:hover { background: var(--ink); }
-/* the link pane's answer is a fused action run, like a confirm's foot */
-account-settings .link-foot { display: flex; justify-content: flex-end;
-    gap: 0; margin-top: 18px; }
-account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
 /* where a ceremony got to, under the rows that asked for it */
 account-settings [data-ceremony-status] { color: var(--ink); }
 account-settings [data-ceremony-status][hidden] { display: none; }
 
-/* Device approval uses the account page's spacious card and inset facts.
-   Keep the shared ceremony status and custody seat outside the card: the
-   host passkey surface replaces this pane while a ceremony is open. */
-account-settings .s-body:has([data-link-approval]:not([hidden])) {
-    min-height: 0; max-height: none; overflow: visible; padding: 0;
-    background: none; border: 0; position: relative;
-    width: 100%; max-width: 720px;
-}
-account-settings [data-link-approval]:not([hidden]) {
-    display: flex; flex-direction: column; gap: 24px;
-    padding: 28px; background: var(--card); color: var(--ink);
-}
-account-settings .link-heading {
-    margin: 0; font: 600 22px/1.25 var(--cond); text-wrap: balance;
-}
-account-settings .link-details { display: grid; gap: 8px; margin: 0; }
-account-settings .link-details > div {
-    display: grid; grid-template-columns: 88px minmax(0, 1fr);
-    align-items: baseline; gap: 16px; padding: 16px;
-    background: var(--wash);
-}
-account-settings .link-details dt { font: 500 15px/1.4 var(--cond); color: var(--soft); }
-account-settings .link-details dd {
-    min-width: 0; margin: 0; font: 600 16px/1.4 var(--cond);
-    overflow-wrap: anywhere; text-transform: none;
-}
-.hub-page account-settings [data-link-approval] .expl {
-    max-width: 60ch; margin: 0; font: 400 15px/1.6 var(--sans);
-    color: var(--soft); text-wrap: pretty;
-}
-account-settings [data-link-approval] .link-foot {
-    display: grid; grid-template-columns: 1fr 1fr; margin: 0;
-}
-account-settings [data-link-approval] .link-foot button {
-    min-width: 0; min-height: 48px; width: auto; padding: 14px 16px;
-    font: 600 16px/1.25 var(--cond); letter-spacing: 0;
-    white-space: normal; height: auto;
-}
-account-settings [data-link-approval] .m-cancel {
-    background: var(--wash); box-shadow: none; text-align: left; justify-content: flex-start;
-}
-account-settings [data-link-approval] .m-cancel:hover { background: var(--wash-2); }
-account-settings [data-link-approval] button:focus-visible {
-    outline: 2px solid var(--ink); outline-offset: -4px; box-shadow: none;
-}
-account-settings [data-link-approval] .m-go:focus-visible { outline-color: var(--on-ink); }
-.hub-page account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
-    box-sizing: border-box; max-width: none; margin: 16px 0 0; padding: 20px 28px;
-    background: var(--card); font: 400 15px/1.6 var(--sans);
-}
-@media (max-width: 600px) {
-    account-settings [data-link-approval]:not([hidden]) { padding: 22px 20px; gap: 20px; }
-    account-settings .link-details > div { grid-template-columns: 1fr; gap: 4px; }
-    account-settings [data-link-approval] .link-foot button { padding: 14px 12px; }
-    .hub-page account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { padding: 20px; }
-}
+/* A device's request (/settings/link) is a task page, drawn by gooey's
+   fabb-pages.css over the hub (see the pane's own style in profile.yaml). */
 /* The agent approval is a run of FABB task dialogs, the card the
    "add an account" sign-in uses: a washed head with its disc and title,
    flush rows, and a foot split between the way out and the way on. */

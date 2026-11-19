@@ -1931,9 +1931,14 @@ mod tests {
         let (interactive, interactive_repo) = state_with_repo("interactive").await;
         // Compare each real first-boot library, including the durable db.rule/*
         // artifacts, without comparing identity-specific commit revisions.
+        // Interactive notation has no location to `!include` from, so the
+        // profile library's included styles are inlined for both runs.
+        let profile = crate::router::library::inline_includes(include_str!(
+            "../../../tonk-core/assets/library/profile.yaml"
+        ));
         for library in [
             include_str!("../../../tonk-core/assets/library/core.yaml"),
-            include_str!("../../../tonk-core/assets/library/profile.yaml"),
+            profile.as_str(),
         ] {
             let single_before = facts(&single, &single_repo).await;
             let interactive_before = facts(&interactive, &interactive_repo).await;
