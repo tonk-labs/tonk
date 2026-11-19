@@ -261,7 +261,7 @@
       "gaps": "Passkey cancel and failure on the card, provisioning or publish failure after the words were shown, reload mid-card, the settings card after sync to another device.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B16",
-      "title": "Set up the account's recovery phrase from settings: acknowledge it can never be revoked, write down the 12 words the top document shows once, enter three back, confirm with the passkey.",
+      "title": "Set up the account's recovery phrase from settings: acknowledge it can never be revoked, write down (or copy) the 12 words the top document shows once in a centred dialog, enter three back, confirm with the passkey.",
       "variants": "Active customer with no phrase; customer not yet activated; a phrase already set up; passkey cancel/error."
     },
     {
@@ -269,7 +269,7 @@
       "gaps": "Whole-browser agent approval with the phrase, a phrase of another account at sign-in, sign-in before the phrase's cell is published.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B17",
-      "title": "Sign in on a fresh browser with only the recovery phrase (\"use a recovery phrase instead\" under \"log in with passkey\"), and approve an agent, remove one or delete the account with the phrase on a browser holding no passkey.",
+      "title": "Sign in on a fresh browser with only the recovery phrase (\"use a recovery phrase instead\" under \"log in with passkey\", which widens the dialog and gives the words a field sized for twelve), and approve an agent, remove one or delete the account with the phrase on a browser holding no passkey.",
       "variants": "Fresh browser with no passkey; mistyped, unknown or reordered words; a phrase of another account; service offline."
     },
     {

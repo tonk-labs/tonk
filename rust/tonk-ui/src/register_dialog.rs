@@ -145,9 +145,9 @@ const DIALOG_HTML: &str = r##"
          to the worker as bytes. -->
     <div class="orow mblk editing" id="tonk-register-phrase-row" hidden>
       <span class="k">recovery phrase</span>
-      <span class="v"><textarea class="ed" id="tonk-register-phrase" rows="3" autocomplete="off"
+      <span class="v"><textarea class="ed" id="tonk-register-phrase" rows="4" autocomplete="off"
             autocapitalize="off" spellcheck="false" aria-label="recovery phrase"
-            placeholder="your twelve words"></textarea></span>
+            placeholder="your twelve words, in order"></textarea></span>
     </div>
     <button class="obtn" id="tonk-register-phrase-login" hidden>log in with recovery phrase</button>
   </div>
@@ -3020,6 +3020,12 @@ fn toggle_phrase_login() {
     };
     set_hidden(Some(row), showing);
     set_hidden(query("#tonk-register-phrase-login"), showing);
+    // The dialog widens for the words while the phrase is being typed.
+    let _ = if showing {
+        host.remove_attribute("data-phrase-login")
+    } else {
+        host.set_attribute("data-phrase-login", "")
+    };
     set_hidden(query(EMAIL_ROW), !showing);
     set_hidden(
         query(ACTION),

@@ -3746,3 +3746,23 @@ tonk-notebook-index {
     outline: 2px solid var(--ink); outline-offset: 2px;
 }
 #tonk-register[data-awaiting-email] .obtn:disabled { opacity: .45; }
+
+/* Signing in with a recovery phrase: the field is sized for twelve words,
+   and the compact account dialog widens to the ceremony's width while
+   they are typed. The in-space FABB task keeps its anchored width. */
+#tonk-register #tonk-register-phrase {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 128px;
+    height: auto;
+    padding: 10px 12px;
+    font: 600 16px/1.6 var(--mono, ui-monospace, monospace);
+    text-transform: none;
+    resize: vertical;
+}
+#tonk-register[data-phrase-login] #tonk-register-phrase-row {
+    height: auto; min-height: 0; align-items: stretch;
+}
+#tonk-register[data-phrase-login][data-account-task]:not([data-anchored]):not([data-fabb-task]) .ocol {
+    width: min(576px, calc(100vw - 32px));
+}
