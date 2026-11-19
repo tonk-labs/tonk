@@ -125,6 +125,14 @@ async fn load_record_from(
 }
 
 /// Load and validate the local root, failing when it is missing.
+/// Whether this browser signed in with the account's recovery phrase: its
+/// root records no passkey for the account.
+pub(crate) async fn signed_in_with_phrase(state: &TonkState) -> bool {
+    local_root(state)
+        .await
+        .is_ok_and(|root| root.credential_id.is_empty())
+}
+
 pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorkerError> {
     let record = load_record(state)
         .await?
@@ -501,6 +509,34 @@ mod tests {
         let Json(result) = get(State(state)).await.unwrap();
         assert!(matches!(result, RootStatus::Ready { delegation_cid, .. }
             if delegation_cid == grant.proof_cids()[0].to_string()));
+    }
+
+    /// A browser that signed in with the account's passkey is not taken
+    /// for one that signed in with its recovery phrase. Approving or
+    /// removing an agent names no credential, so the page must be told
+    /// which it is: when this was read from a missing credential, every
+    /// browser was asked for the phrase and no passkey prompt ever came.
+    #[dialog_common::test]
+    async fn it_tells_a_phrase_sign_in_from_a_passkey_sign_in() {
+        let with_passkey = Arc::new(crate::StateLock::new(test_state_without_root().await));
+        let device = with_passkey.read().await.profile.did();
+        let (request, _) = request_for(1, &device).await;
+        let _ = save(State(with_passkey.clone()), Json(request))
+            .await
+            .unwrap();
+        assert!(!signed_in_with_phrase(&*with_passkey.read().await).await);
+
+        let with_phrase = Arc::new(crate::StateLock::new(test_state_without_root().await));
+        let device = with_phrase.read().await.profile.did();
+        let (mut request, _) = request_for(2, &device).await;
+        request.credential_id = String::new();
+        let _ = save(State(with_phrase.clone()), Json(request))
+            .await
+            .unwrap();
+        assert!(signed_in_with_phrase(&*with_phrase.read().await).await);
+
+        let signed_out = test_state_without_root().await;
+        assert!(!signed_in_with_phrase(&signed_out).await);
     }
 
     #[dialog_common::test]

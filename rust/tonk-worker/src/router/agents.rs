@@ -449,6 +449,7 @@ pub async fn revoke(
     if links.is_empty() {
         return Ok(Json(RevokeAnswer { pending: false }));
     }
+    let phrase_only = super::identity::signed_in_with_phrase(&tonk).await;
     drop(tonk);
     let Some(axum::Extension(client)) = client else {
         return Err(TonkWorkerError::Conflict(
@@ -457,7 +458,7 @@ pub async fn revoke(
     };
     let space = request.space.to_string();
     withdraw::note(&key, &space, Some(withdraw::Removal::Pending));
-    let asked = super::navigate::request_webauthn_with(
+    let asked = super::navigate::request_webauthn_for(
         &client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(tonk_worker_api::CustodyIntent::RevokeAgent(
@@ -467,6 +468,7 @@ pub async fn revoke(
             },
         )),
         None,
+        phrase_only,
     )
     .await;
     if let Err(error) = asked {

@@ -87,6 +87,14 @@ pub struct WebAuthnRequest {
     /// passkeys for this origin cannot answer with another account's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    /// This browser signed in with the account's recovery phrase and holds
+    /// no passkey for it, so an account action asks for the phrase first.
+    ///
+    /// Said outright rather than read from a missing [`Self::credential_id`]:
+    /// approving or removing an agent names no credential on purpose, so
+    /// that any passkey of the account will do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phrase_only: bool,
 }
 
 /// What a custody handoff should do once it holds the handles.

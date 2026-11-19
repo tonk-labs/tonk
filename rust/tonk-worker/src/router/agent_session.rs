@@ -375,13 +375,15 @@ pub async fn create(
         .await;
     }
     clock.lap("pending reported");
+    let phrase_only = super::identity::signed_in_with_phrase(&*state.read().await).await;
     // Any passkey of this account will do: the recovered root is checked
     // against the signed-in account before anything is signed.
-    super::navigate::request_webauthn_with(
+    super::navigate::request_webauthn_for(
         &client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(tonk_worker_api::CustodyIntent::AuthorizeAgent(intent)),
         None,
+        phrase_only,
     )
     .await?;
     clock.lap("passkey asked");
