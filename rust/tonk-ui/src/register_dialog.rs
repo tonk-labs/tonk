@@ -96,7 +96,6 @@ const DISMISS: &str = "#tonk-register-dismiss";
 const STATUS: &str = "#tonk-register-status";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const EMAIL_ROW: &str = "#tonk-register-email-row";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const NAME_ROW: &str = "#tonk-register-name-row";
 /// The row standing while the emailed link is out. It is the SAME row
 /// that becomes `email · verified`: activation confirms the address it
@@ -499,6 +498,23 @@ fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Ele
         }
     }
     host.set_inner_html(&crate::task_page::page(html));
+    // The standalone task starts with one field. The wordmark returns to the
+    // hub. Embedded tasks keep their cancel action beside the primary action.
+    if html == DIALOG_HTML
+        && document
+            .location()
+            .and_then(|location| location.pathname().ok())
+            .as_deref()
+            == Some("/account")
+        && let Ok(Some(header)) = host.query_selector(".fabb-top")
+        && let Ok(Some(dismiss)) = host.query_selector(DISMISS)
+        && let Some(logo) = header.first_element_child()
+    {
+        dismiss.set_text_content(None);
+        let _ = dismiss.set_attribute("aria-label", "return to hub");
+        let _ = dismiss.append_child(&logo);
+        let _ = header.append_child(&dismiss);
+    }
     let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1109,6 +1125,12 @@ fn clear_state() {
             return;
         }
         let _ = host.remove_attribute("data-state");
+        if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+            let _ = note.set_attribute("hidden", "");
+        }
+        if let Ok(Some(live)) = host.query_selector("#tonk-register-announcement") {
+            live.set_text_content(None);
+        }
         if let Ok(Some(row)) = host.query_selector(NAME_ROW) {
             if let Some(input) = row
                 .query_selector("input")
@@ -1513,18 +1535,26 @@ fn show_answer(answer: &Answer) {
     } else if let Ok(Some(row)) = host.query_selector(NAME_ROW) {
         row.remove();
     }
-    set_status(contained_status_for(&answer.state));
+    let new_account = answer.state == tonk_schema::email_state::UNREGISTERED;
+    if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+        let _ = note.toggle_attribute_with_force("hidden", !new_account);
+    }
+    set_status(if new_account {
+        ""
+    } else {
+        contained_status_for(&answer.state)
+    });
     if let Ok(Some(live)) = host.query_selector("#tonk-register-announcement") {
-        live.set_text_content(Some(
-            if matches!(
-                answer.state.as_str(),
-                tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
-            ) {
-                "This email has a Tonk account."
-            } else {
-                ""
-            },
-        ));
+        live.set_text_content(Some(if new_account {
+            "No account uses this email yet."
+        } else if matches!(
+            answer.state.as_str(),
+            tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
+        ) {
+            "This email has a Tonk account."
+        } else {
+            ""
+        }));
     }
 
     // The action row unfolds only once the lookup has named a step, and
@@ -1988,6 +2018,9 @@ pub(crate) fn run_signup_ceremony() {
             CEREMONY_KIND_ATTR,
             if existing { "login" } else { "signup" },
         );
+        if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+            let _ = note.set_attribute("hidden", "");
+        }
     }
     settle_named_row(EMAIL_ROW, "email", &email);
     // While the platform holds the ceremony, the action row says so

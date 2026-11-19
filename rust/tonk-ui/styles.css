@@ -3709,7 +3709,8 @@ tonk-notebook-index {
 #tonk-register.register-page .register-record .k { color: var(--fp-soft); }
 #tonk-register.register-page .register-record .v { overflow-wrap: anywhere; }
 #tonk-register.register-page .register-message p { margin: 0; }
-#tonk-register.register-page .fabb-field:last-child { margin-bottom: 0; }
+#tonk-register.register-page .fabb-field:last-child,
+#tonk-register-email-row:has(+ #tonk-register-new-note[hidden]:last-child) { margin-bottom: 0; }
 #tonk-register.register-page .register-message:not([hidden]) { margin-top: 12px; }
 #tonk-register.register-page[data-fabb-task] .fabb-page { background: transparent; }
 #tonk-register.register-page[data-fabb-task] .fabb-top { display: none; }
@@ -3722,3 +3723,9 @@ tonk-email-invite #email-invite-status:empty { margin: 0; }
   #tonk-register-name-row { animation: account-field-in 150ms ease-out; }
   @keyframes account-field-in { from { opacity: 0; } to { opacity: 1; } }
 }
+
+#tonk-register .fabb-top > button {
+  display:inline-flex; align-items:center; min-height:44px; padding:0; border:0;
+  background:transparent; color:inherit; cursor:pointer;
+}
+#tonk-register .fabb-actions:not(:has(button:not([hidden]))) { display:none; }
