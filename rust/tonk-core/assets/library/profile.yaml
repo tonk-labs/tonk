@@ -673,6 +673,13 @@ view!:
         color:var(--soft); font:400 13px/1.5 var(--sans); }
       .hub-page account-settings .expl { max-width:60ch; margin:14px 0 0;
         font:400 15px/1.6 var(--sans); }
+      .hub-page account-settings .recovery-panel:has([data-recovery-setup]) .recovery-inactive,
+      .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) .recovery-inactive,
+      .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) [data-recovery-setup] { display:none; }
+      .hub-page account-settings .recovery-ack { display:flex; align-items:flex-start; gap:10px;
+        max-width:60ch; margin:14px 0 0; font:400 15px/1.6 var(--sans); }
+      .hub-page account-settings .recovery-ack input { margin-top:5px; flex:none; }
+      .hub-page account-settings [data-add-recovery-phrase]:disabled { opacity:.5; cursor:default; }
       .hub-page account-settings .panel-action,
       .hub-page account-settings .switch-account { display:flex; align-items:center;
         justify-content:space-between; gap:16px; width:100%; min-height:48px;
@@ -1902,6 +1909,25 @@ command!: &account/add-passkey
       the: xyz.tonk.command.add-passkey/account
       as: entity
 
+# Setting up the recovery phrase. The page has generated it, shown the
+# words once and had them confirmed, and holds them in memory; they never
+# ride on this command, which is recorded. Same click shape as adding a
+# passkey, its own namespace.
+event!: &on/add-recovery-phrase
+  type: "click"
+  prevent-default: true
+  where:
+    account: ".currentTarget.dataset.account"
+
+command!: &account/add-recovery-phrase
+  this: tonk:add-recovery-phrase
+  description: Seal the account under the recovery phrase the page staged, proving with the passkey.
+  with:
+    account:
+      description: The account, read off the control.
+      the: xyz.tonk.command.add-recovery-phrase/account
+      as: entity
+
 # The address rides on the control that armed the deletion, stamped
 # there by the registration view: the command carries the verified
 # email so the worker can bind it into the purge it signs.
@@ -2358,6 +2384,17 @@ view!:
           <button class="cta panel-action" type="button" data-add-passkey data-account="tonk:add-passkey"
             on:add-passkey=tonk:add-passkey>add a passkey <span aria-hidden="true">+</span></button>
         </section>
+        <!-- One phrase per account, ever: once one exists its card shows
+             and the setup is hidden. Setup renders through
+             `tonk:account/active`, so an account that has not opened its
+             activation link is told so and offered nothing. The words
+             are shown by the top document, never in this frame. -->
+        <section class="settings-panel recovery-panel" data-recovery-panel>
+          <h2>Recovery phrase</h2>
+          <div class="passkey-list"><tonk-display model="recovery:phrase"></tonk-display></div>
+          <tonk-display model="tonk:account/active" view="recovery-setup"></tonk-display>
+          <p class="expl recovery-inactive">Open the activation link we emailed you, then set up a recovery phrase here.</p>
+        </section>
         <!-- The deletion dialog lives on the registration because the
              command carries the verified address, stamped on the submit
              control here. What it deletes is listed from `space/owned`;
@@ -2411,6 +2448,36 @@ view!:
         <tonk-display model="tonk:account/registered" view="email"></tonk-display>
         <button class="cta primary-action" type="submit" data-profile-rename-submit>save changes</button>
       </form>
+
+# The recovery phrase setup, shown only for an activated account: what a
+# phrase is, that it is permanent, and the button that asks the top
+# document to show the words. The button stays disabled until the person
+# says they understand it cannot be revoked.
+view!:
+  this: tonk:account/active
+  show:
+    recovery-setup: |
+      <recovery-phrase-gate data-recovery-setup>
+        <p class="expl">
+          Twelve words that sign you in when you have no passkey: on a new device, or for someone
+          you hand them to. Anyone with these words can sign in as you, forever.
+        </p>
+        <label class="recovery-ack"><input type="checkbox" data-recovery-ack>
+          <span>I understand that a recovery phrase can never be revoked or replaced.</span></label>
+        <button class="cta panel-action" type="button" data-add-recovery-phrase
+          data-account="tonk:add-recovery-phrase" on:add-recovery-phrase=tonk:add-recovery-phrase
+          disabled>set up a recovery phrase <span aria-hidden="true">+</span></button>
+      </recovery-phrase-gate>
+
+view!:
+  this: recovery/phrase
+  show:
+    directory: |
+      <div class="passkey-card" data-recovery-phrase-row data-id={this}>
+        <svg class="passkey-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 6h14M5 10h14M5 14h9M5 18h6"></path></svg>
+        <span><b>Recovery phrase</b>
+          <span class="passkey-created">set up <span data-settings-passkey-created>{created-at}</span>; it cannot be revoked</span></span>
+      </div>
 
 view!:
   this: tonk:account/passkey
@@ -4701,6 +4768,25 @@ concept!: &recovery/passkey
       the: xyz.tonk.recovery/display-name
       as: text
 
+# The account's recovery phrase: twelve words that open the account the
+# way a passkey does. Keyed on the custody DID the words derive, which is
+# the `to` of the `secret:message` holding the account secret sealed under
+# it, exactly as a passkey's row is. Its own attribute namespace, so a
+# phrase never reads as a passkey.
+#
+# A phrase cannot be revoked: it opens the account secret itself, so an
+# account has at most one, and this row existing is what tells settings
+# not to offer another. No words or checksum are stored, nothing beyond
+# the custody DID they derive.
+concept!: &recovery/phrase
+  this: recovery:phrase
+  description: The account's recovery phrase, which opens the account the way a passkey does.
+  with:
+    created-at:
+      description: When the phrase was set up, unix seconds.
+      the: xyz.tonk.recovery.phrase/created-at
+      as: natural:64
+
 # ── Device links ────────────────────────────────────────────────────
 
 # A device link: the authorization one device holds to act for this
@@ -5115,6 +5201,28 @@ element!: &inline-editable
 # request like a sent one (so it never says whether an account exists),
 # so the button rests for that minute rather than offering a press that
 # would quietly send nothing.
+# Keeps "set up a recovery phrase" disabled until its acknowledgement is
+# ticked: a phrase cannot be revoked, so the person says so first.
+element!: &recovery-phrase-gate
+  description: "Enables the recovery phrase setup button only once the person acknowledges a phrase cannot be revoked."
+  method:
+    connected: |
+      (self) => {
+        self.__change ??= () => self.sync();
+        self.addEventListener('change', self.__change);
+        self.sync();
+      }
+    disconnected: |
+      (self) => {
+        if (self.__change) self.removeEventListener('change', self.__change);
+      }
+    sync: |
+      (self) => {
+        const ack = self.querySelector('[data-recovery-ack]');
+        const button = self.querySelector('[data-add-recovery-phrase]');
+        if (button) button.disabled = !ack?.checked;
+      }
+
 element!: &resend-activation
   description: Requests another activation email and shows the answer.
   method:
@@ -6598,6 +6706,7 @@ element!: &account-settings
           'delete-account': 'Deleting the account',
           'authorize-device': 'Approving the connection',
           'add-passkey': 'Adding the passkey',
+          'add-recovery-phrase': 'Setting up the recovery phrase',
           'sign-in-via': 'Signing in',
           'authorize-agent': 'Approving the agent',
         }[which];
@@ -6606,6 +6715,7 @@ element!: &account-settings
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Completing the connection…',
           'sign-in-via': 'Signed in.',
+          'add-recovery-phrase': 'Recovery phrase saved.',
           'authorize-agent': 'Approved. Returning to the app…',
         }[which] ?? 'Done.';
         const text = {
@@ -6754,6 +6864,8 @@ element!: &account-settings
             self.status('Waiting for passkey…');
           } else if (hit('[data-add-passkey]')) {
             self.status('Waiting for passkey…');
+          } else if (hit('[data-add-recovery-phrase]')) {
+            self.status('Write down the words the recovery phrase card shows.');
           } else if (hit('[data-link-approve]')) {
             self.setAttribute('data-passkey-requested', '');
             self.status('Waiting for passkey…');

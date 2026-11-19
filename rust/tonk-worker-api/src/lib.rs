@@ -47,7 +47,8 @@ pub use identity::{
     AccountCreation, AccountPurge, AgentAuthorization, AgentRevocation, AgentSpaceChoice,
     CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent, DeviceAuthorization, DeviceLink,
     ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT, LinkAccountRequest, PasskeyAddition,
-    PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
+    PasskeyMetadata, RecoveryPhraseAddition, RootStatus, SaveRootRequest, WEBAUTHN, WebAuthnKind,
+    WebAuthnRequest,
 };
 pub use invite::{
     CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,

@@ -170,6 +170,11 @@ pub(crate) async fn ask_for_passkey(
     }
 }
 
+/// What a ceremony that adds a way into the account says when the
+/// account is not activated yet.
+pub(crate) const ACTIVATE_FIRST: &str =
+    "Activate your account first: open the link in the email we sent you.";
+
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
@@ -196,6 +201,19 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
                 .await;
                 return;
             };
+            // A passkey added before the account is activated could not
+            // be provisioned, so it would open the account only on this
+            // device. Refused before the passkey is asked for.
+            if !super::customer::is_active(&tonk).await {
+                report(
+                    &tonk,
+                    ceremony::ADD_PASSKEY,
+                    ceremony_state::REFUSED,
+                    ACTIVATE_FIRST,
+                )
+                .await;
+                return;
+            }
             tonk_worker_api::PasskeyAddition {
                 account_did: root.root_did.to_string(),
                 endpoint: format!("{}ucan/", origin),
@@ -205,6 +223,75 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
             self,
             ceremony::ADD_PASSKEY,
             tonk_worker_api::CustodyIntent::AddPasskey(addition),
+        )
+        .await;
+    }
+}
+
+/// Why this account may not set up a recovery phrase, or `None` when it
+/// may: it must be active, and must not have one already. Checked before
+/// anything else, so the person is told what to do about their account
+/// rather than about the environment.
+pub(crate) async fn recovery_phrase_refusal(
+    tonk: &crate::worker::TonkState,
+) -> Option<&'static str> {
+    if !super::customer::is_active(tonk).await {
+        return Some(ACTIVATE_FIRST);
+    }
+    match super::account_state::recovery_phrase(tonk).await {
+        Ok(None) => None,
+        Ok(Some(_)) => {
+            Some("This account already has a recovery phrase, and it cannot be replaced.")
+        }
+        Err(_) => Some("the account's recovery phrase could not be checked"),
+    }
+}
+
+/// What setting up a recovery phrase needs, or why it is refused.
+async fn recovery_phrase_addition(
+    tonk: &crate::worker::TonkState,
+) -> Result<tonk_worker_api::RecoveryPhraseAddition, &'static str> {
+    let root = super::identity::local_root(tonk)
+        .await
+        .map_err(|_| "no account is signed in on this profile")?;
+    if let Some(refusal) = recovery_phrase_refusal(tonk).await {
+        return Err(refusal);
+    }
+    let origin = super::customer::service_origin().map_err(|_| "the sync service is unknown")?;
+    Ok(tonk_worker_api::RecoveryPhraseAddition {
+        account_did: root.root_did.to_string(),
+        endpoint: format!("{}ucan/", origin),
+    })
+}
+
+/// Run `tonk:add-recovery-phrase`: seal the account under the phrase the
+/// page staged. Refused, before the passkey is asked for, for an account
+/// that is not active or already has a phrase.
+#[dialog_capability::provider]
+impl dialog_capability::Provider<tonk_schema::command::AddRecoveryPhrase>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::AddRecoveryPhrase) {
+        let addition = {
+            let tonk = self.state().read().await;
+            match recovery_phrase_addition(&tonk).await {
+                Ok(addition) => addition,
+                Err(reason) => {
+                    report(
+                        &tonk,
+                        ceremony::ADD_RECOVERY_PHRASE,
+                        ceremony_state::REFUSED,
+                        reason,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        };
+        ask_for_passkey(
+            self,
+            ceremony::ADD_RECOVERY_PHRASE,
+            tonk_worker_api::CustodyIntent::AddRecoveryPhrase(addition),
         )
         .await;
     }

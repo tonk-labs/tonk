@@ -79,6 +79,35 @@ impl RecoveryPasskey {
     }
 }
 
+/// The account's recovery phrase, keyed on the custody DID its words
+/// derive, which is the `to` of the [`SecretMessage`] holding the account
+/// secret sealed under it, exactly as a [`RecoveryPasskey`] is.
+///
+/// Its existence is what the settings page reads to offer setting one up
+/// only while there is none: a phrase cannot be revoked, so an account
+/// has at most one. No words, no checksum and nothing derived from them
+/// beyond the custody DID are ever stored.
+///
+/// [`SecretMessage`]: crate::SecretMessage
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecoveryPhrase {
+    /// The custody DID the phrase derives.
+    pub this: Entity,
+    /// Unix seconds when it was set up.
+    pub created_at: crate::domain::recovery_phrase::CreatedAt,
+}
+
+impl RecoveryPhrase {
+    /// Record the phrase whose words derive `custody`, set up at
+    /// `created_at`.
+    pub fn new(custody: &Did, created_at: u64) -> Self {
+        Self {
+            this: custody.this(),
+            created_at: crate::domain::recovery_phrase::CreatedAt(created_at),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;

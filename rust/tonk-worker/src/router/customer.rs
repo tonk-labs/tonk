@@ -524,6 +524,36 @@ pub(crate) async fn record_custody_cell(
     Ok(())
 }
 
+/// Record the account's recovery phrase on profile main: the account
+/// secret sealed to the custody DID the words derive, and the phrase's
+/// row on that same entity, in one transaction.
+///
+/// The row is what settings reads to know a phrase exists, and what
+/// [`super::account_state::recovery_phrase`] checks to refuse a second
+/// one.
+pub(crate) async fn record_recovery_phrase(
+    state: &crate::worker::TonkState,
+    custody: &dialog_varsig::Did,
+    sealed: &[u8],
+    created_at: u64,
+) -> Result<(), TonkWorkerError> {
+    let account = super::identity::root_did(state).await?;
+    state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .transaction()
+        .assert(tonk_schema::SecretMessage::new(custody, sealed.to_vec()).sealed_by(&account))
+        .assert(tonk_schema::RecoveryPhrase::new(custody, created_at))
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to record the recovery phrase: {error}"))
+        })?;
+    Ok(())
+}
+
 /// Provision `consumer`, or queue it when the account has not yet
 /// confirmed its email.
 ///

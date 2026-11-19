@@ -125,6 +125,18 @@ impl RecoveryPhrase {
         Ok(Self(entropy))
     }
 
+    /// Adopt a phrase's 16 bytes, as the page hands them to the worker
+    /// (the same way it hands over a passkey's PRF outputs) so the
+    /// words never travel as text.
+    pub fn from_entropy(entropy: Zeroizing<[u8; PHRASE_ENTROPY]>) -> Self {
+        Self(entropy)
+    }
+
+    /// The phrase's 16 bytes, for the page to hand to the worker.
+    pub fn entropy(&self) -> &[u8; PHRASE_ENTROPY] {
+        &self.0
+    }
+
     /// The twelve words, space-separated, to show once.
     pub fn words(&self) -> Zeroizing<String> {
         let mnemonic = Mnemonic::from_entropy_in(Language::English, self.0.as_ref())

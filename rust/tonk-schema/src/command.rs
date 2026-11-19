@@ -82,6 +82,25 @@ pub struct AddPasskey {
     pub account: crate::domain::command::current::add_passkey::Account,
 }
 
+/// `tonk:add-recovery-phrase`: seal the account under a recovery phrase.
+///
+/// The page has already generated the phrase, shown its words and had
+/// them confirmed; it holds them in memory only. The worker refuses an
+/// account that is not active or already has a phrase, then asks the
+/// page to assert the passkey and hand over the phrase with it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddRecoveryPhrase {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The account to set the phrase up for.
+    pub account: crate::domain::command::current::add_recovery_phrase::Account,
+}
+
+impl Command for AddRecoveryPhrase {
+    type Input = Self;
+    type Output = ();
+}
+
 impl From<legacy::AddPasskey> for AddPasskey {
     fn from(legacy: legacy::AddPasskey) -> Self {
         Self {

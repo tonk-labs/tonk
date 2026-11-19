@@ -133,7 +133,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 
 mod recovery;
 mod roster;
-pub use recovery::RecoveryPasskey;
+pub use recovery::{RecoveryPasskey, RecoveryPhrase};
 pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;

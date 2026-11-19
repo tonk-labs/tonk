@@ -157,9 +157,20 @@ async fn mediate_pair(
     holder: Option<crate::passkey::EvaluatedCustodyCredential>,
     request: JsValue,
 ) -> Result<JsValue, JsValue> {
+    mediate_handoff(Some(credential), holder, None, request).await
+}
+
+/// The custody handoff in full: a primary passkey, a holder passkey, and
+/// a recovery phrase, each optional. A phrase travels as its 16 bytes in
+/// a typed array, cleared after posting like the PRF outputs, never as
+/// words.
+async fn mediate_handoff(
+    credential: Option<crate::passkey::EvaluatedCustodyCredential>,
+    holder: Option<crate::passkey::EvaluatedCustodyCredential>,
+    phrase: Option<crate::phrase::RecoveryPhrase>,
+    request: JsValue,
+) -> Result<JsValue, JsValue> {
     let channel = web_sys::MessageChannel::new()?;
-    let key = Uint8Array::from(&credential.evaluation.key[..]);
-    let kek = Uint8Array::from(&credential.evaluation.kek[..]);
 
     let message = Object::new();
     Reflect::set(&message, &"type".into(), &"custody".into())?;
@@ -173,13 +184,27 @@ async fn mediate_pair(
         Some("authorize-device" | "authorize-agent")
     );
     Reflect::set(&message, &"progress".into(), &JsValue::from_bool(approval))?;
-    Reflect::set(
-        &message,
-        &"credentialId".into(),
-        &hex::encode(&credential.id).into(),
-    )?;
-    Reflect::set(&message, &"key".into(), &key)?;
-    Reflect::set(&message, &"kek".into(), &kek)?;
+    let primary_arrays = if let Some(credential) = &credential {
+        let key = Uint8Array::from(&credential.evaluation.key[..]);
+        let kek = Uint8Array::from(&credential.evaluation.kek[..]);
+        Reflect::set(
+            &message,
+            &"credentialId".into(),
+            &hex::encode(&credential.id).into(),
+        )?;
+        Reflect::set(&message, &"key".into(), &key)?;
+        Reflect::set(&message, &"kek".into(), &kek)?;
+        Some((key, kek))
+    } else {
+        None
+    };
+    let phrase_array = if let Some(phrase) = &phrase {
+        let bytes = Uint8Array::from(&phrase.entropy()[..]);
+        Reflect::set(&message, &"phrase".into(), &bytes)?;
+        Some(bytes)
+    } else {
+        None
+    };
     Reflect::set(&message, &"request".into(), &request)?;
     let holder_arrays = if let Some(holder) = &holder {
         let holder_key = Uint8Array::from(&holder.evaluation.key[..]);
@@ -210,8 +235,13 @@ async fn mediate_pair(
     // returns. Clear every page-side typed array whether posting succeeded
     // or threw; the Zeroizing Rust arrays are cleared when their credentials
     // leave this function.
-    key.fill(0, 0, key.length());
-    kek.fill(0, 0, kek.length());
+    if let Some((key, kek)) = &primary_arrays {
+        key.fill(0, 0, key.length());
+        kek.fill(0, 0, kek.length());
+    }
+    if let Some(bytes) = &phrase_array {
+        bytes.fill(0, 0, bytes.length());
+    }
     if let Some((holder_key, holder_kek)) = &holder_arrays {
         holder_key.fill(0, 0, holder_key.length());
         holder_kek.fill(0, 0, holder_kek.length());
@@ -223,6 +253,92 @@ async fn mediate_pair(
         CUSTODY_HANDOFF_TIMEOUT_MS,
     ))
     .await
+}
+
+thread_local! {
+    /// The recovery phrase this page is about to use, staged by
+    /// [`generate_recovery_phrase`] or [`stage_recovery_phrase`] and taken,
+    /// once, by the ceremony that uses it. Kept here rather than passed
+    /// through the command that starts the ceremony, because commands
+    /// are recorded and the words must never be.
+    static STAGED_PHRASE: std::cell::RefCell<Option<crate::phrase::RecoveryPhrase>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn take_staged_phrase() -> Result<crate::phrase::RecoveryPhrase, JsValue> {
+    STAGED_PHRASE
+        .with(|staged| staged.borrow_mut().take())
+        .ok_or_else(|| JsValue::from_str("no recovery phrase is ready; enter it again"))
+}
+
+/// `generateRecoveryPhrase()` → `{ words }`.
+///
+/// A new phrase from the platform CSPRNG, staged for the
+/// `addRecoveryPhrase` ceremony that saves it. The words come back once,
+/// for the page to show.
+fn generate_recovery_phrase() -> Result<JsValue, JsValue> {
+    let phrase = crate::phrase::RecoveryPhrase::generate().map_err(js_error)?;
+    let words = phrase.words();
+    STAGED_PHRASE.with(|staged| *staged.borrow_mut() = Some(phrase));
+    let output = Object::new();
+    Reflect::set(&output, &"words".into(), &words.as_str().into())?;
+    Ok(output.into())
+}
+
+/// `stageRecoveryPhrase({ words })` → `{}`, or a rejection with a
+/// `message` and a `code` (`WordCount`, `UnknownWord`, `Checksum`) for
+/// the field to show.
+///
+/// Reads words a person typed or pasted, and stages them for the
+/// `useRecoveryPhrase` ceremony. Nothing is fetched or derived yet.
+fn stage_recovery_phrase(input: JsValue) -> Result<JsValue, JsValue> {
+    let words = string_property(&input, "words")?;
+    match crate::phrase::RecoveryPhrase::parse(&words) {
+        Ok(phrase) => {
+            STAGED_PHRASE.with(|staged| *staged.borrow_mut() = Some(phrase));
+            Ok(Object::new().into())
+        }
+        Err(error) => {
+            let code = match error {
+                crate::phrase::PhraseError::WordCount { .. } => "WordCount",
+                crate::phrase::PhraseError::UnknownWord { .. } => "UnknownWord",
+                crate::phrase::PhraseError::Checksum => "Checksum",
+            };
+            let refusal = Object::new();
+            Reflect::set(&refusal, &"message".into(), &error.to_string().into())?;
+            Reflect::set(&refusal, &"code".into(), &code.into())?;
+            Err(refusal.into())
+        }
+    }
+}
+
+/// `addRecoveryPhrase({ request, credentialId? })` → the worker's reply.
+///
+/// Asserts the passkey that holds the account, then hands the worker its
+/// PRF outputs and the staged phrase, which the worker seals the account
+/// secret under.
+async fn add_recovery_phrase(input: JsValue) -> Result<JsValue, JsValue> {
+    let phrase = take_staged_phrase()?;
+    let credential_id = optional_string_property(&input, "credentialId")
+        .map(|encoded| hex::decode(&encoded))
+        .transpose()
+        .map_err(|error| JsValue::from_str(&format!("invalid credentialId: {error}")))?;
+    let holder = crate::passkey::evaluate_custody_passkey(credential_id.as_deref())
+        .await
+        .map_err(js_error)?;
+    let holder = holder.into_evaluated().await.map_err(js_error)?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate_handoff(Some(holder), None, Some(phrase), request).await
+}
+
+/// `useRecoveryPhrase({ request })` → the worker's reply.
+///
+/// Signing in with the staged phrase instead of a passkey: no WebAuthn
+/// at all, only the handoff.
+async fn use_recovery_phrase(input: JsValue) -> Result<JsValue, JsValue> {
+    let phrase = take_staged_phrase()?;
+    let request = Reflect::get(&input, &"request".into()).unwrap_or(JsValue::UNDEFINED);
+    mediate_handoff(None, None, Some(phrase), request).await
 }
 
 /// `signRevocation({ delegationCid, pathHex, endpoint })` →
@@ -398,6 +514,44 @@ pub fn install() {
         add_passkey.as_ref().unchecked_ref(),
     );
     add_passkey.forget();
+
+    let generate =
+        Closure::<dyn FnMut() -> Result<JsValue, JsValue>>::new(generate_recovery_phrase);
+    let _ = Reflect::set(
+        &identity,
+        &"generateRecoveryPhrase".into(),
+        generate.as_ref().unchecked_ref(),
+    );
+    generate.forget();
+
+    let stage =
+        Closure::<dyn FnMut(JsValue) -> Result<JsValue, JsValue>>::new(stage_recovery_phrase);
+    let _ = Reflect::set(
+        &identity,
+        &"stageRecoveryPhrase".into(),
+        stage.as_ref().unchecked_ref(),
+    );
+    stage.forget();
+
+    let add_recovery_phrase = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(add_recovery_phrase(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"addRecoveryPhrase".into(),
+        add_recovery_phrase.as_ref().unchecked_ref(),
+    );
+    add_recovery_phrase.forget();
+
+    let use_recovery_phrase = Closure::<dyn FnMut(JsValue) -> Promise>::new(|input: JsValue| {
+        future_to_promise(use_recovery_phrase(input))
+    });
+    let _ = Reflect::set(
+        &identity,
+        &"useRecoveryPhrase".into(),
+        use_recovery_phrase.as_ref().unchecked_ref(),
+    );
+    use_recovery_phrase.forget();
 
     let _ = Reflect::set(&window, &"tonkIdentity".into(), &identity.into());
 }
