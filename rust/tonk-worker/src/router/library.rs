@@ -63,6 +63,13 @@ impl Library {
         Self { root }
     }
 
+    /// The served asset path used in existing browser seed versions, even
+    /// when this copy was loaded from the bundled library.
+    fn version_path(&self, uri: &Url) -> Option<String> {
+        let relative = uri.path().strip_prefix(self.root.path())?;
+        Some(format!("/library/{relative}"))
+    }
+
     fn contains(&self, uri: &Url) -> bool {
         within(&self.root, uri)
     }
@@ -190,10 +197,14 @@ struct Recording {
 impl Load for Recording {
     async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
         let bytes = self.library.load(uri).await?;
+        let path = self
+            .library
+            .version_path(uri)
+            .ok_or_else(|| format!("included file {uri} has no library-relative path"))?;
         self.read
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .push((uri.path().to_owned(), bytes.clone()));
+            .push((path, bytes.clone()));
         Ok(bytes)
     }
 }
@@ -352,6 +363,18 @@ mod tests {
                 component_url(&format!("tonk:library/{name}")),
                 None,
                 "{name}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn included_files_keep_the_served_version_path_on_every_host() {
+        for root in ["https://tonk.test/library/", "tonk-library:///"] {
+            let root = Url::parse(root).unwrap();
+            let included = root.join("./table/connected.js").unwrap();
+            assert_eq!(
+                Library::new(root).version_path(&included).as_deref(),
+                Some("/library/table/connected.js")
             );
         }
     }
