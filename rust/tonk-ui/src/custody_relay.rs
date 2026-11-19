@@ -478,6 +478,10 @@ fn run_recovery_phrase_card(intent: tonk_worker_api::CustodyIntent, credential_i
     on_click(&host, "#tonk-phrase-written", move || {
         show_phrase_confirmation(&confirm_asked);
     });
+    let copied_words = words.join(" ");
+    on_click(&host, "#tonk-phrase-copy", move || {
+        copy_words(&copied_words);
+    });
     let action = command_action(&intent);
     on_click(&host, "#tonk-custody-continue", move || {
         if !phrase_confirmed(&confirm_words, &asked) {
@@ -610,7 +614,10 @@ fn mount_phrase_entry_card() -> Option<Element> {
 }
 
 const PHRASE_ENTRY_HTML: &str = r#"
-<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
+<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
+            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
+<div role="dialog" aria-modal="true" aria-label="recovery phrase"
+     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
             display:flex;flex-direction:column;gap:7px;
             font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
             color:var(--ink, #38182a);text-transform:none">
@@ -623,10 +630,10 @@ const PHRASE_ENTRY_HTML: &str = r#"
               background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
     <p id="tonk-custody-text" style="margin:0;font-weight:600">
       Confirm this account action with your recovery phrase.</p>
-    <textarea id="tonk-phrase-entry" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false"
-      aria-label="recovery phrase" placeholder="your twelve words"
-      style="min-height:64px;padding:6px 8px;border:0;box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-             font:inherit;resize:vertical"></textarea>
+    <textarea id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false"
+      aria-label="recovery phrase" placeholder="your twelve words, in order"
+      style="min-height:120px;padding:10px 12px;border:0;box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+             font:600 15px/1.6 var(--mono, ui-monospace, monospace);resize:vertical"></textarea>
     <button id="tonk-phrase-use-passkey" type="button"
       style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
       use a passkey instead</button>
@@ -645,6 +652,7 @@ const PHRASE_ENTRY_HTML: &str = r#"
                    font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
       continue</button>
   </div>
+</div>
 </div>
 "#;
 
@@ -667,6 +675,29 @@ fn generate_recovery_phrase() -> Result<Vec<String>, String> {
         .and_then(|value| value.as_string())
         .ok_or("the recovery phrase came back without words")?;
     Ok(words.split(' ').map(str::to_owned).collect())
+}
+
+/// Put the words on the clipboard, in order, and say so on the button.
+///
+/// The words are already in this document, which is the only place they
+/// are shown; copying hands them to the person's own clipboard and
+/// nowhere else.
+fn copy_words(words: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let promise = window.navigator().clipboard().write_text(words);
+    wasm_bindgen_futures::spawn_local(async move {
+        let said = match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(_) => "copied",
+            Err(_) => "could not copy: write the words down instead",
+        };
+        if let Some(button) =
+            card().and_then(|card| card.query_selector("#tonk-phrase-copy").ok().flatten())
+        {
+            button.set_text_content(Some(said));
+        }
+    });
 }
 
 /// Three distinct word positions to ask back, in order.
@@ -706,6 +737,9 @@ fn show_phrase_confirmation(asked: &[usize]) {
     }
     if let Ok(Some(written)) = card.query_selector("#tonk-phrase-written") {
         written.remove();
+    }
+    if let Ok(Some(copy)) = card.query_selector("#tonk-phrase-copy") {
+        copy.remove();
     }
     if let Ok(Some(checks)) = card.query_selector("#tonk-phrase-checks") {
         let rows: String = asked
@@ -753,7 +787,10 @@ fn mount_phrase_card(words: &[String]) -> Option<Element> {
 }
 
 const PHRASE_CARD_HTML: &str = r#"
-<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
+<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
+            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
+<div role="dialog" aria-modal="true" aria-label="recovery phrase"
+     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
             display:flex;flex-direction:column;gap:7px;
             font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
             color:var(--ink, #38182a);text-transform:none">
@@ -771,6 +808,9 @@ const PHRASE_CARD_HTML: &str = r#"
     <ol id="tonk-phrase-words" data-recovery-words
         style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 12px;margin:0;padding:0;list-style:none;
                font:600 14px/1.5 var(--mono, ui-monospace, monospace)">{words}</ol>
+    <button id="tonk-phrase-copy" type="button"
+      style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
+      copy the 12 words</button>
     <div id="tonk-phrase-checks" hidden style="display:grid;gap:6px"></div>
   </div>
   <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
@@ -793,6 +833,7 @@ const PHRASE_CARD_HTML: &str = r#"
                    font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
       save with passkey</button>
   </div>
+</div>
 </div>
 "#;
 

@@ -2975,6 +2975,12 @@ fn toggle_phrase_login() {
     };
     set_hidden(Some(row), showing);
     set_hidden(query("#tonk-register-phrase-login"), showing);
+    // The dialog widens for the words while the phrase is being typed.
+    let _ = if showing {
+        host.remove_attribute("data-phrase-login")
+    } else {
+        host.set_attribute("data-phrase-login", "")
+    };
     set_hidden(query(EMAIL_ROW), !showing);
     set_hidden(
         query(ACTION),

@@ -2021,6 +2021,53 @@ pub(crate) mod tests {
             12,
             "a recovery phrase is twelve words: {words:?}"
         );
+
+        // The card is a centred dialog, like the login ceremony, not a
+        // corner card.
+        let geometry = first
+            .execute(
+                "const dialog = document.querySelector('[data-phrase-dialog] [role=dialog]');
+                 if (!dialog) return null;
+                 const rect = dialog.getBoundingClientRect();
+                 const frame = document.querySelector('[data-phrase-dialog]');
+                 return { centre: rect.left + rect.width / 2,
+                          viewport: frame.getBoundingClientRect().left + frame.clientWidth / 2,
+                          width: rect.width };",
+                Vec::new(),
+            )
+            .await?;
+        let geometry = geometry.json();
+        let off_centre = (geometry["centre"].as_f64().unwrap_or(0.0)
+            - geometry["viewport"].as_f64().unwrap_or(f64::MAX))
+        .abs();
+        assert!(
+            off_centre < 2.0 && geometry["width"].as_f64().unwrap_or(0.0) > 432.0,
+            "the recovery phrase dialog is centred and wider than the corner card: {geometry}"
+        );
+
+        // Copy puts the twelve words, in order, on the clipboard.
+        ChromeDevTools::new(first.handle.clone())
+            .execute_cdp_with_params(
+                "Browser.grantPermissions",
+                serde_json::json!({
+                    "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
+                }),
+            )
+            .await?;
+        click(&first, "#tonk-phrase-copy").await?;
+        wait_for_text_containing(&first, "#tonk-phrase-copy", "copied").await?;
+        let copied = first
+            .execute_async(
+                "const done = arguments[arguments.length - 1];
+                 navigator.clipboard.readText().then(done, error => done('ERROR ' + error));",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            copied.json().as_str(),
+            Some(words.join(" ").as_str()),
+            "copy puts the twelve words on the clipboard"
+        );
         click(&first, "#tonk-phrase-written").await?;
         wait_for_displayed(&first, "#tonk-phrase-check-0").await?;
         // Enter back the three words the card asks for, by position.
@@ -2061,6 +2108,20 @@ pub(crate) mod tests {
         raise_cluster_from_hub(&second, &env).await?;
         click(&second, "#tonk-register-phrase-switch").await?;
         let field = wait_for_displayed(&second, "#tonk-register-phrase").await?;
+        let size = second
+            .execute(
+                "const field = document.querySelector('#tonk-register-phrase');
+                 const rect = field.getBoundingClientRect();
+                 return { width: rect.width, height: rect.height };",
+                Vec::new(),
+            )
+            .await?;
+        let size = size.json();
+        assert!(
+            size["height"].as_f64().unwrap_or(0.0) >= 120.0
+                && size["width"].as_f64().unwrap_or(0.0) >= 300.0,
+            "the phrase field has room for twelve words: {size}"
+        );
         field.send_keys(words.join(" ")).await?;
         click(&second, "#tonk-register-phrase-login").await?;
 
