@@ -21,10 +21,12 @@
   <h1>Connect an agent to this Tonk space</h1>
   <p>This page explains how to use a scoped tool invitation. Give your agent the complete invite link. Opening or fetching this page does not connect anything.</p>
 
+  <p><strong>No link?</strong> Try Tonk locally on Apple Silicon macOS, with no account, at <a href="https://tonk.xyz/try">https://tonk.xyz/try</a>. To read it exactly: <code>curl -fsSL https://tonk.xyz/try</code>.</p>
+
   <h2>1. Join with the original link</h2>
   <p>Use the <strong>original complete URL supplied by the user</strong>, including everything after <code>#</code>. Replace <code>ORIGINAL_COMPLETE_INVITE_URL</code> below with that URL and keep it quoted.</p>
   <pre><code>npx --yes @tonk/cli join 'ORIGINAL_COMPLETE_INVITE_URL'</code></pre>
-  <p>This needs Node.js and npm on a supported platform (Apple Silicon macOS or x86_64 Linux). If Tonk is already installed, use <code>tonk</code> instead of <code>npx --yes @tonk/cli</code>. See the <a href="https://github.com/tonk-labs/tonk#install">native installation instructions</a> if npm is unavailable.</p>
+  <p>This needs Node.js and npm on Apple Silicon macOS. If Tonk is already installed, use <code>tonk</code> instead of <code>npx --yes @tonk/cli</code>. See the <a href="https://github.com/tonk-labs/tonk#install">native installation instructions</a> if npm is unavailable.</p>
   <p>For a staging, preview, or local deployment, add <code>--via 'DEPLOYMENT_ORIGIN'</code> to the join command, using the deployment origin serving this page (scheme, host, and port only). For example, <code>--via 'https://staging.tonk.xyz'</code>. Local development uses the locally built <code>tonk</code> binary. The CLI verifies that the invitation's service matches the selected deployment.</p>
   <p>The link supplies a separate tool identity. No CLI account login, account creation, or browser approval is needed. Keep the link private: its holder can read and change the space within the granted authority until expiry or revocation.</p>
   <p>The fragment after <code>#</code> is a secret and is not sent in HTTP requests. Do not use a URL reconstructed from a fetched page or redirect response; it may lack that fragment. Short links work directly with <code>join</code>. If the original fragment is missing, ask the user to copy the complete link again. Do not upload the link to a search engine or another service.</p>
@@ -41,7 +43,7 @@ npx --yes @tonk/cli help tutorial</code></pre>
   <h2>If connection stops</h2>
   <p>If the CLI prints a resume command, run it using the printed local name:</p>
   <pre><code>npx --yes @tonk/cli --space NAME join</code></pre>
-  <p>If the current directory is already bound to another space, run the original join command from a fresh directory. If access has expired or been revoked, ask for a fresh tool link; retain local data and offline edits. A person invitation cannot be used as a tool invitation: ask for a link from <strong>connect agent</strong>.</p>
+  <p>If the current directory is already bound to another space, run the original join command from a fresh directory. If access has expired or been revoked, ask for a fresh tool link; retain local data and offline edits. A person invitation cannot be used as a tool invitation: ask for a link from <strong>copy agent link</strong>.</p>
 </main>
 </body>
 </html>

@@ -141,7 +141,8 @@ tonk help notation         # built-in asserted-notation reference
 
 ## Agents
 
-An agent can use Tonk through the `tonk` CLI (start with `tonk help agent`
+An agent can [try Tonk locally](docs/try.md) on Apple Silicon macOS, with no
+account or link. It can use Tonk through the `tonk` CLI (start with `tonk help agent`
 and `tonk help tutorial`) or through an MCP connection. For the data model and
 the code layout, read [ARCHITECTURE.md](ARCHITECTURE.md). The MCP contracts are
 in [`mcp/AGENT-LINKS.md`](mcp/AGENT-LINKS.md), and the Claude Code plugin is

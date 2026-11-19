@@ -9,6 +9,23 @@ const watchdog = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
   .find((script) => script.includes('const RETRIES = "tonk:boot-retries"'));
 assert.ok(watchdog);
 
+const initialHeading = html.match(/<h1\b[^>]*\bdata-boot-title[^>]*>([\s\S]*?)<\/h1>/)?.[1].trim();
+
+test("static page readers get a local example hint without a false boot failure", () => {
+  assert.equal(initialHeading, "");
+  const hint = html.match(/<p class="tonk-boot-hint">([\s\S]*?)<\/p>/)?.[1];
+  assert.ok(hint);
+  assert.match(hint, /href="https:\/\/tonk\.xyz\/try"/);
+  assert.match(hint, /href="\/agent\/"/);
+  assert.match(hint, /href="\/\.well-known\/tonk"/);
+  assert.doesNotMatch(hint, /\b(?:curl|npm|npx)\b/);
+  const rules = [...html.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((match) => match[1].includes(".tonk-boot-hint"));
+  assert.equal(rules.length, 1);
+  assert.equal(rules[0][1].trim(), ".tonk-boot-hint");
+  assert.match(rules[0][2], /display:\s*none\s*;/);
+});
+
 function harness({ retries = 0, storageThrows = false } = {}) {
   const values = new Map();
   if (retries) values.set("tonk:boot-retries", String(retries));
@@ -17,7 +34,7 @@ function harness({ retries = 0, storageThrows = false } = {}) {
     failed: false,
     setAttribute(name) { if (name === "data-failed") this.failed = true; },
   };
-  const heading = { textContent: "Tonk couldn’t start" };
+  const heading = { textContent: initialHeading };
   let reloads = 0;
   const self = {};
   const storage = {
@@ -71,6 +88,7 @@ test("a second stall terminates instead of entering another recovery loop", () =
   result.self.tonkBootRecover("test stall");
   assert.equal(result.reloads(), 0);
   assert.equal(result.status.failed, true);
+  assert.equal(result.heading.textContent, "Tonk couldn’t start");
   assert.match(result.status.textContent, /local data is safe/i);
 });
 
