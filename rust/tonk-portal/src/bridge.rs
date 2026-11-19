@@ -1455,7 +1455,7 @@ fn real_href(state: &Rc<RefCell<PortalState>>, href: &str) -> String {
 /// space route shadows, so passing them through is unambiguous.
 fn is_top_level_route(rest: &str) -> bool {
     let head = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    matches!(head, "join" | "account" | "inspector" | "diagnose")
+    matches!(head, "join" | "account" | "inspector")
 }
 
 /// Set the host page's tab title on the guest's behalf. The guest's
@@ -2849,11 +2849,10 @@ mod tests {
         assert!(is_top_level_route("join"));
         assert!(is_top_level_route("account"));
         assert!(is_top_level_route("inspector"));
-        assert!(is_top_level_route("diagnose"));
         // A query or sub-path does not disguise the route.
         assert!(is_top_level_route("join?x=1"));
         assert!(is_top_level_route("account/devices"));
-        assert!(is_top_level_route("diagnose/abc123"));
+        assert!(is_top_level_route("inspector/abc123"));
     }
 
     /// Everything else is genuinely in-space and still gets the space

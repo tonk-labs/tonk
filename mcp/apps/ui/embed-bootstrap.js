@@ -1,7 +1,30 @@
 // Host supplies the route context and presentation options. Rendering stays
 // in the stock Tonk guest runtime, including installed space views.
+// The agent app's theme, which the host passes on mount and again
+// whenever it changes.
+addEventListener('message', (e) => {
+  if (e.source !== parent || e.data?.type !== 'tonk-theme') return;
+  window.__tonkSetTheme?.(e.data.theme);
+});
+// How big the host shows the view: strip, card, carousel or full. Inline
+// (anything but full), a view drops its own heading, since the host's
+// line names it: an element marked `data-tonk-heading` is hidden.
+const sizeStyle = document.createElement('style');
+sizeStyle.textContent =
+  'html[data-tonk-size]:not([data-tonk-size="full"]) [data-tonk-heading]{display:none!important}';
+document.head.append(sizeStyle);
+function setSize(size) {
+  if (!['strip', 'card', 'carousel', 'full'].includes(size)) return;
+  document.documentElement.dataset.tonkSize = size;
+}
+addEventListener('message', (e) => {
+  if (e.source !== parent || e.data?.type !== 'tonk-size') return;
+  setSize(e.data.size);
+});
 addEventListener('message', (e) => {
   if (e.source !== parent || e.data?.type !== 'tonk-mount') return;
+  if (e.data.theme) window.__tonkSetTheme?.(e.data.theme);
+  if (e.data.size) setSize(e.data.size);
   window.__tonkHideFab = e.data.hideFab === true;
   if (window.__tonkHideFab) {
     const style = document.createElement('style');

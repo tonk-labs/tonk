@@ -340,7 +340,7 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
  * `space` is taken.
  */
 export async function revoke(page, { agent, space }) {
-  await page.evaluate(
+  const pendingAgent = await page.evaluate(
     async ({ agent, space }) => {
       const listed = await fetch('/api/agents');
       if (!listed.ok) throw new Error(`agents answered ${listed.status}: ${await listed.text()}`);
@@ -359,9 +359,21 @@ export async function revoke(page, { agent, space }) {
       });
       if (!response.ok)
         throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+      return (await response.json()).pending ? found.key : null;
     },
     { agent, space },
   );
+  if (pendingAgent) {
+    await page.waitForFunction(async ({ key, space }) => {
+      const response = await fetch('/api/agents');
+      if (!response.ok) throw new Error(`agents answered ${response.status}`);
+      const agent = (await response.json()).find(candidate => candidate.key === key);
+      if (!agent) throw new Error('the agent disappeared during removal');
+      const held = agent.spaces.find(candidate => candidate.subject === space);
+      if (held?.removal?.state === 'failed') throw new Error(held.removal.reason);
+      return !held;
+    }, { key: pendingAgent, space }, { polling: 500, timeout: 180_000 });
+  }
 }
 
 /** A full-page screenshot into TONK_E2E_SCREENSHOTS, when it is set. */
