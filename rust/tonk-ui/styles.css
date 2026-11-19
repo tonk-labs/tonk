@@ -3696,6 +3696,11 @@ tonk-notebook-index {
 }
 #tonk-register[data-awaiting-email] .obtn:disabled { opacity: .45; }
 
+/* Web Awesome assigns native buttons a fixed height and adds space above
+   form fields. The task sheet owns those dimensions, including its touch floor. */
+.fabb-page .fabb-actions button { height: auto; }
+.fabb-page .fabb-field :is(input, select, textarea) { margin: 0; }
+
 /* The account task uses the same page and sheet as activation and joining.
    Its top-document dialog keeps the passkey gesture and return focus. */
 #tonk-register.register-page {

@@ -357,6 +357,17 @@ pub(crate) mod tests {
             let bound = driver
                 .execute(
                     "const target = arguments[0];
+                     return (async () => {
+                     // A fold reveals its children before its clipped edge finishes moving.
+                     const fold = target.closest('.hub-fold');
+                     if (fold) {
+                       const transitions = [];
+                       for (let node = fold; node; node = node.parentElement) {
+                         if (node.matches('.hub-fold, .hub-fold-in')) transitions.push(...node.getAnimations());
+                       }
+                       await Promise.allSettled(transitions.map(a => a.finished));
+                       target.scrollIntoView({block:'center', inline:'nearest', behavior:'instant'});
+                     }
                      // A library element's handlers arrive with its upgrade; the
                      // registry watches each such tag, so one it watches must be
                      // upgraded before a click inside it means anything.
@@ -371,7 +382,7 @@ pub(crate) mod tests {
                        bound = bound.parentElement;
                      }
                      const display = bound && bound.closest('tonk-display');
-                     return !display || display.hasAttribute('data-bound');",
+                     return !display || display.hasAttribute('data-bound'); })();",
                     vec![found.to_json()?],
                 )
                 .await?;
@@ -2562,14 +2573,8 @@ pub(crate) mod tests {
                 assert_eq!(layout["rowHeight"], 48, "{layout}");
             }
         }
-        element(&driver, &format!("{card} .hub-toggle"))
-            .await?
-            .click()
-            .await?;
-        element(&driver, &format!("{card} [data-space-rename-open]"))
-            .await?
-            .click()
-            .await?;
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        click(&driver, &format!("{card} [data-space-rename-open]")).await?;
         element(&driver, &format!("{card} [data-space-rename-input]")).await?;
         driver.quit().await?;
         Ok(())
@@ -4004,68 +4009,9 @@ pub(crate) mod tests {
         let opener_selector = format!("{remove} [data-space-remove-open]");
         let dialog_selector = format!("{remove} hub-row-task[data-space-remove-dialog]");
         let submit_selector = format!("{dialog_selector} [data-space-remove-submit]");
-        let row = wait_for_displayed(&driver, &format!(".hub-row:has({remove})")).await?;
-        // Park on the row once it has held still: its stylesheet lands a
-        // beat after it renders, and a pointer aimed at where the row was
-        // hovers nothing once it moves.
-        let measure = |driver: &WebDriver, row: &WebElement| {
-            let driver = driver.clone();
-            let row = row.clone();
-            async move {
-                driver
-                    .execute(
-                        "const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round);",
-                        vec![row.to_json()?],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-            }
-        };
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        let parked = loop {
-            let before = measure(&driver, &row).await?;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let after = measure(&driver, &row).await?;
-            if before == after || tokio::time::Instant::now() >= deadline {
-                break after;
-            }
-        };
-        driver
-            .action_chain()
-            .move_to_element_center(&row)
-            .perform()
-            .await?;
+        hub_style_applied(&driver).await?;
         click(&driver, &format!(".hub-row:has({remove}) .hub-toggle")).await?;
-        let opener = match wait_for_displayed(&driver, &opener_selector).await {
-            Ok(opener) => opener,
-            Err(error) => {
-                // What the pointer is over now, against where the row was
-                // when the pointer parked on it.
-                let hover = driver
-                    .execute(
-                        "const row = arguments[0]; const r = row.getBoundingClientRect();
-                         const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-                         const verbs = row.querySelector('.verbs');
-                         return {
-                           connected: row.isConnected, hovered: row.matches(':hover'),
-                           rect: [r.left, r.top, r.width, r.height].map(Math.round),
-                           under: at ? at.tagName + '.' + at.className : null,
-                           underInRow: !!(at && row.contains(at)),
-                           verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
-                           rows: document.querySelectorAll('.hub-row').length,
-                           scrollY: window.scrollY,
-                         };",
-                        vec![row.to_json()?],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-                    .unwrap_or(serde_json::Value::Null);
-                return Err(error.context(format!(
-                    "the remove verb never showed; parked={parked} now={hover}"
-                )));
-            }
-        };
-        opener.click().await?;
+        click(&driver, &opener_selector).await?;
         wait_for_displayed(&driver, &dialog_selector).await?;
 
         let safe_focus = driver

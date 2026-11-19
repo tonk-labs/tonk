@@ -52,7 +52,7 @@ const CARD_HTML: &str = r#"
 <header class="fabb-top"><!-- logotype --></header>
 <style>
 #tonk-custody-consent { color-scheme:light; }
-dialog#tonk-custody-consent { position:fixed; inset:0; width:100%; height:100%; max-width:none; max-height:none; border:0; }
+dialog#tonk-custody-consent { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100%; max-width:none; max-height:none; border:0; }
 #tonk-custody-consent .fabb-top { grid-row:1; }
 #tonk-custody-consent .tc-card { grid-row:2; border-radius:var(--tonk-radius-sheet,12px); }
 #tonk-custody-consent[data-anchored] { display:contents; }

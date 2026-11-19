@@ -554,7 +554,16 @@ fn open_when_upgraded(host: &Element) {
         {
             let _ = dialog.show_modal();
         }
-        focus_address(&host);
+        if host
+            .query_selector(".fabb-top button")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            focus_input(&host, "#tonk-register-head");
+        } else {
+            focus_address(&host);
+        }
     });
     let _ = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(raise.as_ref().unchecked_ref(), 0);
