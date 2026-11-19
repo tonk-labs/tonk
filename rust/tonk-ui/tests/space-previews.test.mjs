@@ -9,7 +9,8 @@ const space = { with: 'main@did:key:a', repo: 'did:key:a', branch: 'main', previ
 const image = 'data:image/webp;base64,UklGRg==';
 
 const library = readFileSync(new URL('../../tonk-core/assets/library/profile.yaml', import.meta.url), 'utf8');
-const source = library.split('element!: &hub-collection\n')[1].split('    previews: |\n')[1].split('\n    connected: |')[0];
+// The method's body runs to the next method key, whichever it is.
+const source = library.split('element!: &hub-collection\n')[1].split('    previews: |\n')[1].split(/\n    (?:#|[a-z-]+: \|)/)[0];
 const loadPreviews = Function(`return (${source.trim()})`)();
 
 test('hub keeps fallback on misses, reveals decoded images, and reloads a reused card identity', async () => {

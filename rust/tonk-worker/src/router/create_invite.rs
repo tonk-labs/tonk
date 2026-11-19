@@ -31,7 +31,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution};
+use tonk_schema::{Invitation, InvitationExecution, InvitationListed, InvitationMinted};
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -138,6 +138,28 @@ pub(super) async fn mint_invite(
             .url()
             .join("join")
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?,
+    };
+
+    // A link that replaces an open one lists in its place, so a reset
+    // default passlink stays the default. Read before the guard below:
+    // listing takes the state itself.
+    let place = match request.replaces.as_deref() {
+        None => None,
+        Some(target) => {
+            let Json(listed) =
+                super::revoke_invite::list(State(state.clone()), Path(repo_name.clone())).await?;
+            let replaced = listed
+                .iter()
+                .find(|row| {
+                    row.target_cid == target && row.kind == tonk_worker_api::InvitationKind::Open
+                })
+                .ok_or_else(|| {
+                    TonkWorkerError::Router(format!(
+                        "the link {target} to replace is not an open link of this space"
+                    ))
+                })?;
+            Some(replaced.place())
+        }
     };
 
     let tonk = state.read().await;
@@ -249,7 +271,7 @@ pub(super) async fn mint_invite(
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    record_invite(&tonk, &repo_name, &invite).await?;
+    record_invite(&tonk, &repo_name, &invite, place).await?;
 
     // An open invite's grant waits in the space as the ephemeral key's
     // ticket, and the link names only the space and the key's seed, on
@@ -304,7 +326,10 @@ pub(super) async fn mint_invite(
     );
 
     let response = match invite.audience {
-        InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
+        InviteAudience::Open { .. } => CreateInviteResponse::Open {
+            url,
+            target_cid: Some(super::revoke_invite::leaf_cid(&invite.chain)?.to_string()),
+        },
         InviteAudience::Scoped => CreateInviteResponse::Scoped {
             url,
             recipient_root: audience_did,
@@ -366,7 +391,7 @@ pub(super) async fn hosted_passlink(
         .ok_or_else(|| {
             TonkWorkerError::Conflict("The space did not accept the passlink ticket.".into())
         })?;
-    record_invite(tonk, space.as_ref(), &invite).await?;
+    record_invite(tonk, space.as_ref(), &invite, None).await?;
     Url::parse(&link).map_err(|error| TonkWorkerError::Internal(error.to_string()))
 }
 
@@ -374,6 +399,7 @@ async fn record_invite(
     tonk: &crate::TonkState,
     repo_name: &str,
     invite: &Invite,
+    place: Option<u64>,
 ) -> Result<(), TonkWorkerError> {
     // Record the invitation on the repo's content branch: the durable
     // half of the invite. The content branch syncs across replicas, so
@@ -395,12 +421,25 @@ async fn record_invite(
         InviteAudience::Scoped => "scoped",
     };
     let execution = InvitationExecution::new(&invitation, kind);
-    tonk.reactor
+    // When it was minted, so a list can keep the oldest open link first.
+    let minted_at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    let minted = InvitationMinted::new(&invitation, minted_at);
+    let listed = place.map(|place| InvitationListed::new(&invitation, place));
+    let mut transaction = tonk
+        .reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
         .transaction()
         .assert(invitation)
         .assert(execution)
+        .assert(minted);
+    if let Some(listed) = listed {
+        transaction = transaction.assert(listed);
+    }
+    transaction
         .commit()
         .perform(&tonk.operator)
         .await
@@ -1074,6 +1113,116 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap();
         assert_eq!(listed.len(), 1, "the minted invitation is listed");
         assert_eq!(listed[0].invitation, expected.this.to_string());
+        let CreateInviteResponse::Open { target_cid, .. } = minted else {
+            panic!("expected an open invitation");
+        };
+        assert_eq!(target_cid.as_ref(), Some(&listed[0].target_cid));
+        assert!(
+            listed[0].minted_at.is_some(),
+            "a fresh invitation lists when it was minted"
+        );
+    }
+
+    /// A link minted to replace the default lists in its place, ahead of
+    /// a link made before it, so a reset default stays the default.
+    #[dialog_common::test]
+    async fn it_lists_a_replacing_link_in_the_place_of_the_one_it_replaces() {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-replace-invitation").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+
+        let call = |method: &'static str, path: String, body: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .method(method)
+                            .header("content-type", "application/json")
+                            .extension(
+                                RequestOrigin::parse("https://local.example/invite")
+                                    .expect("valid origin"),
+                            )
+                            .body(if body.is_empty() {
+                                Body::empty()
+                            } else {
+                                Body::from(body)
+                            })
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, bytes)
+            }
+        };
+        let rows = || async {
+            let (status, bytes) = call(
+                "GET",
+                format!("/api/repository/{key}/invites"),
+                String::new(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            serde_json::from_slice::<Vec<tonk_worker_api::InvitationSummary>>(&bytes).unwrap()
+        };
+        let invite = format!("/api/repository/{key}/invite");
+
+        let (status, _) = call("POST", invite.clone(), "{}".into()).await;
+        assert_eq!(status, StatusCode::OK);
+        let first = rows().await;
+        assert_eq!(first.len(), 1);
+        let default = first[0].clone();
+        let (status, _) = call("POST", invite.clone(), "{}".into()).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = rows().await;
+        assert_eq!(
+            before[0].target_cid, default.target_cid,
+            "the older link lists first"
+        );
+        let second = before[1].target_cid.clone();
+
+        // Reset mints the replacement first; revoking the old one is the
+        // service's (not reachable here), and the order already holds.
+        let (status, _) = call(
+            "POST",
+            invite.clone(),
+            serde_json::json!({ "replaces": default.target_cid }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let listed = rows().await;
+        assert_eq!(listed.len(), 3);
+        let replacing = listed
+            .iter()
+            .position(|row| row.target_cid != default.target_cid && row.target_cid != second)
+            .expect("the replacing link is listed");
+        assert_eq!(
+            listed[replacing].listed_at, default.minted_at,
+            "the replacing link takes the default's place"
+        );
+        assert!(
+            replacing
+                < listed
+                    .iter()
+                    .position(|row| row.target_cid == second)
+                    .unwrap(),
+            "the replacing link lists ahead of the link made before it"
+        );
+
+        // Replacing a link this space doesn't list is refused.
+        let (status, _) = call(
+            "POST",
+            invite,
+            serde_json::json!({ "replaces": "bafy-not-a-link" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     /// A space created without a remote refuses, and says which case it was.

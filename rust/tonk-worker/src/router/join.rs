@@ -2838,7 +2838,7 @@ mod invite_name_tests {
         )
         .await
         .expect("the owner mints an open invite");
-        let tonk_worker_api::CreateInviteResponse::Open { url: link } = minted else {
+        let tonk_worker_api::CreateInviteResponse::Open { url: link, .. } = minted else {
             panic!("an invite with no recipient is open");
         };
         assert!(

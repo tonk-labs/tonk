@@ -797,6 +797,35 @@ concept!: &member
       the: xyz.tonk.membership/name
       as: text
 
+# When an invitation was minted. ENTITY: the invitation (`tonk_schema::
+# Invitation`), the same entity its `xyz.tonk.invitation-execution/kind`
+# rides on. Kept apart from that record so invitations minted before mint
+# times were recorded still read; they have no row here.
+concept!: &invitation/minted
+  this: tonk:invitation/minted
+  description: When an invitation to this space was minted.
+  with:
+    minted-at:
+      description: >
+        Unix milliseconds at mint. A space's links list oldest first, so
+        its first open link (its default) stays first as newer ones are made.
+      the: xyz.tonk.invitation-execution/minted-at
+      as: natural:64
+
+# Where an invitation that replaced another lists. ENTITY: the invitation,
+# as for `tonk:invitation/minted`. A reset default passlink takes the place
+# of the one it replaced, so it stays its space's default.
+concept!: &invitation/listed
+  this: tonk:invitation/listed
+  description: Where an invitation that replaced another lists among its space's links.
+  with:
+    listed-at:
+      description: >
+        Unix milliseconds: the place (listed-at, else minted-at) of the
+        link this one replaced. A list orders by it before minted-at.
+      the: xyz.tonk.invitation-execution/listed-at
+      as: natural:64
+
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name
 # (with the DID tail beneath as a fallback id), and a role badge.

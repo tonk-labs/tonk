@@ -112,6 +112,52 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
+        // The top page's passkey prompt or card ended without the work
+        // (cancelled, or failed, as an authenticator with no PRF does): say
+        // so on the ceremony row the account sheet follows, which would
+        // otherwise wait for a passkey forever. Only the ceremonies that
+        // report there.
+        "custody-ended" => {
+            let ceremony = envelope.get("ceremony").and_then(|v| v.as_str());
+            let detail = match envelope.get("outcome").and_then(|v| v.as_str()) {
+                Some("cancelled") => "cancelled",
+                _ => "the passkey did not finish",
+            };
+            if ceremony == Some(tonk_schema::ceremony::AUTHORIZE_DEVICE) {
+                // The request's own row: cancelled is a refusal the task
+                // page words as the mock's cancel, anything else a failure.
+                let Some(authorization) = envelope
+                    .get("authorization")
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| {
+                        serde_json::from_str::<tonk_worker_api::DeviceAuthorization>(v).ok()
+                    })
+                else {
+                    log!("bridge: a device approval ended with no request to report it on");
+                    return;
+                };
+                let outcome = if detail == "cancelled" {
+                    tonk_schema::ceremony_state::REFUSED
+                } else {
+                    tonk_schema::ceremony_state::FAILED
+                };
+                let tonk = state.read().await;
+                super::ceremony::report_authorization(&tonk, &authorization, outcome, detail).await;
+            } else if let Some(
+                ceremony @ (tonk_schema::ceremony::ADD_PASSKEY
+                | tonk_schema::ceremony::DELETE_ACCOUNT),
+            ) = ceremony
+            {
+                let tonk = state.read().await;
+                super::ceremony::report(
+                    &tonk,
+                    ceremony,
+                    tonk_schema::ceremony_state::FAILED,
+                    detail,
+                )
+                .await;
+            }
+        }
         other => {
             log!(
                 "bridge: SW global received unexpected envelope type '{other}' from {client:?} \

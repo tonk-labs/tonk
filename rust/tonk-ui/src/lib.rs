@@ -5,11 +5,14 @@
 
 /// Customer activation page reached from the activation email.
 pub mod activate;
+
 /// Top-document account creation and self-link element.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod ceremony;
 /// Account-bound email invitation and signup continuation.
 pub mod email_invite;
+/// What the top document's task pages share: the logotype and the waiting button.
+mod task_page;
 
 mod account_observability;
 

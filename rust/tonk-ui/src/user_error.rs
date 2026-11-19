@@ -63,6 +63,12 @@ pub(crate) enum AccountAction {
 }
 
 /// Present an internal/browser diagnostic at an account action boundary.
+/// Its callers outside tests (the register dialog, the custody relay) are
+/// browser-only.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
     problem_from_diagnostic(action, detail).message
 }
