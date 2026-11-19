@@ -1,0 +1,24 @@
+<div class="fabb-page">
+  <header class="fabb-top"><!-- logotype --></header>
+  <section class="fabb-task" aria-labelledby="tonk-register-head">
+    <header class="fabb-task-head"><h1 class="fabb-task-title" id="tonk-register-head">add an account</h1></header>
+    <div class="fabb-request">
+      <div id="tonk-register-stack">
+        <label class="fabb-field editing" id="tonk-register-email-row">
+          <span class="k">email address</span>
+          <input id="tonk-register-email" type="email" inputmode="email" enterkeyhint="go"
+                 autocomplete="username webauthn" autocapitalize="none" spellcheck="false" maxlength="254" required>
+        </label>
+      </div>
+      <div class="register-message" hidden>
+        <h2 id="tonk-register-wait-title" hidden>check your email</h2>
+        <p id="tonk-register-status" role="status"></p>
+        <button type="button" class="fabb-inline-action" id="tonk-register-resend" hidden>send a new link</button>
+      </div>
+    </div>
+    <div class="fabb-actions">
+      <button type="button" id="tonk-register-dismiss">cancel</button>
+      <button type="button" id="tonk-register-action" disabled hidden></button>
+    </div>
+  </section>
+</div>

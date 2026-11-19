@@ -1,19 +1,19 @@
-<main class="account">
-  <div class="account__logo" role="img" aria-label="tonk"></div>
-  <section class="account__ceremony" aria-labelledby="email-invite-title" aria-describedby="email-invite-body">
-    <div class="account__stack">
-      <h1 id="email-invite-title" class="account__ceremony-head">You’re invited to a space</h1>
+<div class="fabb-page">
+  <header class="fabb-top"><!-- logotype --></header>
+  <main class="fabb-task" aria-labelledby="email-invite-title" aria-describedby="email-invite-body">
+    <header class="fabb-task-head"><h1 id="email-invite-title" class="fabb-task-title">join a space</h1></header>
+    <div class="fabb-request">
+      <dl class="fabb-ledger" id="email-invite-signed-in" hidden><dt>signed in as</dt><dd id="email-invite-email"></dd></dl>
+      <div id="email-invite-body"><p>Checking your account…</p></div>
+      <p id="email-invite-status" class="fabb-note" role="status"></p>
     </div>
-    <p id="email-invite-signed-in" class="account__row" hidden><span>signed in as</span><strong id="email-invite-email"></strong></p>
-    <div id="email-invite-body" class="account__narrator"><p>Checking your account…</p></div>
-    <p id="email-invite-status" class="account__working" role="status" aria-live="polite"></p>
-    <div class="account__actions">
-      <a id="email-invite-home" class="account__secondary" href="/">Go to home</a>
-      <a id="email-invite-settings" class="account__secondary" href="/settings" hidden>Settings</a>
-      <button id="email-invite-resend" class="account__secondary" type="button" hidden>Resend email</button>
-      <button id="email-invite-account" class="account__run" type="button" hidden>Create account or sign in</button>
-      <button id="email-invite-recheck" class="account__run" type="button" hidden>Check again</button>
-      <button id="email-invite-join" class="account__run" type="button" hidden>Join space</button>
+    <div class="fabb-actions">
+      <a id="email-invite-home" href="/">go to hub</a>
+      <a id="email-invite-settings" href="/settings" hidden>account settings</a>
+      <button id="email-invite-resend" type="button" hidden>send a new link</button>
+      <button id="email-invite-account" type="button" hidden>add an account</button>
+      <button id="email-invite-recheck" type="button" hidden>check again</button>
+      <button id="email-invite-join" type="button" hidden>join space</button>
     </div>
-  </section>
-</main>
+  </main>
+</div>
