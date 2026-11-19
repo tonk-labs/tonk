@@ -10626,7 +10626,10 @@ route!: &foreign-profile-route
             .await
             .expect("profile records resolve");
         assert_eq!(profile.len(), 1, "only the current profile record remains");
-        assert_eq!(profile[0].installed.this.to_string(), seed_version(CURRENT));
+        assert_eq!(
+            profile[0].installed.this.to_string(),
+            crate::router::library::version(CURRENT).await
+        );
         let assertions = assertions_at_version(&tonk, &session, &profile[0].installed.version.0)
             .await
             .expect("the recorded install revision exists");
@@ -11523,7 +11526,8 @@ mod tests {
         let record = installed()
             .await
             .expect("the first boot records its install");
-        assert_eq!(record.seed.to_string(), super::seed_version(&first));
+        let first_version = crate::router::library::version(&first).await;
+        assert_eq!(record.seed.to_string(), first_version);
         let seeded = head();
 
         super::reconcile_profile_library_from(&tonk, first.clone())
@@ -11545,7 +11549,10 @@ mod tests {
             .expect("a changed library upgrades");
         assert_ne!(head(), seeded, "an upgrade commits");
         let upgraded = installed().await.expect("the upgrade records itself");
-        assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
+        assert_eq!(
+            upgraded.seed.to_string(),
+            crate::router::library::version(&second).await
+        );
         let running: Vec<tonk_schema::SeedInstalled> = session
             .handle()
             .query()
@@ -11565,7 +11572,7 @@ mod tests {
         );
         assert_eq!(
             running[0].prior.0.to_string(),
-            super::seed_version(&first),
+            first_version,
             "the upgrade records what it replaced"
         );
         let paths = paths().await;

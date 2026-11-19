@@ -360,18 +360,11 @@ mod tests {
         assert_eq!(version(plain).await, alone(plain));
 
         let component = include_str!("../../../tonk-core/assets/library/tree-inspector.yaml");
-        if location().is_some() {
-            assert_ne!(
-                version(component).await,
-                alone(component),
-                "the included methods are part of its version"
-            );
-        } else {
-            // A wasm test harness is no service worker and has no library
-            // location, so nothing can be included and the text alone is
-            // the version; the native run covers the included files.
-            assert_eq!(version(component).await, alone(component));
-        }
+        assert_ne!(
+            version(component).await,
+            alone(component),
+            "the included methods are part of its version"
+        );
         assert_eq!(version(component).await, version(component).await);
     }
 
