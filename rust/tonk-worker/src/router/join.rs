@@ -1079,18 +1079,10 @@ async fn perform_join(
         let (claimed, claiming) = (&branch, &prepared);
         claimed
             .transact(|transaction| async move {
-                let (changes, _already_claimed) = claim_changes(
-                    tonk,
-                    claimed,
-                    &tonk.operator,
-                    &claiming.invitation,
-                    &claiming.invitation_execution,
-                    &claiming.member,
-                    &claiming.subject,
-                    admin,
-                )
-                .await
-                .map_err(ClaimTry::Read)?;
+                let (changes, _already_claimed) =
+                    claim_changes(tonk, claimed, &tonk.operator, claiming, admin)
+                        .await
+                        .map_err(ClaimTry::Read)?;
                 Ok::<_, ClaimTry>(transaction.assert(changes))
             })
             .perform(&tonk.operator)
@@ -1653,12 +1645,16 @@ async fn claim_changes<Env: BranchEnv>(
     tonk: &TonkState,
     branch: &Branch,
     env: &Env,
-    invitation: &Invitation,
-    invitation_execution: &InvitationExecution,
-    member: &Did,
-    subject: &Did,
+    claiming: &PreparedJoin,
     admin: bool,
 ) -> Result<(Changes, bool), JoinFailure> {
+    let PreparedJoin {
+        invitation,
+        invitation_execution,
+        member,
+        subject,
+        ..
+    } = claiming;
     let membership = Membership::new(member.clone(), subject.clone());
 
     // The three roster reads land in three separate index regions, and on
