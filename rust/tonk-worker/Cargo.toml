@@ -32,6 +32,9 @@ helpers = ["dep:tower"]
 # worker runs where those do not exist (a Cloudflare Worker). No effect on
 # native builds. Exposes `hosted`.
 volatile-storage = []
+# A server-side writer has no browser asset directory and must publish all
+# command effects before releasing its write lock and answering the MCP call.
+hosted-writer = ["volatile-storage", "dep:tonk-library"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -151,6 +154,7 @@ reqwest = { workspace = true }
 tonk-library = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+tonk-library = { workspace = true, optional = true }
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 
