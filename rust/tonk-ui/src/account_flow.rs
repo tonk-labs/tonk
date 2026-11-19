@@ -2508,12 +2508,9 @@ pub(crate) mod tests {
             .await?;
         let mobile = mobile.json();
         if mobile["viewport"].as_i64().unwrap_or_default() <= 600 {
-            assert_eq!(mobile["navDisplay"], "grid");
-            assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
+            assert_eq!(mobile["navDisplay"], "none");
             assert_eq!(mobile["navItems"], 3);
-            // The line's `new space` and the bar's, until the bar's future
-            // is settled.
-            assert_eq!(mobile["visibleNew"], 1);
+            assert_eq!(mobile["visibleNew"], 0);
             assert_eq!(mobile["overflow"], false);
             // 16px at the sides.
             assert_eq!(mobile["sheetLeft"], 16, "{mobile}");
@@ -2529,7 +2526,7 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_keeps_hub_row_actions_beside_the_row(env: TestEnvironment) -> Result<()> {
+    async fn it_places_space_actions_in_the_expanded_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
@@ -2546,7 +2543,7 @@ pub(crate) mod tests {
             let layout = driver.execute(
                 r#"const card = document.querySelector(arguments[0]);
                    const link = card.querySelector('.hub-open').getBoundingClientRect();
-                   const action = card.querySelector('[data-space-actions-open]').getBoundingClientRect();
+                   const action = card.querySelector('.hub-toggle').getBoundingClientRect();
                    return {
                      toolbar: !!document.querySelector('.collection-heading, .collection-search'),
                      overflow: document.documentElement.scrollWidth > innerWidth,
@@ -2565,7 +2562,7 @@ pub(crate) mod tests {
                 assert_eq!(layout["rowHeight"], 48, "{layout}");
             }
         }
-        element(&driver, &format!("{card} [data-space-actions-open]"))
+        element(&driver, &format!("{card} .hub-toggle"))
             .await?
             .click()
             .await?;
@@ -3481,7 +3478,7 @@ pub(crate) mod tests {
 
     /// SPACE-14: the Hub creates one independently identified copy.
     #[dialog_common::test]
-    async fn it_duplicates_a_space_from_the_hub_menu(env: TestEnvironment) -> Result<()> {
+    async fn it_duplicates_a_space_from_the_expanded_row(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let source = create_space(&driver, "Original space").await?;
@@ -3490,7 +3487,7 @@ pub(crate) mod tests {
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let card = format!(".space-card[data-space-subject='{source}']");
-        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        click(&driver, &format!("{card} .hub-toggle")).await?;
         click(&driver, &format!("{card} [data-space-duplicate-open]")).await?;
         let form = format!("{card} [data-space-duplicate]");
         let input = wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
@@ -3964,52 +3961,15 @@ pub(crate) mod tests {
         hub_style_applied(&driver).await?;
         driver.set_window_rect(0, 0, 390, 480).await?;
         let card = format!(".space-card[data-space-subject='{key}']");
-        wait_for_displayed(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} .hub-toggle")).await?;
         driver
             .execute(
                 "document.querySelector(arguments[0]).scrollIntoView({block: 'center'});",
-                vec![serde_json::json!(format!(
-                    "{card} [data-space-actions-open]"
-                ))],
+                vec![serde_json::json!(format!("{card} .hub-toggle"))],
             )
             .await?;
-        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
-        wait_for_displayed(&driver, &format!("{card} .space-menu")).await?;
-        let menu_bounds = driver
-            .execute(
-                "const menu = document.querySelector(arguments[0]); \
-                       const bounds = menu.getBoundingClientRect(); \
-                       const viewport = window.visualViewport; \
-                       const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect(); \
-                       return {open: menu.getAttribute('open'), left: bounds.left, \
-                       right: bounds.right, top: bounds.top, bottom: bounds.bottom, \
-                       viewportLeft: viewport?.offsetLeft ?? 0, \
-                       viewportRight: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth), \
-                       viewportTop: viewport?.offsetTop ?? 0, \
-                       viewportBottom: Math.min((viewport?.offsetTop ?? 0) + \
-                         (viewport?.height ?? innerHeight), nav?.height > 0 ? nav.top : Infinity)};",
-                vec![serde_json::json!(format!("{card} .space-menu"))],
-            )
-            .await?;
-        let bounds = menu_bounds.json();
-        assert_eq!(
-            bounds["open"], "true",
-            "the card menu must stay open: {bounds}"
-        );
-        for (side, edge, direction) in [
-            ("left", "viewportLeft", 1.0),
-            ("top", "viewportTop", 1.0),
-            ("right", "viewportRight", -1.0),
-            ("bottom", "viewportBottom", -1.0),
-        ] {
-            let distance = (bounds[side].as_f64().unwrap_or_default()
-                - bounds[edge].as_f64().unwrap_or_default())
-                * direction;
-            assert!(
-                distance >= 7.0,
-                "the menu crosses the {side} viewport edge: {bounds}"
-            );
-        }
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        wait_for_displayed(&driver, &format!("{card} .hub-own")).await?;
         click(&driver, &format!("{card} [data-space-rename-open]")).await?;
         wait_for_displayed(&driver, &format!("{card} [data-space-rename-dialog]")).await?;
 
@@ -4029,7 +3989,7 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_removes_a_space_without_letting_focus_escape_the_sealed_guest(
+    async fn it_cancels_and_confirms_removal_in_the_expanded_row(
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
@@ -4042,8 +4002,8 @@ pub(crate) mod tests {
         enter_hub(&driver).await?;
         let remove = format!("space-remove[data-space-subject='{key}']");
         let opener_selector = format!("{remove} [data-space-remove-open]");
-        let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
-        let submit_selector = format!("{dialog_selector} .m-go");
+        let dialog_selector = format!("{remove} hub-row-task[data-space-remove-dialog]");
+        let submit_selector = format!("{dialog_selector} [data-space-remove-submit]");
         let row = wait_for_displayed(&driver, &format!(".hub-row:has({remove})")).await?;
         // Park on the row once it has held still: its stylesheet lands a
         // beat after it renders, and a pointer aimed at where the row was
@@ -4075,11 +4035,7 @@ pub(crate) mod tests {
             .move_to_element_center(&row)
             .perform()
             .await?;
-        click(
-            &driver,
-            &format!(".hub-row:has({remove}) [data-space-actions-open]"),
-        )
-        .await?;
+        click(&driver, &format!(".hub-row:has({remove}) .hub-toggle")).await?;
         let opener = match wait_for_displayed(&driver, &opener_selector).await {
             Ok(opener) => opener,
             Err(error) => {
@@ -4112,41 +4068,13 @@ pub(crate) mod tests {
         opener.click().await?;
         wait_for_displayed(&driver, &dialog_selector).await?;
 
-        for _ in 0..8 {
-            driver.action_chain().send_keys(Key::Tab).perform().await?;
-            driver.enter_default_frame().await?;
-            let outer = driver
-                .execute(
-                    r#"return document.activeElement?.matches('tonk-site > iframe') || false;"#,
-                    Vec::new(),
-                )
-                .await?;
-            assert_eq!(
-                outer.json(),
-                true,
-                "Tab must not escape the sealed Hub while removal stays open"
-            );
-
-            enter_hub(&driver).await?;
-            let guest = driver
-                .execute(
-                    r#"const dialog = document.querySelector(arguments[0]);
-                       const active = document.activeElement;
-                       return {
-                         open: dialog?.open || false,
-                         inside: !!dialog && (active === dialog || dialog.contains(active))
-                       };"#,
-                    vec![serde_json::json!(dialog_selector)],
-                )
-                .await?;
-            assert_eq!(guest.json()["open"], true);
-            assert_eq!(
-                guest.json()["inside"],
-                true,
-                "Tab focus left the open removal dialog: {}",
-                guest.json()
-            );
-        }
+        let safe_focus = driver
+            .execute(
+                "return document.activeElement?.matches('[data-row-cancel]');",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(safe_focus.json(), true, "the safe answer starts focused");
 
         driver
             .action_chain()
@@ -4156,7 +4084,7 @@ pub(crate) mod tests {
         let restored = driver
             .execute(
                 r#"return {
-                     open: document.querySelector(arguments[0])?.open || false,
+                     open: !document.querySelector(arguments[0])?.hidden,
                      opener: document.activeElement?.matches('[data-space-remove-open]') || false
                    };"#,
                 vec![serde_json::json!(dialog_selector)],
@@ -4173,7 +4101,7 @@ pub(crate) mod tests {
         wait_for_displayed(&driver, &dialog_selector).await?;
         let association = driver
             .execute(
-                r#"const button = document.querySelector(arguments[0]).querySelector('.m-go');
+                r#"const button = document.querySelector(arguments[0]).querySelector('[data-space-remove-submit]');
                    const form = document.querySelector(arguments[0]).querySelector('form[data-remove]');
                    return {
                      attribute: button?.getAttribute('form') || null,
@@ -6805,6 +6733,7 @@ pub(crate) mod tests {
             )
             .await?;
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        click(&driver, &format!("{row} space-links [data-link-submit]")).await?;
         wait_for_displayed(&driver, &format!("{row} .hub-link [data-link-ask='reset']")).await?;
         let first = guest_copied_text(&driver).await?;
         enter_guest(&driver).await?;
@@ -6817,6 +6746,7 @@ pub(crate) mod tests {
 
         // A second open link is not the default: it is removed, not reset.
         click(&driver, &format!("{row} space-links [data-link-new]")).await?;
+        click(&driver, &format!("{row} space-links [data-link-submit]")).await?;
         wait_for_displayed(
             &driver,
             &format!("{row} .hub-link [data-link-ask='remove']"),

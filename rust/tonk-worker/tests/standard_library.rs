@@ -984,9 +984,9 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
 fn it_copies_a_hub_spaces_address_without_minting() {
     assert!(
         PROFILE_LIBRARY.contains(
-            r#"<button type="button" role="menuitem" data-space-copy-link data-space={subject}>"#
+            r#"<button class="hub-btn" type="button" data-space-copy-link data-space={subject}>"#
         ),
-        "the Hub copy action is a plain menu item that names its space"
+        "the Hub copy action is a footer button that names its space"
     );
     assert!(
         !PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
@@ -1029,7 +1029,7 @@ fn it_answers_a_resend_activation_request_in_place() {
 }
 
 #[dialog_common::test]
-fn it_renames_a_space_from_the_hub_menu() {
+fn it_renames_a_space_from_the_hub_row() {
     for contract in [
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
@@ -1052,12 +1052,16 @@ fn it_renames_a_space_from_the_hub_menu() {
 #[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(PROFILE_LIBRARY, ".space-menu space-remove {").contains("display:contents"),
-        "authority-aware removal must remain a direct row in the card menu"
+        css_rule(
+            PROFILE_LIBRARY,
+            "space-actions > :is(space-create, space-remove) {"
+        )
+        .contains("display:contents"),
+        "authority-aware removal must remain in the row footer"
     );
     assert!(
-        PROFILE_LIBRARY.contains("data-space-actions-open aria-haspopup=\"menu\""),
-        "the card menu opener must expose its menu semantics"
+        PROFILE_LIBRARY.contains("<space-actions class=\"hub-own\">"),
+        "the space controls must share the row footer"
     );
 }
 

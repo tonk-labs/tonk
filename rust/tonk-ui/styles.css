@@ -3206,9 +3206,6 @@ tonk-notebook-index {
     width: 18px; height: 18px; flex: 0 0 18px;
     background: var(--ink); border-radius: 50%;
   }
-  #tonk-register[data-anchored] .fabb-task-title {
-    margin-left: auto; text-align: right;
-  }
   #tonk-register[data-anchored] .orow {
     box-sizing: border-box; flex: 0 0 100%;
     min-height: 48px; height: auto; padding: 18px 18px 14px;
@@ -3518,10 +3515,6 @@ tonk-notebook-index {
     flex: 0 0 18px;
     border: 2px solid var(--ink);
     border-radius: 50%;
-  }
-  #tonk-register:is([data-fabb-task], [data-account-task]) .fabb-task-title {
-    margin-left: auto;
-    text-align: right;
   }
   #tonk-register:is([data-fabb-task], [data-account-task]) .orow {
     box-sizing: border-box;

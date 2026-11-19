@@ -251,14 +251,12 @@ test('the seed page is a hub page, so its dialog wears the hub look', () => {
   assert.match(view, /class="hub-sheet"/);
 });
 
-test('the space menu steps out of sight under its delete dialog and comes back after it', () => {
-  const connected = methodSource('space-remove', 'connected');
-  assert.match(connected, /setAttribute\('data-behind', ''\)/);
-  assert.match(connected, /'fabb-close'/);
-  assert.match(connected, /removeAttribute\('data-behind'\)/);
-  assert.doesNotMatch(connected, /menu\.close\?\.\(\)/);
-  assert.match(library, /\.space-menu\[data-behind\][^{]*\{[^}]*visibility:hidden/);
-  assert.match(library, /\.space-menu\[data-behind\] tonk-dialog \{ visibility:visible; \}/);
+test('space actions and confirmations live inside the expanded row', () => {
+  const body = library.split('id="body-{subject}" inert>')[1].split('</space-actions>')[0];
+  assert.match(body, /<space-actions class="hub-own">/);
+  for (const action of ['rename', 'create', 'remove']) {
+    assert.match(body, new RegExp('<hub-row-task hidden[^>]*data-space-' + action + '-dialog'));
+  }
 });
 
 test("the mobile nav's button rules stop at its own controls, not its dialog's", () => {
@@ -283,23 +281,18 @@ test('the delete-account note names no spaces when the account owns none', () =>
   assert.equal(said(2, 0), 'Deletes Alice Tester, the 2 spaces you own.');
 });
 
-test('rename and duplicate hold the menu under their dialog and give focus back to their item', () => {
-  const listeners = {};
-  const dialog = { shadowRoot: null, addEventListener: (type, run) => { listeners[type] = run; }, removeEventListener: (type) => { delete listeners[type]; } };
-  const attrs = new Map([['open', 'true']]);
-  const menu = { setAttribute: (k, v) => attrs.set(k, v), removeAttribute: (k) => attrs.delete(k), getAttribute: (k) => attrs.get(k) ?? null };
-  let focused = null;
-  const item = { focus: () => { focused = item; } };
-  const document = { activeElement: null, body: {} };
-  const holdMenu = Function('document', `return (${methodSource('space-actions', 'hold-menu')})`)(document);
-  holdMenu({ querySelector: () => menu, close: () => { throw new Error('the menu must stay open'); } }, dialog, item);
-  assert.equal(attrs.has('data-behind'), true);
-  listeners['fabb-close']();
-  assert.equal(attrs.has('data-behind'), false);
-  assert.equal(focused, item);
-  const connected = methodSource('space-actions', 'connected');
-  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-rename-dialog\]'\), rename\)/);
-  assert.match(connected, /self\.holdMenu\(self\.querySelector\('\[data-space-duplicate\] \[data-space-create-dialog\]'\), duplicate\)/);
+test('a row question focuses its safe answer and restores the opener on close', () => {
+  let focus;
+  const opener = { focus() { focus = this; } };
+  const cancel = { focus() { focus = this; } };
+  const task = { hidden: true, querySelector: s => s.includes('cancel') ? cancel : null };
+  const show = Function('document', `return (${methodSource('hub-row-task', 'show')})`)({activeElement: opener});
+  show(task);
+  assert.equal(task.hidden, false);
+  assert.equal(focus, cancel);
+  method('hub-row-task', 'close')(task);
+  assert.equal(task.hidden, true);
+  assert.equal(focus, opener);
 });
 
 test("a space's links take no list margin, so they and their note share one edge", () => {
