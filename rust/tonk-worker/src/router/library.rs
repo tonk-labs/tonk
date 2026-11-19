@@ -13,7 +13,7 @@
 //! sits in that one directory, so relative references resolve alike
 //! whichever file they were written in.
 //!
-//! Natively there is no origin, and the library documents are compiled
+//! Natively and in the hosted writer there is no browser origin, and the library documents are compiled
 //! in, so they live at [`tonk_library::ROOT`] and what they include is
 //! served from the copies `tonk-library` bundles. Reading the source
 //! tree instead would work on a developer's machine and nowhere else:
@@ -32,13 +32,21 @@ use crate::TonkWorkerError;
 /// origin to serve from. A document parsed without a location still
 /// seeds; it just cannot include.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "volatile-storage")
+    ))]
     {
         // The directory the service worker serves the library from.
         let origin = super::repository::worker_origin()?;
         Url::parse(&format!("{origin}/library/")).ok()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "volatile-storage")
+    )))]
     {
         Url::parse(tonk_library::ROOT).ok()
     }
@@ -72,14 +80,22 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile-storage")
+))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "volatile-storage")
+)))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }

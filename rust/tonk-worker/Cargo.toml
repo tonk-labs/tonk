@@ -31,7 +31,7 @@ helpers = ["dep:tower"]
 # Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
 # worker runs where those do not exist (a Cloudflare Worker). No effect on
 # native builds. Exposes `hosted`.
-volatile-storage = []
+volatile-storage = ["dep:tonk-library"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -151,6 +151,7 @@ reqwest = { workspace = true }
 tonk-library = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+tonk-library = { workspace = true, optional = true }
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
 
