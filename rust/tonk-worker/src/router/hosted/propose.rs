@@ -54,7 +54,7 @@ pub const LEAVE: &str = "tonk_leave_space";
 pub const LIFETIME: u64 = 30 * 60;
 
 /// The most changes one writer holds; a new one drops the oldest.
-const MOST: usize = 16;
+pub(super) const MOST: usize = 16;
 
 /// The changes an ask lists before it says how many more there are.
 const LISTED: usize = 5;
@@ -90,8 +90,6 @@ pub enum Effect {
     /// Leave the space the document names: drop every grant the agent
     /// space holds for it.
     Leave,
-    /// Create the user-owned space named in the proposal.
-    Create,
 }
 
 /// A held change, taken to be answered.

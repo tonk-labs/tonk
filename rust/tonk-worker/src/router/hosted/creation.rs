@@ -60,6 +60,85 @@ pub enum CreateRequest {
     },
 }
 
+/// The bounded list stored in the creation writer's Durable Object. No
+/// credentials are persisted here. The object's identity scopes the list to
+/// the OAuth connection, independently of which MCP transport answers.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct PendingCreations(Vec<Pending>);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Pending {
+    id: String,
+    name: String,
+    expires: u64,
+}
+
+/// A transition to run only after the pending list has been saved.
+pub enum CreationDecision {
+    /// Display the newly recorded proposal.
+    Ask {
+        /// One-use card identifier.
+        id: String,
+        /// Proposed display name.
+        name: String,
+    },
+    /// A cancellation consumed the proposal.
+    Cancel,
+    /// Provision the name recorded by the proposal.
+    Approve {
+        /// Name from the pending record.
+        name: String,
+        /// Provisioning grant from the current verified connection.
+        permission: String,
+    },
+}
+
+impl PendingCreations {
+    /// Record or consume a proposal. The caller serializes this update with
+    /// other calls and commits it before returning a card or creating a space.
+    pub fn decide(
+        &mut self,
+        request: CreateRequest,
+        now: u64,
+    ) -> Result<CreationDecision, &'static str> {
+        self.0.retain(|p| p.expires > now);
+        match request {
+            CreateRequest::Propose { name } => {
+                if name.trim().is_empty() || name.chars().count() > 100 {
+                    return Err("Choose a name between 1 and 100 characters.");
+                }
+                let id = hex::encode(rand::random::<[u8; 16]>());
+                if self.0.len() >= super::propose::MOST {
+                    self.0.remove(0);
+                }
+                self.0.push(Pending {
+                    id: id.clone(),
+                    name: name.clone(),
+                    expires: now + super::propose::LIFETIME,
+                });
+                Ok(CreationDecision::Ask { id, name })
+            }
+            CreateRequest::Answer {
+                id,
+                approve,
+                permission,
+            } => {
+                let index = self
+                    .0
+                    .iter()
+                    .position(|p| p.id == id)
+                    .ok_or("This creation request expired or was already answered.")?;
+                let name = self.0.remove(index).name;
+                if approve {
+                    Ok(CreationDecision::Approve { name, permission })
+                } else {
+                    Ok(CreationDecision::Cancel)
+                }
+            }
+        }
+    }
+}
+
 pub(super) async fn call<W: Writers>(
     tool: &str,
     args: &Value,
@@ -118,4 +197,44 @@ pub(super) async fn call<W: Writers>(
     answer::<Value>(response)
         .await
         .unwrap_or_else(|message| error(&message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_card_survives_reopening_and_consumption_survives_replay() {
+        let mut cards = PendingCreations::default();
+        let ask = cards
+            .decide(
+                CreateRequest::Propose {
+                    name: "Research".into(),
+                },
+                1,
+            )
+            .unwrap();
+        let CreationDecision::Ask { id, .. } = ask else {
+            panic!("expected a card")
+        };
+        let answer = || CreateRequest::Answer {
+            id: id.clone(),
+            approve: true,
+            permission: "current grant".into(),
+        };
+        let reopen = |cards: &PendingCreations| {
+            serde_json::from_value::<PendingCreations>(serde_json::to_value(cards).unwrap())
+                .unwrap()
+        };
+        assert!(
+            reopen(&cards)
+                .decide(answer(), 1 + super::super::propose::LIFETIME)
+                .is_err()
+        );
+        let mut cards = reopen(&cards);
+        assert!(
+            matches!(cards.decide(answer(), 2), Ok(CreationDecision::Approve {name, ..}) if name == "Research")
+        );
+        assert!(reopen(&cards).decide(answer(), 3).is_err());
+    }
 }
