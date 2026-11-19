@@ -638,11 +638,17 @@ impl Invite {
                     .unwrap_or(UcanSubject::Any);
                 // The chain carries algorithm-agnostic signatures, so the
                 // redelegation is issued through the polymorphic signer.
+                let command = self
+                    .chain
+                    .proofs()
+                    .map(|hop| hop.command())
+                    .max_by_key(|command| command.segments().len())
+                    .expect("a delegation chain contains its issuing certificate");
                 let mut builder = DelegationBuilder::new()
                     .issuer(Signer::from(ephemeral))
                     .audience(audience)
                     .subject(subject)
-                    .command(vec![]);
+                    .command(command.segments().to_vec());
                 if let Some(expiration) = expiration {
                     builder = builder.expiration(expiration);
                 }
@@ -1193,6 +1199,7 @@ mod tests {
                     invite.visit(&recipient).await.unwrap(),
                 ] {
                     assert_eq!(claimed.chain.expiration(), Some(deadline));
+                    assert_eq!(claimed.chain.ability(), "/use/get");
                     assert_eq!(
                         claimed.chain.proofs().last().unwrap().expiration(),
                         Some(deadline)

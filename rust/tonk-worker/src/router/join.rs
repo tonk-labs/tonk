@@ -1041,7 +1041,8 @@ async fn perform_join(
         .map(ToString::to_string);
     // A read-only join mounts the remote and records it in the account below.
     // A roster commit would leave an unpushable local head on the content branch.
-    if matches!(reach.as_deref(), Some("/" | "/use")) {
+    let can_write = matches!(reach.as_deref(), Some("/" | "/use"));
+    if can_write {
         // The claim below commits into the content branch directly, not
         // through the reactor: a branch an earlier release wrote (a renewal,
         // or a head the pull just adopted) is moved to this release's format
@@ -1119,7 +1120,9 @@ async fn perform_join(
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     save_authority(tonk, &prepared.subject, prepared.chain.clone()).await?;
-    retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
+    if can_write {
+        retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
+    }
 
     if prepared.installs_replica() {
         record_initialized_replica_in_profile(tonk, &prepared.subject)
