@@ -475,7 +475,7 @@ async fn stamp_site_on(
     }
     // Stamp the Level-0-resolved repository + branch on the site too, so a route
     // view can give its content a `<tonk-repository>`/`<tonk-branch>` context.
-    // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
+    // Repository-context elements (`<tonk-inspector>`) resolve
     // repo/branch by walking DOM ancestors, which the sealed guest otherwise
     // lacks. These are `as: text` site fields, hence string-typed raw claims.
     //

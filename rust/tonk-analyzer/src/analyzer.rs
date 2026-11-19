@@ -1283,6 +1283,50 @@ concept!: &job
         );
     }
 
+    /// `in:` places an attribute's writes in a layer. A layer is not part
+    /// of an attribute's identity, so the stored attribute does not
+    /// carry it: it travels in the descriptor a rule's head writes
+    /// through, which is where a write is routed from. A value that is
+    /// no entity is refused.
+    #[dialog_common::test]
+    async fn it_places_an_attribute_in_a_layer() {
+        let document = |layer: &str| {
+            format!(
+                "command!: &touch\n  description: \"Touch a thing.\"\n  with:\n    thing:\n      description: \"The thing.\"\n      the: x.touch/thing\n      as: entity\n\n\
+                 concept!: &touched\n  description: \"A thing touched this session.\"\n  with:\n    at:\n      description: \"When.\"\n      the: x.y/touched\n      as: entity\n      in: {layer}\n\n\
+                 rule!:\n  description: \"A touch is kept in the session.\"\n  assert!: touched\n  when:\n    - assert: touch\n      where: {{ this: ?at, thing: ?this }}\n"
+            )
+        };
+        let syntax = must_parse(&document("\"session:\""));
+        let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
+        let rule = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Rule { rule, .. }) => Some(rule),
+                _ => None,
+            })
+            .expect("the rule lowers");
+        let layers: Vec<String> = rule
+            .conclusion()
+            .with()
+            .iter()
+            .filter_map(|(_, field)| field.descriptor().layer().map(|layer| format!("{layer:?}")))
+            .collect();
+        assert!(
+            layers.iter().any(|layer| layer.contains("session:")),
+            "the rule's head writes into the session: {layers:?}"
+        );
+
+        let syntax = must_parse(&document("\"not a layer\""));
+        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert!(
+            matches!(&error.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("`in:`")),
+            "a layer that is no entity is refused: {error:?}"
+        );
+    }
+
     /// An attribute body written directly under `with:`, without the
     /// field name it belongs to, is named as that mistake at the key
     /// that gives it away, whether the key is `the:` (otherwise read as

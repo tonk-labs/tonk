@@ -2,7 +2,7 @@
 //! by the space and the session's writer DID), holding the [`SpaceWriter`]
 //! that signs every revision for the pair.
 //!
-//! The object keeps nothing durable. Its writer opens on the first request
+//! Pending space-creation cards survive eviction in object storage. The writer opens on the first request
 //! with the session the front hands in, and lives as long as the object
 //! stays in memory; an evicted object opens a new one on its next request,
 //! as the same writer key.
@@ -161,6 +161,8 @@ pub struct SpaceWriterObject {
     /// where it opened, rather than on every request.
     opened_at: Cell<usize>,
     high_water: usize,
+    provisioner: Option<url::Url>,
+    creation_update: Mutex<()>,
     /// Requests being answered. The object recycles only at none.
     in_flight: Cell<usize>,
     /// A recycle alarm is set.
@@ -184,6 +186,8 @@ impl DurableObject for SpaceWriterObject {
             writer: Mutex::new(None),
             opened_at: Cell::new(0),
             high_water,
+            creation_update: Mutex::new(()),
+            provisioner: crate::remote(&env).and_then(|url| url.parse().ok()),
             in_flight: Cell::new(0),
             recycling: Cell::new(false),
             step: Cell::new(("idle", 0.0)),
@@ -352,6 +356,38 @@ impl SpaceWriterObject {
                 Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error),
             };
         }
+        if method == worker::Method::Post
+            && path == tonk_worker::agent_create::CREATE_ROUTE.trim_start_matches('/')
+        {
+            let body = request.json().await?;
+            let Some(provider) = &self.provisioner else {
+                return failure(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "space provisioning is unavailable",
+                );
+            };
+            let decision = {
+                let _update = self.creation_update.lock().await;
+                let storage = self.state.storage();
+                let key = "pending-space-creations-v1";
+                let mut pending = storage
+                    .get::<tonk_worker::agent_create::PendingCreations>(key)
+                    .await?
+                    .unwrap_or_default();
+                let decision = match pending
+                    .decide(body, dialog_ucan_core::time::Timestamp::now().to_unix())
+                {
+                    Ok(decision) => decision,
+                    Err(reason) => return failure(StatusCode::UNPROCESSABLE_ENTITY, reason),
+                };
+                storage.put(key, &pending).await?;
+                decision
+            };
+            return match writer.create_space(provider, decision).await {
+                Ok(answer) => worker::Response::from_json(&answer),
+                Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()),
+            };
+        }
         // The grants the front found for this space: one new to the
         // writer makes it pull the agent space's grants again.
         let grants: Vec<String> = request
@@ -370,6 +406,46 @@ impl SpaceWriterObject {
         steps.lap("admit");
         if let Err(error) = admitted {
             return failure(StatusCode::BAD_GATEWAY, &error.to_string());
+        }
+        // A change the person confirms first (see `tonk_worker::propose`):
+        // held by this writer, so only its session answers it.
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::PROPOSE_ROUTE.trim_start_matches('/')
+        {
+            self.reach("propose");
+            let document = request.text().await?;
+            return worker::Response::try_from(writer.propose(document).await);
+        }
+        // Leaving a space, held by the agent space's own writer.
+        if method == worker::Method::Post
+            && path == tonk_worker::propose::LEAVE_ROUTE.trim_start_matches('/')
+        {
+            self.reach("leave");
+            let body = request.bytes().await?;
+            return worker::Response::try_from(writer.propose_leave(&body));
+        }
+        let answer = if path == tonk_worker::propose::APPLY_ROUTE.trim_start_matches('/') {
+            Some(true)
+        } else if path == tonk_worker::propose::DISMISS_ROUTE.trim_start_matches('/') {
+            Some(false)
+        } else {
+            None
+        };
+        if let (worker::Method::Post, Some(apply)) = (&method, answer) {
+            let body: serde_json::Value = match request.json().await {
+                Ok(body) => body,
+                Err(error) => return failure(StatusCode::BAD_REQUEST, &error.to_string()),
+            };
+            let Some(id) = body["id"].as_str() else {
+                return failure(StatusCode::BAD_REQUEST, "name the proposal");
+            };
+            self.reach(if apply { "apply" } else { "dismiss" });
+            let response = if apply {
+                writer.apply(id).await
+            } else {
+                writer.dismiss(id)
+            };
+            return worker::Response::try_from(response);
         }
         if method == worker::Method::Get && path == OUTLINE {
             let route: String = url
