@@ -405,6 +405,14 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
       const listed = (await call(client, 'tonk_list_spaces', {})).structuredContent.spaces;
       assert.equal(listed.find((space) => space.subject === subject)?.access, 'write');
       await call(client, 'tonk_evaluate', { space: subject, document: NOTE });
+      await call(client, 'tonk_evaluate', {
+        space: subject,
+        document: 'library/install!:\n  component: tonk:library/notebook\n  time: 1.0\n',
+      });
+      const scratch = await call(await connect(), 'tonk_query', {
+        space: subject, document: 'notebook:\n  this: id:notebook/scratch\n  title: ?title\n',
+      });
+      assert.match(JSON.stringify(scratch.structuredContent), /Scratch/);
       await revoke(person.page, { agent, space: subject });
       const readRefusal = await untilRefused(client, 'tonk_query', () => ({ space: subject, document: 'concept:\n' }), {
         since: Date.now(), budget: REVOKE_BUDGET,

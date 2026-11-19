@@ -13,7 +13,7 @@
 //! sits in that one directory, so relative references resolve alike
 //! whichever file they were written in.
 //!
-//! Natively there is no origin, and the library documents are compiled
+//! Natively and in the hosted writer there is no browser origin, and the library documents are compiled
 //! in, so they live at [`tonk_library::ROOT`] and what they include is
 //! served from the copies `tonk-library` bundles. Reading the source
 //! tree instead would work on a developer's machine and nowhere else:
@@ -32,13 +32,21 @@ use crate::TonkWorkerError;
 /// origin to serve from. A document parsed without a location still
 /// seeds; it just cannot include.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    ))]
     {
         // The directory the service worker serves the library from.
         let origin = super::repository::worker_origin()?;
         Url::parse(&format!("{origin}/library/")).ok()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    )))]
     {
         Url::parse(tonk_library::ROOT).ok()
     }
@@ -53,6 +61,13 @@ pub(super) struct Library {
 impl Library {
     fn new(root: Url) -> Self {
         Self { root }
+    }
+
+    /// The served asset path used in existing browser seed versions, even
+    /// when this copy was loaded from the bundled library.
+    fn version_path(&self, uri: &Url) -> Option<String> {
+        let relative = uri.path().strip_prefix(self.root.path())?;
+        Some(format!("/library/{relative}"))
     }
 
     fn contains(&self, uri: &Url) -> bool {
@@ -72,14 +87,22 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+)))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }
@@ -174,10 +197,14 @@ struct Recording {
 impl Load for Recording {
     async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
         let bytes = self.library.load(uri).await?;
+        let path = self
+            .library
+            .version_path(uri)
+            .ok_or_else(|| format!("included file {uri} has no library-relative path"))?;
         self.read
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .push((uri.path().to_owned(), bytes.clone()));
+            .push((path, bytes.clone()));
         Ok(bytes)
     }
 }
@@ -336,6 +363,18 @@ mod tests {
                 component_url(&format!("tonk:library/{name}")),
                 None,
                 "{name}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn included_files_keep_the_served_version_path_on_every_host() {
+        for root in ["https://tonk.test/library/", "tonk-library:///"] {
+            let root = Url::parse(root).unwrap();
+            let included = root.join("./table/connected.js").unwrap();
+            assert_eq!(
+                Library::new(root).version_path(&included).as_deref(),
+                Some("/library/table/connected.js")
             );
         }
     }
