@@ -37,8 +37,8 @@ use ipld_core::serde::from_ipld;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
-    Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
-    Provider as ProviderRole, Receipt, RegistrationError,
+    Activate, Add, AddCustodian, ConsumerReceipt, Custody as CustodyRole, Customer, CustomerStatus,
+    Enroll, Ledger, Provider as ProviderRole, Receipt, RegistrationError,
 };
 use tonk_account::customer::{RESEND_INTERVAL_SECONDS, Resend as ResendActivation};
 use tonk_account::subscription::{
@@ -47,7 +47,7 @@ use tonk_account::subscription::{
 
 use crate::email::{EmailSender, normalize_email};
 use crate::store::{Enrollment, SIGNUP_PLAN, Store, StoreError, SubscriptionKind};
-use crate::vault::Vault;
+use crate::vault::{Vault, VaultError};
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
 
@@ -69,6 +69,10 @@ pub const MAX_SEALED_BYTES: usize = 256;
 
 /// The command path segments of [`Add`].
 pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
+
+/// `/custody/add`: provision a custody space and write its cell, as one
+/// command. See [`tonk_account::customer::AddCustodian`].
+pub const CUSTODY_ADD_COMMAND: [&str; 2] = ["custody", "add"];
 
 /// The operator commands on a subscription. Their subject is the
 /// service's own DID, so only a key the service delegated to can invoke
@@ -99,6 +103,16 @@ pub const CUSTODY_PUBLISH_COMMAND: [&str; 4] = ["use", "put", "memory", "cell"];
 const CUSTODY_SPACE: &str = "custody";
 /// See [`CUSTODY_SPACE`].
 const CUSTODY_SECRET_CELL: &str = "secret";
+
+/// The custody material a request names, by CID into its container:
+/// what enrollment and `/custody/add` both carry.
+#[derive(Clone, Copy)]
+struct CustodyClaim<'a> {
+    custody: &'a Did,
+    recovery: &'a Cid,
+    consent: &'a Cid,
+    sealed: &'a Cid,
+}
 
 /// The verified custody material an enrollment carries: exactly what
 /// was checked, and nothing else the container happened to hold.
@@ -144,6 +158,8 @@ pub enum RegistrationCommand {
     Activate,
     /// `/provider/add`
     ProviderAdd,
+    /// `/custody/add`
+    CustodyAdd,
     /// `/use/put/subscription/suspend`
     Suspend,
     /// `/use/put/subscription/resume`
@@ -166,6 +182,7 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
         segments if segments == ENROLL_COMMAND => Some(RegistrationCommand::Enroll),
         segments if segments == ACTIVATE_COMMAND => Some(RegistrationCommand::Activate),
         segments if segments == PROVIDER_ADD_COMMAND => Some(RegistrationCommand::ProviderAdd),
+        segments if segments == CUSTODY_ADD_COMMAND => Some(RegistrationCommand::CustodyAdd),
         segments if segments == SUSPEND_COMMAND => Some(RegistrationCommand::Suspend),
         segments if segments == RESUME_COMMAND => Some(RegistrationCommand::Resume),
         segments if segments == ARCHIVE_COMMAND => Some(RegistrationCommand::Archive),
@@ -269,6 +286,23 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     self.add(
                         Subject::from(chain.subject().clone())
                             .attenuate(ProviderRole)
+                            .invoke(effect),
+                    )
+                    .await?,
+                ))
+            }
+            Some(RegistrationCommand::CustodyAdd) => {
+                let chain = self
+                    .verified_chain(&CUSTODY_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
+                    .await?;
+                let effect: AddCustodian = deserialize_arguments(chain.arguments())?;
+                // Called directly for the reason enrollment is: the
+                // carried recovery and consent verify against the same
+                // revocation checker the outer chain used.
+                Ok(Answer::Subscription(
+                    self.add_custodian(
+                        Subject::from(chain.subject().clone())
+                            .attenuate(CustodyRole)
                             .invoke(effect),
                     )
                     .await?,
@@ -498,7 +532,18 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             Some(CustomerStatus::Registered) | None => {}
         }
 
-        let material = self.verify_custody(&effect, &customer).await?;
+        let material = self
+            .verify_custody(
+                CustodyClaim {
+                    custody: &effect.custody,
+                    recovery: &effect.recovery,
+                    consent: &effect.consent,
+                    sealed: &effect.sealed,
+                },
+                &customer,
+                self.activation_ttl,
+            )
+            .await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer).await?;
         // One custody space, one account, forever. The custody DID is
@@ -750,6 +795,103 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         })
     }
 
+    /// Execute a verified `/custody/add`: write the custodian's sealed
+    /// account secret into its custody cell, then provision that custody
+    /// space under the invoking customer.
+    ///
+    /// Only an `Active` customer adds custodians. Enrollment is how a
+    /// `Registered` account gets its first one; a second one before the
+    /// email is confirmed would be a way into an account nobody has
+    /// shown they own.
+    ///
+    /// Every check lands before anything is written, and the cell lands
+    /// before the row: a failed write leaves no subscription pointing at
+    /// an empty cell. A custody space this customer already provides is
+    /// a retry of a request that finished, and answers success without
+    /// writing. A custody space another customer provides is refused.
+    pub async fn add_custodian(
+        &self,
+        capability: Capability<AddCustodian>,
+    ) -> Result<ConsumerReceipt, RegistrationError> {
+        let account = capability.subject().clone();
+        let effect = capability.into_effect();
+        match self
+            .store
+            .customer(account.as_str())
+            .await
+            .map_err(internal)?
+            .map(|customer| customer.status)
+        {
+            None => return Err(RegistrationError::UnknownCustomer),
+            Some(CustomerStatus::Registered) => return Err(RegistrationError::CustomerInactive),
+            Some(CustomerStatus::Suspended) => return Err(RegistrationError::CustomerSuspended),
+            Some(CustomerStatus::Active) => {}
+        }
+        // The write happens now, so the recovery only has to be alive
+        // for this request: `verified_chain` already refused an
+        // expired one.
+        let material = self
+            .verify_custody(
+                CustodyClaim {
+                    custody: &effect.custody,
+                    recovery: &effect.recovery,
+                    consent: &effect.consent,
+                    sealed: &effect.sealed,
+                },
+                &account,
+                0,
+            )
+            .await?;
+        let receipt = ConsumerReceipt {
+            consumer: effect.custody.clone(),
+            provider: account.clone(),
+        };
+        match self
+            .store
+            .consumer(effect.custody.as_str())
+            .await
+            .map_err(internal)?
+        {
+            Some(subscription) if subscription.provider == account.to_string() => {
+                return Ok(receipt);
+            }
+            Some(_) => return Err(RegistrationError::ConsumerProvided),
+            None => {}
+        }
+        // Create-only. A cell already there with no row beside it is a
+        // write that landed before its row failed: storage refuses the
+        // second write, so a retry would never get past this point.
+        // Only the custody key could have written it, and that key's
+        // consent to this account was just verified, so the row goes in
+        // over the cell the custodian left.
+        match self
+            .vault
+            .publish(&material.recovery, &material.sealed)
+            .await
+        {
+            Ok(()) | Err(VaultError::Exists(_)) => {}
+            Err(error) => {
+                return Err(RegistrationError::Internal {
+                    message: error.to_string(),
+                });
+            }
+        }
+        if !self
+            .store
+            .add_subscription(
+                effect.custody.as_str(),
+                account.as_str(),
+                self.now,
+                SubscriptionKind::Custody,
+            )
+            .await
+            .map_err(internal)?
+        {
+            return Err(RegistrationError::ConsumerProvided);
+        }
+        Ok(receipt)
+    }
+
     /// Validate the deposited consent: the consumer's own delegation to
     /// the invoking customer, granting `/consumer/provision` or broader,
     /// signature-valid and inside its window. The audience is what binds
@@ -853,8 +995,9 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
     /// exactly the blocks it verified and nothing else.
     async fn verify_custody(
         &self,
-        effect: &Enroll,
+        effect: CustodyClaim<'_>,
         account: &Did,
+        outlive: u64,
     ) -> Result<CustodyMaterial, RegistrationError> {
         // Read the enrollment as a bundle rather than a chain: it carries
         // an invocation and opaque ciphertext beside its proofs, which an
@@ -923,7 +1066,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("`recovery` failed to verify: {err}"),
             })?;
-        if recovery.subject() != &effect.custody {
+        if recovery.subject() != effect.custody {
             return Err(RegistrationError::Forbidden {
                 message: format!(
                     "`recovery` acts on {}, not the custody space {}",
@@ -988,7 +1131,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     message: "`recovery` must carry an expiration".to_string(),
                 })?;
         let expires_at = expiration.to_unix();
-        if expires_at < self.now + self.activation_ttl {
+        if expires_at < self.now + outlive {
             return Err(RegistrationError::Unauthorized {
                 message: format!(
                     "`recovery` expires_at at {expires_at}, before the activation link it would be \

@@ -755,20 +755,33 @@ pub(crate) async fn add_custodian(
         .signer()
         .await
         .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
-    let consent = tonk_identity::custody::mint_custody_consent(custody.clone(), &root.did())
+    // One `/custody/add`: the service writes the cell and then
+    // provisions the custody space, so a refusal or a failed write
+    // leaves no half-added custodian behind. The consent is issued to
+    // the account, which is what binds the write to it.
+    let consent = tonk_identity::custody::sign_custody_consent(custody.clone(), &root.did())
         .await
         .map_err(|error| format!("the custody consent did not sign: {error:#}"))?;
-    crate::router::customer::provision_consumer(tonk, &custody.did(), &consent, Some("custody"))
-        .await
-        .map_err(|error| format!("the custody space was not provisioned: {error}"))?;
-
     let sealed = account.envelope().encode();
-    let origin = crate::router::customer::service_origin().map_err(|error| format!("{error}"))?;
-    let endpoint =
-        crate::router::customer::ucan_endpoint(&origin).map_err(|error| format!("{error}"))?;
-    tonk_identity::custody::publish_secret(custody.clone(), &sealed, endpoint.as_str(), None)
-        .await
-        .map_err(|error| refusal("the custody cell was not written", &error))?;
+    let recovery = tonk_identity::custody::sign_publish_invocation(
+        custody.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
+    )
+    .await
+    .map_err(|error| format!("the custody cell write did not sign: {error:#}"))?;
+    crate::router::customer::add_custody(
+        tonk,
+        &tonk_identity::request::CustodyMaterial {
+            custody: &custody.did(),
+            consent: &consent,
+            recovery: &recovery,
+            sealed: &sealed,
+        },
+    )
+    .await
+    .map_err(|error| format!("the custodian was not added: {error}"))?;
 
     let created_at = (js_sys::Date::now() / 1000.0) as u64;
     match kind {

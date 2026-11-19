@@ -684,6 +684,32 @@ pub(crate) async fn provision_consumer(
     }
 }
 
+/// Add a custodian to this account with one `/custody/add`: the
+/// service writes the custody cell, then provisions the custody space.
+///
+/// Answers success when the service already provides that custody space
+/// for this account, so a retry after a lost answer finishes rather than
+/// failing.
+pub(crate) async fn add_custody(
+    state: &crate::worker::TonkState,
+    custody: &tonk_identity::request::CustodyMaterial<'_>,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_custody_add_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.credential().signer().clone();
+    let body = build_custody_add_invocation(device, &link, custody)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the custody invocation: {error}"))
+        })?;
+    let origin = home_service_origin(state).await?;
+    post_cbor(&ucan_endpoint(&origin)?, &body).await?;
+    Ok(())
+}
+
 /// Record that this account provides `consumer`, on the space's
 /// directory entity in the account db. The write side of the fact
 /// [`space_provider_recorded`] reads: its presence is what lets a share
