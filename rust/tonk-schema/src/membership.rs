@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::membership::{Invitation, Member, Name, Role, Subject};
+use crate::domain::membership::{Invitation, Kind, Member, Name, Role, Subject};
 use crate::prelude::*;
 
 /// A membership — an account is a member of a repository.
@@ -182,6 +182,42 @@ impl MemberName {
     }
 }
 
+/// Marks a member as an agent rather than a person. A standalone fact
+/// on the membership entity, like [`MemberRole`] and [`MemberName`], so
+/// the base [`Membership`] query stays uniform.
+///
+/// Only the agent kind is stamped: a member without this stamp is a
+/// person. Declaring a member an agent is never an escalation (it claims
+/// less than a person would), so a claimer's own declaration is accepted
+/// when it joins; and it is sticky, never retracted by a later claim.
+/// Lives on the content branch with the rest of the roster.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberKind {
+    /// The membership entity being stamped.
+    pub this: Entity,
+    /// The member's kind — `tonk:agent`.
+    pub kind: Kind,
+}
+
+impl MemberKind {
+    /// The agent kind's URI.
+    pub const AGENT: &'static str = "tonk:agent";
+
+    /// Stamp `membership` as an agent.
+    pub fn agent(membership: Entity) -> Self {
+        let kind = Self::AGENT.parse().unwrap_or_else(|_| membership.clone());
+        Self {
+            this: membership,
+            kind: Kind(kind),
+        }
+    }
+
+    /// Whether this stamp marks its member an agent.
+    pub fn is_agent(&self) -> bool {
+        self.kind.0.to_string() == Self::AGENT
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +226,15 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_stamps_a_membership_as_an_agent() {
+        let membership = Membership::new(did!("test:m"), did!("test:r"));
+        let kind = MemberKind::agent(membership.this().clone());
+        assert_eq!(kind.this, *membership.this());
+        assert_eq!(kind.kind.0.to_string(), MemberKind::AGENT);
+        assert!(kind.is_agent());
+    }
 
     #[dialog_common::test]
     fn it_derives_the_same_entity_for_the_same_member_and_subject() {

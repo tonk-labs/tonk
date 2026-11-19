@@ -272,7 +272,7 @@ fn is_agent_link(link: &str) -> bool {
 }
 
 async fn join(router: &mut Router, link: &str) -> Result<Value, String> {
-    let body = json!({ "url": link }).to_string();
+    let body = join_body(link);
     let (ok, value) = send(
         router,
         "POST",
@@ -297,6 +297,13 @@ async fn join(router: &mut Router, link: &str) -> Result<Value, String> {
         "name": repository["label"],
         "renewed": value["outcome"] == "renewed",
     }))
+}
+
+/// The join request the peer sends: the link, and the peer declaring
+/// itself an agent, so the space's roster records it as one rather than
+/// as a person.
+fn join_body(link: &str) -> String {
+    json!({ "url": link, "agent": true }).to_string()
 }
 
 async fn list(router: &mut Router, peer: String) -> Result<Value, String> {
@@ -538,6 +545,13 @@ mod tests {
         assert!(peer.call("tonk_join", &json!({})).await.is_err());
         peer.close().await;
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn it_declares_itself_an_agent_when_it_joins() {
+        let body: Value = serde_json::from_str(&join_body("https://example.test/i#seed")).unwrap();
+        assert_eq!(body["url"], "https://example.test/i#seed");
+        assert_eq!(body["agent"], true);
     }
 
     #[test]
