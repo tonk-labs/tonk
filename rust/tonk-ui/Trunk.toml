@@ -72,7 +72,6 @@ watch = [
     "../tonk-code/assets",
     "../tonk-prose/assets",
     "../tonk-table/assets",
-    "../tonk-tree/src",
 ]
 
 # Proxies for /ucan/ and /@ are appended by the dev:web command, which

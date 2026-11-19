@@ -55,6 +55,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0008_oauth_authorization.sql",
         include_str!("../../migrations/0008_oauth_authorization.sql"),
     ),
+    (
+        "0009_created_space.sql",
+        include_str!("../../migrations/0009_created_space.sql"),
+    ),
 ];
 
 /// The schema every migration adds up to, as `table -> columns`.

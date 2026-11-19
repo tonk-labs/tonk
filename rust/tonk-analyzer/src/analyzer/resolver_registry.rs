@@ -3,8 +3,8 @@
 //! dialog-query ships a fixed set of *resolvers* — moded premises the
 //! evaluation environment answers by content address rather than by
 //! scanning the mutable head. The `tree/*` family is the first of them:
-//! `tree/node`, `tree/span`, `tree/key`, `tree/entry`, `tree/value`,
-//! `tree/blob`, and `tree/manifest` describe the search tree's own
+//! `tree/node`, `tree/span`, `tree/entry`, `tree/block` and
+//! `tree/value` describe the search tree's own
 //! structure, so a document can inspect the store it queries.
 //!
 //! They are the replacement for tonk's hand-rolled `tree/*` formulas,
@@ -124,11 +124,9 @@ fn build_registry() -> Vec<ResolverInfo> {
     [
         "tree/node",
         "tree/span",
-        "tree/key",
         "tree/entry",
+        "tree/block",
         "tree/value",
-        "tree/blob",
-        "tree/manifest",
     ]
     .into_iter()
     .map(|name| {
@@ -170,11 +168,9 @@ mod tests {
         for name in [
             "tree/node",
             "tree/span",
-            "tree/key",
             "tree/entry",
+            "tree/block",
             "tree/value",
-            "tree/blob",
-            "tree/manifest",
         ] {
             let found = lookup_resolver(name)
                 .unwrap_or_else(|| panic!("`{name}` must be resolvable as a premise name"));

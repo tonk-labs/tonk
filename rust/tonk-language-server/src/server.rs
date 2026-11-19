@@ -1766,7 +1766,7 @@ mod tests {
             "tree/node",
             "tree/span",
             "tree/entry",
-            "tree/key",
+            "tree/block",
         ] {
             assert!(
                 labels.contains(&name),
