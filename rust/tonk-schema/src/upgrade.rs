@@ -25,9 +25,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use dialog_artifacts::{
-    Artifact, ArtifactSelector, Entity, Pick, Relation as ArtifactsRelation, Statement, Update,
-    Value,
+use dialog_corpus::{
+    Entity, Fact, Pick, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
@@ -77,18 +76,12 @@ pub async fn has_legacy_definitions<Env: QueryEnv>(
 ) -> Result<bool, String> {
     let mut legacy: BTreeSet<Entity> = BTreeSet::new();
     for relation in LEGACY_ATTRIBUTE {
-        for claim in select(
-            branch,
-            env,
-            ArtifactSelector::new().the(relation_named(relation)?),
-        )
-        .await?
-        {
+        for claim in select(branch, env, Selector::new().the(relation_named(relation)?)).await? {
             legacy.insert(claim.of);
         }
     }
     for entity in legacy {
-        let claims = select(branch, env, ArtifactSelector::new().of(entity)).await?;
+        let claims = select(branch, env, Selector::new().of(entity)).await?;
         if legacy_descriptor(&claims).is_some() {
             return Ok(true);
         }
@@ -110,6 +103,63 @@ where
         + dialog_capability::Provider<dialog_effects::blob::Import>
         + dialog_capability::Provider<dialog_effects::blob::Size>,
 {
+    let (upgraded, writes) = plan(branch, env).await?;
+    if upgraded.is_empty() {
+        return Ok(upgraded);
+    }
+    // A lost race plans the upgrade again over the head that won, which
+    // may have upgraded some of it already; the report is the last plan's.
+    let report = std::sync::Mutex::new(upgraded);
+    let report = &report;
+    let mut planned = Some(writes);
+    branch
+        .transact(|transaction| {
+            let planned = planned.take();
+            async move {
+                let writes = match planned {
+                    Some(writes) => writes,
+                    None => {
+                        let (upgraded, writes) = plan(branch, env).await.map_err(Failed)?;
+                        *report.lock().map_err(|e| Failed(e.to_string()))? = upgraded;
+                        writes
+                    }
+                };
+                Ok::<_, Failed>(writes.into_iter().fold(transaction, |transaction, write| {
+                    match write {
+                        Write::Statement(statement) => transaction.assert(statement),
+                        Write::Concept(concept) => transaction.assert(concept),
+                        Write::Transient(concept) => transaction.assert(concept),
+                        Write::Raw(raw) => transaction.assert(raw),
+                        Write::Retract(raw) => transaction.retract(raw),
+                    }
+                }))
+            }
+        })
+        .perform(env)
+        .await
+        .map_err(|Failed(error)| error)?;
+    let mut upgraded = std::mem::take(&mut *report.lock().map_err(|e| e.to_string())?);
+    upgraded.moves.sort();
+    upgraded.rewritten.sort();
+    Ok(upgraded)
+}
+
+/// Why an upgrade's commit failed, whether in planning it again or in
+/// committing.
+struct Failed(String);
+
+impl From<dialog_repository::CommitError> for Failed {
+    fn from(error: dialog_repository::CommitError) -> Self {
+        Self(error.to_string())
+    }
+}
+
+/// What upgrading `branch` would do, read from its head: the report, and
+/// the writes that carry it out.
+async fn plan<Env: QueryEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<(DefinitionsUpgraded, Vec<Write>), String> {
     let mut upgraded = DefinitionsUpgraded::default();
     let mut writes: Vec<Write> = Vec::new();
 
@@ -117,19 +167,13 @@ where
     // recorded under, with the descriptor their facts spell.
     let mut legacy: BTreeSet<Entity> = BTreeSet::new();
     for relation in LEGACY_ATTRIBUTE {
-        for claim in select(
-            branch,
-            env,
-            ArtifactSelector::new().the(relation_named(relation)?),
-        )
-        .await?
-        {
+        for claim in select(branch, env, Selector::new().the(relation_named(relation)?)).await? {
             legacy.insert(claim.of);
         }
     }
     let mut attributes: HashMap<Entity, AttributeDescriptor> = HashMap::new();
     for entity in legacy {
-        let claims = select(branch, env, ArtifactSelector::new().of(entity.clone())).await?;
+        let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
         let Some(descriptor) = legacy_descriptor(&claims) else {
             upgraded.undecodable.push(entity);
             continue;
@@ -160,12 +204,12 @@ where
     // named by an entity of its own (`tonk:workspace/shell`) keeps it.
     let marker = relation_named("db.meta/concept")?;
     let mut concepts: BTreeSet<Entity> = BTreeSet::new();
-    for claim in select(branch, env, ArtifactSelector::new().the(marker)).await? {
+    for claim in select(branch, env, Selector::new().the(marker)).await? {
         concepts.insert(claim.of);
     }
     let source = Source::from(branch);
     for entity in concepts {
-        let claims = select(branch, env, ArtifactSelector::new().of(entity.clone())).await?;
+        let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
         let mut fields: BTreeMap<String, Entity> = BTreeMap::new();
         let mut optional: BTreeSet<String> = BTreeSet::new();
         let mut description = None;
@@ -273,7 +317,7 @@ where
         let naming = select(
             branch,
             env,
-            ArtifactSelector::new().is(Value::Entity(earlier.clone())),
+            Selector::new().is(Value::Entity(earlier.clone())),
         )
         .await?;
         for claim in naming {
@@ -289,8 +333,8 @@ where
                 pick: Pick::All,
             }));
         }
-        let about = select(branch, env, ArtifactSelector::new().of(earlier.clone())).await?;
-        let mut by_relation: BTreeMap<String, Vec<Artifact>> = BTreeMap::new();
+        let about = select(branch, env, Selector::new().of(earlier.clone())).await?;
+        let mut by_relation: BTreeMap<String, Vec<Fact>> = BTreeMap::new();
         for claim in about {
             if is_attribute_definition(&claim.the) || is_concept_definition(&claim.the) {
                 continue;
@@ -318,34 +362,13 @@ where
         }
     }
 
-    if upgraded.is_empty() {
-        return Ok(upgraded);
-    }
-    let mut transaction = branch.transaction();
-    for write in writes {
-        transaction = match write {
-            Write::Statement(statement) => transaction.assert(statement),
-            Write::Concept(concept) => transaction.assert(concept),
-            Write::Transient(concept) => transaction.assert(concept),
-            Write::Raw(raw) => transaction.assert(raw),
-            Write::Retract(raw) => transaction.retract(raw),
-        };
-    }
-    transaction
-        .commit()
-        .publish()
-        .perform(env)
-        .await
-        .map_err(|e| e.to_string())?;
-    upgraded.moves.sort();
-    upgraded.rewritten.sort();
-    Ok(upgraded)
+    Ok((upgraded, writes))
 }
 
 /// The descriptor an attribute recorded the earlier way spells, from its
 /// `db.attribute/id`, `type`, `cardinality`, `select`, `among` and
 /// `db.meta/description` claims.
-fn legacy_descriptor(claims: &[Artifact]) -> Option<AttributeDescriptor> {
+fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
     let text = |name: &str| {
         claims.iter().find_map(|claim| match &claim.is {
             Value::String(text) if claim.the.as_str() == name => Some(text.clone()),
@@ -382,14 +405,14 @@ fn legacy_descriptor(claims: &[Artifact]) -> Option<AttributeDescriptor> {
 
 /// Whether a claim about an attribute entity is part of its definition,
 /// which the upgrade writes again from the descriptor.
-fn is_attribute_definition(the: &ArtifactsRelation) -> bool {
+fn is_attribute_definition(the: &CorpusRelation) -> bool {
     let the = the.as_str();
     the.starts_with("db.attribute/") || the == "db.meta/description"
 }
 
 /// Whether a claim about a concept entity is part of its definition,
 /// which the upgrade writes again from the descriptor.
-fn is_concept_definition(the: &ArtifactsRelation) -> bool {
+fn is_concept_definition(the: &CorpusRelation) -> bool {
     let the = the.as_str();
     the.starts_with("db.concept.")
         || the == "db.meta/concept"
@@ -397,7 +420,7 @@ fn is_concept_definition(the: &ArtifactsRelation) -> bool {
         || the == "dialog.concept/transient"
 }
 
-fn relation_named(name: &str) -> Result<ArtifactsRelation, String> {
+fn relation_named(name: &str) -> Result<CorpusRelation, String> {
     name.parse()
         .map_err(|e| format!("{name} is no relation: {e}"))
 }
@@ -406,8 +429,8 @@ fn relation_named(name: &str) -> Result<ArtifactsRelation, String> {
 async fn select<Env: QueryEnv>(
     branch: &Branch,
     env: &Env,
-    selector: ArtifactSelector<dialog_artifacts::selector::Constrained>,
-) -> Result<Vec<Artifact>, String> {
+    selector: Selector<dialog_corpus::selector::Constrained>,
+) -> Result<Vec<Fact>, String> {
     let stream = branch
         .claims()
         .select(selector)
@@ -433,7 +456,7 @@ enum Write {
 }
 
 impl Write {
-    fn retract(claim: &Artifact) -> Self {
+    fn retract(claim: &Fact) -> Self {
         Write::Retract(Raw {
             the: claim.the.clone(),
             of: claim.of.clone(),
@@ -447,7 +470,7 @@ impl Write {
 /// (`db.concept.with/<field>`) may not satisfy the stricter validated
 /// relation of a statement.
 struct Raw {
-    the: ArtifactsRelation,
+    the: CorpusRelation,
     of: Entity,
     is: Value,
     pick: Pick,
@@ -578,7 +601,7 @@ mod tests {
         let views = select(
             &branch,
             &operator,
-            ArtifactSelector::new().the("xyz.tonk.view/ui".parse()?),
+            Selector::new().the("xyz.tonk.view/ui".parse()?),
         )
         .await
         .map_err(anyhow::Error::msg)?;
@@ -589,26 +612,18 @@ mod tests {
         );
         for relation in LEGACY_ATTRIBUTE {
             assert!(
-                select(
-                    &branch,
-                    &operator,
-                    ArtifactSelector::new().the(relation.parse()?)
-                )
-                .await
-                .map_err(anyhow::Error::msg)?
-                .is_empty(),
+                select(&branch, &operator, Selector::new().the(relation.parse()?))
+                    .await
+                    .map_err(anyhow::Error::msg)?
+                    .is_empty(),
                 "no attribute is recorded with {relation} any more"
             );
         }
         assert!(
-            select(
-                &branch,
-                &operator,
-                ArtifactSelector::new().of(earlier_concept)
-            )
-            .await
-            .map_err(anyhow::Error::msg)?
-            .is_empty(),
+            select(&branch, &operator, Selector::new().of(earlier_concept))
+                .await
+                .map_err(anyhow::Error::msg)?
+                .is_empty(),
             "nothing is left on the earlier concept"
         );
 

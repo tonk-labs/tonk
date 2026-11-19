@@ -52,7 +52,7 @@ pub struct AgentSpaceAccess {
     subject: Did,
     key: String,
     name: Option<String>,
-    /// `read`, or `write` for read and write.
+    /// The approved access level: read, write, or full access with sharing.
     access: &'static str,
     /// When the earliest of its grants lapses, unix seconds.
     expires_at: Option<u64>,
@@ -227,6 +227,7 @@ async fn retained(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Issued {
     Here,
+    OwnedSpace,
     Link,
 }
 
@@ -251,6 +252,17 @@ pub(super) async fn grants(
             let chain = delegation.0;
             let issued = if issuers.contains(chain.issuer()) {
                 Issued::Here
+            } else if chain.subject() == Some(chain.issuer())
+                && dialog_repository::secrets::held_principal(
+                    tonk.profile.state(),
+                    chain.issuer(),
+                    &tonk.profile,
+                )
+                .await
+                .map_err(failure)?
+                .is_some_and(|key| issuers.contains(&key.to))
+            {
+                Issued::OwnedSpace
             } else if held == Held::AgentSpace {
                 Issued::Link
             } else {
@@ -275,29 +287,32 @@ pub async fn list(
 ) -> Result<Json<Vec<AgentSummary>>, TonkWorkerError> {
     let tonk = state.read().await;
     let mut agents = Vec::new();
+    let mut marked = Vec::new();
     for did in spaces(&tonk).await? {
         if !is_agent(&tonk, &did).await {
             continue;
         }
+        marked.push(did.clone());
         let mut by_space =
-            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
+            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool, bool)>::new();
         for (chain, _, issued) in grants(&tonk, &did).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
             let entry = by_space
                 .entry(subject.to_string())
-                .or_insert((subject, false, expires, false));
+                .or_insert((subject, false, expires, false, false));
             entry.1 |= write;
             entry.2 = match (entry.2, expires) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
             entry.3 |= issued == Issued::Link;
+            entry.4 |= chain.ability() == "/use";
         }
         let key = did.repo_key().to_owned();
         let mut spaces = Vec::new();
-        for (_, (subject, write, expires_at, via_link)) in by_space {
+        for (_, (subject, write, expires_at, via_link, share)) in by_space {
             // A space joined from a link may not be one of the person's:
             // the agent space's directory names it then.
             let name = match name(&tonk, &subject).await {
@@ -309,7 +324,13 @@ pub async fn list(
                 key: subject.repo_key().to_owned(),
                 name,
                 subject,
-                access: if write { "write" } else { "read" },
+                access: if share {
+                    "share"
+                } else if write {
+                    "write"
+                } else {
+                    "read"
+                },
                 expires_at,
                 via_link,
                 removal,
@@ -322,7 +343,67 @@ pub async fn list(
             spaces,
         });
     }
+    // An agent made before the profile held the mark gets it now, so the
+    // palette can name it. The listing stands whether or not it lands.
+    if let Err(error) = mark_on_profile(&tonk, &marked).await {
+        tonk_common::log!("agents: the profile did not take the agent marks: {error}");
+    }
     Ok(Json(agents))
+}
+
+/// Mark each of `agents` as an agent on the profile too, on its
+/// directory entity, as its own space marks it: what the profile's
+/// `agent` concept reads, and so what the palette's "invite" can name.
+/// Writes only the marks the profile does not hold yet.
+pub(super) async fn mark_on_profile(
+    tonk: &TonkState,
+    agents: &[Did],
+) -> Result<(), TonkWorkerError> {
+    if agents.is_empty() {
+        return Ok(());
+    }
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let held: std::collections::BTreeSet<String> = session
+        .handle()
+        .query()
+        .select(Query::<AgentSpace> {
+            this: Term::var("this"),
+            kind: Term::from(tonk_schema::agent::agent_space_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?
+        .into_iter()
+        .map(|row| row.this.to_string())
+        .collect();
+    let missing: Vec<&Did> = agents
+        .iter()
+        .filter(|agent| !held.contains(agent.as_str()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction();
+    for agent in missing {
+        transaction = transaction.assert(AgentSpace::new(agent.this()));
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    Ok(())
 }
 
 /// What [`revoke`] answers: whether a passkey removal is under way.
@@ -479,10 +560,14 @@ pub(super) async fn ancestor(
         access::{Access, Prove},
     };
     let ability = leaf.ability();
-    let scope = tonk_invite::connection::candidate_build_scopes(subject)
-        .into_iter()
-        .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
-        .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
+    let scope = super::agent_session::approval_scopes(
+        subject,
+        tonk_invite::connection::AgentAccess::ReadWrite,
+        true,
+    )
+    .into_iter()
+    .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
+    .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
     let proof = Subject::from(profile.clone())
         .attenuate(Access)
         .invoke(Prove::<dialog_ucan::Ucan>::new(profile.clone(), scope))

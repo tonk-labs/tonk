@@ -49,8 +49,11 @@ artifact.
 
 ## Release coverage
 
-- `.github/workflows/cli.yml` signs pushes to `stable` and `staging`, plus
-  manually dispatched releases. Pull requests deliberately skip the action.
+- `.github/workflows/release.yml` runs on each pushed `v*` tag and calls
+  `.github/workflows/cli.yml`, which signs the release build. Pull requests
+  also run `cli.yml` but deliberately skip the action.
+- `.github/workflows/cli-dev.yml` signs the rolling dev build on each push to
+  `main`.
 - `.github/workflows/cli-npm.yml` signs tag-driven and manual npm releases.
 - `.github/workflows/cli-pin.yml` signs historical builds with the action from
   the workflow commit. It also ships the current installer so an older
@@ -64,8 +67,8 @@ a `notarized` requirement verifies that ticket on the runner before CI uploads
 the binary. The action does not use `spctl --type execute`: that assessment is
 for apps and rejects a valid raw CLI executable as “not an app.”
 
-The first push to `staging` after provisioning the secrets is the end-to-end
-credential check. After it publishes, download and inspect the artifact on a
+The first release (a pushed `v*` tag) or `main` dev build after provisioning
+the secrets is the end-to-end credential check. After it publishes, download and inspect the artifact on a
 Mac:
 
 ```sh
@@ -78,6 +81,6 @@ codesign -vvvv -R="notarized" --check-notarization tonk
 ## Rotation
 
 Replace all five repository secrets before the certificate or API key expires
-or is revoked, then validate with a staging release. Revoke the old App Store
+or is revoked, then validate with a dev build or a pre-release tag. Revoke the old App Store
 Connect key and remove the old certificate from the team's secrets manager only
-after the new staging artifact passes signature and notarization checks.
+after the new artifact passes signature and notarization checks.

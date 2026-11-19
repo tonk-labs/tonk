@@ -175,20 +175,11 @@ export async function signUp(page, { origin, address, inbox }) {
   const field = page.locator('#tonk-register-email');
   await field.waitFor({ timeout: 30_000 });
   await field.fill(address);
-  const action = page.locator('#tonk-register-action:not([hidden])');
-  await action.filter({ hasText: 'create a passkey' }).waitFor({ timeout: 30_000 });
-  const before = await page.evaluate(() => performance.timeOrigin);
-  await action.click();
-
-  const name = page
-    .locator('#tonk-register .orow')
-    .filter({
-      has: page.locator('.k', { hasText: /^(display name|what should people call you\?)$/ }),
-    })
-    .locator('input');
+  const name = page.getByRole('textbox', { name: 'display name', exact: true });
   await name.waitFor({ timeout: 30_000 });
   await name.fill('E2E agent owner');
-  await name.press('Enter');
+  const before = await page.evaluate(() => performance.timeOrigin);
+  await page.getByRole('button', { name: 'make account', exact: true }).click();
 
   // Either the ceremony asks for the emailed link, or it promoted a fresh
   // profile and reloaded; both mean enrollment landed.
@@ -307,7 +298,7 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   const root = await approvalRoot(page, signIn);
   const name = root.getByRole('textbox', { name: /agent name/i });
   if (await name.count()) await name.fill(agent);
-  await root.getByRole('button', { name: 'continue' }).click();
+  await root.getByRole('button', { name: /^(choose spaces|continue)$/ }).click();
   const shown = Date.now();
   try {
     for (const [space, access] of Object.entries(grants)) {
@@ -333,6 +324,49 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   return cost;
 }
 
+/**
+ * Withdraw the access the agent named `agent` holds to `space`, as the
+ * person does from their agents list: `POST /api/agents/{key}/revoke` on
+ * their own page. When no agent has that name, the one agent holding
+ * `space` is taken.
+ */
+export async function revoke(page, { agent, space }) {
+  const pendingAgent = await page.evaluate(
+    async ({ agent, space }) => {
+      const listed = await fetch('/api/agents');
+      if (!listed.ok) throw new Error(`agents answered ${listed.status}: ${await listed.text()}`);
+      const holding = (await listed.json()).filter((candidate) =>
+        candidate.spaces.some((reached) => reached.subject === space),
+      );
+      const found =
+        holding.find((candidate) => candidate.name === agent) ??
+        (holding.length === 1 ? holding[0] : undefined);
+      if (!found)
+        throw new Error(`no agent ${agent} holds ${space}: ${JSON.stringify(holding)}`);
+      const response = await fetch(`/api/agents/${found.key}/revoke`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ space }),
+      });
+      if (!response.ok)
+        throw new Error(`revoke answered ${response.status}: ${await response.text()}`);
+      return (await response.json()).pending ? found.key : null;
+    },
+    { agent, space },
+  );
+  if (pendingAgent) {
+    await page.waitForFunction(async ({ key, space }) => {
+      const response = await fetch('/api/agents');
+      if (!response.ok) throw new Error(`agents answered ${response.status}`);
+      const agent = (await response.json()).find(candidate => candidate.key === key);
+      if (!agent) throw new Error('the agent disappeared during removal');
+      const held = agent.spaces.find(candidate => candidate.subject === space);
+      if (held?.removal?.state === 'failed') throw new Error(held.removal.reason);
+      return !held;
+    }, { key: pendingAgent, space }, { polling: 500, timeout: 180_000 });
+  }
+}
+
 /** A full-page screenshot into TONK_E2E_SCREENSHOTS, when it is set. */
 export async function snap(page, name) {
   const dir = process.env.TONK_E2E_SCREENSHOTS;
@@ -348,10 +382,15 @@ export async function snap(page, name) {
 async function approvalRoot(page, signIn) {
   // The approval page's own continue, not the account ceremony's.
   const ready = (root) =>
-    root.getByRole('button', { name: 'continue' }).and(root.locator(':not(#tonk-register-action)'));
+    root
+      .getByRole('button', { name: /^(choose spaces|continue)$/ })
+      .and(root.locator(':not(#tonk-register-action):not([disabled])'));
   const register = page.locator('#tonk-register-email');
+  // Signed out, a settings page is a wall whose sign in raises the ceremony.
+  const wall = guest(page).locator('[data-signed-out-sign-in]');
   const deadline = Date.now() + SETTLE;
   for (;;) {
+    if (signIn && (await wall.isVisible())) await wall.click();
     // A browser with no account: the page signs the person in first,
     // then comes back to the request.
     if (await register.isVisible()) {

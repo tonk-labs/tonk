@@ -163,12 +163,58 @@ fn endpoint<'a, W: Writers>(
     tickets: &'a crate::router::hosted::view::TicketKey,
     writers: &'a W,
 ) -> McpEndpoint<'a, W> {
+    fn ignore(_: &ToolEvent) {}
+    recording(key, tickets, writers, &ignore)
+}
+
+/// [`endpoint`], handing each tool call's event to `events`.
+fn recording<'a, W: Writers>(
+    key: &'a SessionKey,
+    tickets: &'a crate::router::hosted::view::TicketKey,
+    writers: &'a W,
+    events: telemetry::Sink<'a>,
+) -> McpEndpoint<'a, W> {
     McpEndpoint {
         origin: ORIGIN,
         key,
         tickets,
         writers,
+        events,
     }
+}
+
+/// Events an endpoint handed its sink.
+#[derive(Default)]
+struct Events(std::cell::RefCell<Vec<ToolEvent>>);
+
+impl Events {
+    fn sink(&self) -> impl Fn(&ToolEvent) + '_ {
+        |event| self.0.borrow_mut().push(event.clone())
+    }
+
+    fn only(&self) -> ToolEvent {
+        let events = self.0.borrow();
+        assert_eq!(events.len(), 1, "{events:?}");
+        events[0].clone()
+    }
+
+    fn last(&self) -> ToolEvent {
+        self.0.borrow().last().cloned().expect("an event")
+    }
+}
+
+/// A `tools/call` request.
+fn tool_request(bearer: &str, session: &str, name: &str, arguments: Value) -> Request<Body> {
+    rpc_request(
+        Some(bearer),
+        Some(session),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        }),
+    )
 }
 
 async fn assert_unauthorized<W: Writers>(endpoint: &McpEndpoint<'_, W>, bearer: Option<&str>) {
@@ -396,6 +442,15 @@ async fn a_grant_in_the_token_opens_no_space() {
         assert!(error, "{tool} on an ungranted space: {text}");
         assert!(text.contains("has no access"), "{text}");
     }
+    let (text, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_create_space",
+        json!({"name":"No permission"}),
+    )
+    .await;
+    assert!(error && text.contains("Reconnect"), "{text}");
     let (text, error) =
         call_tool(&endpoint, &bearer, &session, "tonk_list_spaces", json!({})).await;
     assert!(!error, "{text}");
@@ -452,7 +507,7 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
     assert_eq!(spaces.len(), 3, "a lapsed space is not listed: {listed}");
     assert_eq!(spaces[0]["subject"], json!(agent.did().to_string()));
     assert_eq!(spaces[0]["home"], json!(true));
-    assert_eq!(spaces[0]["access"], json!("read-write"));
+    assert_eq!(spaces[0]["access"], json!("write"));
     assert_eq!(spaces[0]["name"], json!("Claude"));
     assert!(spaces[0]["about"].is_string());
     let entry = |did: &Did| {
@@ -473,7 +528,7 @@ async fn the_list_puts_home_first_with_names_and_expiry() {
     );
     assert_eq!(
         entry(&plans),
-        json!({ "subject": plans.to_string(), "access": "read-write" })
+        json!({ "subject": plans.to_string(), "access": "write" })
     );
 
     // The lapsed space is named by the error a call on it gets.
@@ -532,6 +587,52 @@ fn session_ids_bind_to_their_token() {
     assert_ne!(key.mint(&token), id, "each initialize mints a new id");
 }
 
+/// Directory review reads every tool's title and hints from `tools/list`,
+/// app-only tools included: a tool without them is taken to be a
+/// destructive write.
+#[dialog_common::test]
+async fn every_listed_tool_has_a_title_and_annotations() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let bearer = token(&agent, &home()).await;
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &Unreachable);
+    let session = connect(&endpoint, &bearer).await;
+
+    let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+    let (status, body) = answer(
+        endpoint
+            .serve(rpc_request(Some(&bearer), Some(&session), list))
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let tools = body["result"]["tools"].as_array().unwrap();
+    for tool in tools {
+        let name = &tool["name"];
+        assert!(
+            tool["title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()),
+            "{name} has no title"
+        );
+        let hints = &tool["annotations"];
+        assert!(hints["readOnlyHint"].is_boolean(), "{name}: readOnlyHint");
+        assert!(hints["openWorldHint"].is_boolean(), "{name}: openWorldHint");
+        if hints["readOnlyHint"] == false {
+            assert!(
+                hints["destructiveHint"].is_boolean(),
+                "{name}: destructiveHint"
+            );
+        }
+    }
+    let evaluate = tools
+        .iter()
+        .find(|tool| tool["name"] == "tonk_evaluate")
+        .unwrap();
+    assert_eq!(evaluate["annotations"]["destructiveHint"], true);
+}
+
 #[dialog_common::test]
 async fn a_session_id_of_another_token_is_refused() {
     let agent = Ed25519Signer::generate().await.unwrap();
@@ -561,13 +662,19 @@ async fn a_session_id_of_another_token_is_refused() {
     assert_eq!(
         names,
         [
+            "tonk_create_share_link",
+            "tonk_create_space",
+            "tonk_create_space_confirm",
             "tonk_evaluate",
             "tonk_guide",
             "tonk_join_accept",
             "tonk_join_space",
+            "tonk_leave_space",
             "tonk_list_spaces",
             "tonk_open_space",
             "tonk_outline",
+            "tonk_proposal_apply",
+            "tonk_proposal_dismiss",
             "tonk_query",
             "tonk_view_access"
         ]
@@ -621,6 +728,133 @@ async fn evaluate_on_a_read_grant_is_refused_before_any_writer() {
     assert!(text.contains("only read"), "{text}");
 }
 
+/// Call a tool: its whole result.
+async fn call_result<W: Writers>(
+    endpoint: &McpEndpoint<'_, W>,
+    bearer: &str,
+    session: &str,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    });
+    let (status, body) = answer(
+        endpoint
+            .serve(rpc_request(Some(bearer), Some(session), call))
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["result"].clone()
+}
+
+#[dialog_common::test]
+async fn evaluate_offers_to_confirm_first_and_draws_its_result_in_the_card() {
+    let evaluate = tools()
+        .into_iter()
+        .find(|tool| tool["name"] == "tonk_evaluate")
+        .unwrap();
+    assert_eq!(
+        evaluate["inputSchema"]["properties"]["confirm"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        evaluate["_meta"]["ui"]["resourceUri"],
+        super::super::card::CARD_URI
+    );
+    assert_eq!(evaluate["_meta"]["openai/widgetAccessible"], true);
+    // The model can ask to leave or share. Only the card can answer.
+    for tool in super::super::propose::tools() {
+        if tool["name"] == super::super::propose::LEAVE
+            || tool["name"] == super::super::propose::SHARE
+        {
+            assert_eq!(
+                tool["_meta"]["ui"]["resourceUri"],
+                super::super::card::CARD_URI
+            );
+            assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
+            continue;
+        }
+        assert_eq!(tool["_meta"]["ui"]["visibility"], json!(["app"]), "{tool}");
+        assert_eq!(tool["_meta"]["openai/visibility"], "private", "{tool}");
+    }
+}
+
+#[dialog_common::test]
+async fn a_refused_write_is_a_tell_with_a_role_only_where_the_space_is_open() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let shelf = Ed25519Signer::generate().await.unwrap();
+    let elsewhere = Ed25519Signer::generate().await.unwrap();
+    let mut access = own(&agent.did());
+    access.spaces.insert(
+        shelf.did().to_string(),
+        SpaceAccess {
+            read: true,
+            name: Some("Shelf".into()),
+            grants: vec!["bafy-read".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    let writers = Granting {
+        agent: agent.did(),
+        access,
+    };
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = endpoint(&key, &tickets, &writers);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    for (space, confirm) in [(&shelf, false), (&shelf, true)] {
+        let result = call_result(
+            &endpoint,
+            &bearer,
+            &session,
+            "tonk_evaluate",
+            json!({ "space": space.did().to_string(), "document": "x!: {}", "confirm": confirm }),
+        )
+        .await;
+        assert_eq!(result["isError"], true);
+        let card = &result["structuredContent"]["card"];
+        assert_eq!(card["kind"], "tell", "{result}");
+        assert_eq!(card["label"], "read only in Shelf");
+        assert_eq!(card["role"], "read");
+        assert_eq!(card["space"]["name"], "Shelf");
+        assert_eq!(card["agent"]["name"], "Claude");
+    }
+
+    let result = call_result(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": elsewhere.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    let card = &result["structuredContent"]["card"];
+    assert_eq!(card["label"], "no access to this space", "{result}");
+    assert!(card.get("role").is_none(), "{card}");
+
+    // An answer to a proposal is checked the same way, before any writer.
+    let result = call_result(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_proposal_apply",
+        json!({ "space": shelf.did().to_string(), "id": "held" }),
+    )
+    .await;
+    assert_eq!(result["isError"], true);
+    assert_eq!(
+        result["structuredContent"]["card"]["label"],
+        "read only in Shelf"
+    );
+}
+
 #[cfg(all(feature = "integration-tests", not(target_arch = "wasm32")))]
 mod against_a_service {
     //! The endpoint over real space writers and a native access service:
@@ -643,6 +877,38 @@ mod against_a_service {
     /// An address on another origin than the configured service.
     const FOREIGN: &str = "https://elsewhere.example/ucan/";
 
+    /// What `core.yaml` declares for `tonk/rename-repository`.
+    const RENAME_SCHEMA: &str = "concept!: &tonk/repository
+  this: tonk:repository
+  description: A repository
+  with:
+    name:
+      description: The name
+      the: xyz.tonk.repo/name
+      as: text
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+command!: &tonk/rename-repository
+  description: Rename the repository.
+  with:
+    subject: rename-repository/subject
+    name: rename-repository/name
+rule!:
+  description: Renames the repository from a rename-repository command
+  assert!: tonk/repository
+  when:
+    - assert: tonk/rename-repository
+      where:
+        subject: ?this
+        name: ?name
+";
+
     const SCHEMA: &str = "attribute!: &mcp-note-title
   description: Title
   the: mcp.note/title
@@ -655,6 +921,8 @@ concept!: &mcp-note
 
     /// One writer per space and writer DID, as the Durable Objects are.
     struct NativeWriters {
+        pending:
+            tokio::sync::Mutex<HashMap<Did, crate::router::hosted::creation::PendingCreations>>,
         remote: url::Url,
         open: tokio::sync::Mutex<HashMap<String, Arc<SpaceWriter>>>,
         /// Each space a writer opened for, and where it mounted it.
@@ -718,7 +986,47 @@ concept!: &mcp-note
             if parts.uri.path() == ACCESS_ROUTE {
                 return match writer.agent_access().await {
                     Ok(access) => rpc(StatusCode::OK, serde_json::to_value(access).unwrap()),
+                    // As the Host Worker does: an upstream refusal keeps
+                    // its status and code.
+                    Err(crate::TonkWorkerError::Upstream {
+                        status,
+                        code: Some(code),
+                        message,
+                    }) => rpc(
+                        StatusCode::from_u16(status).unwrap(),
+                        json!({ "error": message, "code": code }),
+                    ),
                     Err(error) => plain(StatusCode::BAD_GATEWAY, &error.to_string()),
+                };
+            }
+            if parts.uri.path() == crate::router::hosted::join::LINK_ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let request = serde_json::from_slice(&body).unwrap();
+                return match writer.join_link(&request).await {
+                    Ok(answer) => rpc(StatusCode::OK, serde_json::to_value(answer).unwrap()),
+                    Err(error) => rpc(StatusCode::UNPROCESSABLE_ENTITY, json!({"error":error})),
+                };
+            }
+            if parts.uri.path() == crate::router::hosted::creation::CREATE_ROUTE {
+                let body = body.collect().await.unwrap().to_bytes();
+                let request = serde_json::from_slice(&body).unwrap();
+                let decision = {
+                    let mut pending = self.pending.lock().await;
+                    let cards = pending.entry(writer.did().clone()).or_default();
+                    match cards.decide(request, dialog_ucan_core::time::Timestamp::now().to_unix())
+                    {
+                        Ok(decision) => decision,
+                        Err(reason) => {
+                            return rpc(StatusCode::UNPROCESSABLE_ENTITY, json!({"error":reason}));
+                        }
+                    }
+                };
+                return match writer.create_space(&self.remote, decision).await {
+                    Ok(answer) => rpc(StatusCode::OK, answer),
+                    Err(error) => rpc(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        json!({"error":error.to_string()}),
+                    ),
                 };
             }
             let grants: Vec<String> = parts
@@ -730,7 +1038,7 @@ concept!: &mcp-note
             if let Err(error) = writer.admit(&grants).await {
                 return plain(StatusCode::BAD_GATEWAY, &error.to_string());
             }
-            let routed = |uri: &str| {
+            let routed = |uri: &str, body: Body| {
                 Request::builder()
                     .method(Method::POST)
                     .uri(uri)
@@ -738,9 +1046,36 @@ concept!: &mcp-note
                     .body(body)
                     .unwrap()
             };
+            let id = |body: &[u8]| {
+                serde_json::from_slice::<Value>(body).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
             match parts.uri.path() {
-                "/api/query" => writer.read(routed("/evaluate?transact=false")).await,
-                "/api/evaluate" => writer.write(routed("/evaluate?transact=true")).await,
+                "/api/query" => writer.read(routed("/evaluate?transact=false", body)).await,
+                "/api/evaluate" => writer.write(routed("/evaluate?transact=true", body)).await,
+                path if path == crate::router::hosted::propose::PROPOSE_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer
+                        .propose(String::from_utf8(body.to_vec()).unwrap())
+                        .await
+                }
+                path if path == crate::router::hosted::propose::APPLY_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.apply(&id(&body)).await
+                }
+                path if path == crate::router::hosted::propose::DISMISS_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.dismiss(&id(&body))
+                }
+                path if path == crate::router::hosted::propose::SHARE_ROUTE => {
+                    writer.propose_passlink()
+                }
+                path if path == crate::router::hosted::propose::LEAVE_ROUTE => {
+                    let body = body.collect().await.unwrap().to_bytes();
+                    writer.propose_leave(&body)
+                }
                 other => panic!("no writer route {other}"),
             }
         }
@@ -811,7 +1146,7 @@ concept!: &mcp-note
         name: Option<&str>,
         home: Option<&url::Url>,
         address: &str,
-    ) {
+    ) -> Vec<DelegationChain> {
         let chains = grants(space, &agent.did(), verbs, None, home).await;
         let session = owner(agent, remote, "approval").await;
         let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), remote)
@@ -829,6 +1164,7 @@ concept!: &mcp-note
             .await
             .unwrap();
         writer.close().await;
+        chains
     }
 
     struct Client<'a> {
@@ -852,6 +1188,24 @@ concept!: &mcp-note
             }
         }
 
+        /// Call a tool: its whole result.
+        async fn result(&self, name: &str, arguments: Value) -> Value {
+            let call = json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments },
+            });
+            let (status, body) = answer(
+                self.endpoint
+                    .serve(rpc_request(Some(&self.bearer), Some(&self.session), call))
+                    .await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["result"].clone()
+        }
+
         /// Call a tool: its result and whether it is an error.
         async fn call(&self, name: &str, arguments: Value) -> (Value, bool) {
             let (text, error) =
@@ -859,6 +1213,293 @@ concept!: &mcp-note
             let value = serde_json::from_str(&text).unwrap_or(json!(text));
             (value, error)
         }
+    }
+
+    #[dialog_common::test]
+    async fn an_approved_passlink_opens_the_granted_space() {
+        use crate::router::hosted::{join, propose};
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::generate().await.unwrap();
+        let space = Ed25519Signer::generate().await.unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        for did in [agent.did(), space.did()] {
+            service
+                .address
+                .provision_subject(did.as_ref())
+                .await
+                .unwrap();
+        }
+        approve(
+            &agent,
+            &remote,
+            &space,
+            &["get", "put"],
+            Some("Notes"),
+            Some(&remote),
+            remote.as_str(),
+        )
+        .await;
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        let args = json!({"space":space.did()});
+        assert_eq!(
+            client.result(propose::SHARE, args.clone()).await["isError"],
+            true
+        );
+        let expires = Timestamp::try_from(i128::from(Timestamp::now().to_unix() + 3600)).unwrap();
+        let grant = DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(Signer::from(space.clone()))
+                .audience(&agent.did())
+                .subject(UcanSubject::Specific(space.did()))
+                .command(vec!["use".into()])
+                .meta(tonk_invite::home_address_meta(&remote))
+                .expiration(expires)
+                .try_build()
+                .await
+                .unwrap(),
+        );
+        let own = owner(&agent, &remote, "share-approval").await;
+        let approval = SpaceWriter::open(&scratch_root(), &own, &agent.did(), &remote)
+            .await
+            .unwrap();
+        approval.approve(&[grant], &[]).await.unwrap();
+        approval.close().await;
+        let proposal = client.result(propose::SHARE, args).await;
+        assert_eq!(proposal["isError"], false, "{proposal}");
+        assert!(proposal["_meta"]["passlink"].is_null());
+        let answer = proposal["structuredContent"]["card"]["answers"][1]["arguments"].clone();
+        let other_connection = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        assert_eq!(
+            other_connection
+                .result(propose::APPLY, answer.clone())
+                .await["isError"],
+            true
+        );
+        let card = Client::connect(&endpoint, bearer).await;
+        let result = card.result(propose::APPLY, answer.clone()).await;
+        assert_eq!(result["isError"], false, "{}", result["content"]);
+        let link = result["_meta"]["passlink"].as_str().unwrap();
+        assert!(!result["content"].to_string().contains(link));
+        assert!(!result["structuredContent"].to_string().contains(link));
+        let offer = join::read_link(link, None).await.unwrap();
+        assert_eq!(offer.subject, space.did());
+        assert!(offer.write);
+        let recipient = Ed25519Signer::generate().await.unwrap();
+        let grants = offer
+            .grant(
+                &recipient.did(),
+                tonk_invite::connection::AgentAccess::ReadWrite,
+                Timestamp::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            grants
+                .iter()
+                .all(|chain| chain.expiration() == Some(expires))
+        );
+        assert_eq!(card.result(propose::APPLY, answer).await["isError"], true);
+        // A different account's agent redeems the bearer through MCP and writes.
+        service
+            .address
+            .provision_subject(recipient.did().as_ref())
+            .await
+            .unwrap();
+        let guest = Client::connect(&endpoint, token(&recipient, &remote).await).await;
+        let joined = guest
+            .result(join::ACCEPT, json!({"link":link,"access":"write"}))
+            .await;
+        assert_eq!(joined["isError"], false, "{}", joined["content"]);
+        let saved = guest
+            .result(
+                "tonk_evaluate",
+                json!({"space":space.did(),"document":SCHEMA}),
+            )
+            .await;
+        assert_eq!(saved["isError"], false, "{}", saved["content"]);
+        service.stop().await.unwrap();
+    }
+
+    /// How long after a revocation the agent may still be answered. The
+    /// same budgets as the hosted-agent e2e (`REVOKE_BUDGET` and
+    /// `LINK_REVOKE_BUDGET` in `tests/e2e/hosted-agent/agent.test.mjs`):
+    /// the two run one scenario and must agree.
+    const REVOKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+    const LINK_REVOKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// How the person takes a grant away.
+    #[derive(Clone, Copy, Debug)]
+    enum Revocation {
+        /// A grant this profile issued: revoked at the access service.
+        AtTheService,
+        /// A grant joined from a share link: dropped from the agent space
+        /// only, as `agents::revoke` does.
+        FromTheAgentSpace,
+    }
+
+    /// Call a tool built by `arguments` (given the attempt's number) until
+    /// the agent is refused, from `since` for at most `budget`: how long
+    /// that took, and the refusal's event.
+    async fn refused_within(
+        client: &Client<'_>,
+        events: &Events,
+        name: &str,
+        arguments: impl Fn(usize) -> Value,
+        since: std::time::Instant,
+        budget: std::time::Duration,
+    ) -> (std::time::Duration, ToolEvent) {
+        for attempt in 0.. {
+            let (result, error) = client.call(name, arguments(attempt)).await;
+            let elapsed = since.elapsed();
+            // Past the budget fails whether or not this call was refused:
+            // a refusal that arrives late is a late revocation.
+            assert!(
+                elapsed <= budget,
+                "{name} was {} {elapsed:?} after the revocation (budget {budget:?}): {result}",
+                if error {
+                    "refused only"
+                } else {
+                    "still answered"
+                },
+            );
+            if error {
+                println!("{name} refused: {result}");
+                return (elapsed, events.last());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        unreachable!()
+    }
+
+    /// The person takes the agent's read and write grant away, `how`, and
+    /// both its reads and its writes on the space are refused within
+    /// `budget`: the scenario the hosted-agent e2e runs on a preview.
+    async fn revoking_refuses_reads_and_writes(how: Revocation, budget: std::time::Duration) {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        let notes = Ed25519Signer::generate().await.unwrap();
+        for subject in [agent.did(), notes.did()] {
+            service
+                .address
+                .provision_subject(subject.as_ref())
+                .await
+                .unwrap();
+        }
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let chains = approve(
+            &agent,
+            &remote,
+            &notes,
+            &["get", "put"],
+            Some("Notes"),
+            None,
+            remote.as_str(),
+        )
+        .await;
+
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let events = Events::default();
+        let sink = events.sink();
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = recording(&key, &tickets, &writers, &sink);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let subject = notes.did().to_string();
+        let read = |_: usize| json!({ "space": subject, "document": "concept:\n" });
+        let run: u64 = rand::random();
+        let write = |attempt: usize| {
+            json!({
+                "space": subject,
+                "document": format!(
+                    "mcp-note!:\n  this: urn:mcp:{run}:{attempt}\n  title: \"probe {attempt}\"\n"
+                ),
+            })
+        };
+        // Answered before, so a refusal after is the revocation's.
+        let (result, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": subject, "document": SCHEMA }),
+            )
+            .await;
+        assert!(!error, "evaluate before the revocation: {result}");
+        let (result, error) = client.call("tonk_query", read(0)).await;
+        assert!(!error, "query before the revocation: {result}");
+
+        let since = std::time::Instant::now();
+        match how {
+            Revocation::AtTheService => {
+                for chain in &chains {
+                    let leaf = crate::router::revoke_invite::leaf_cid(chain).unwrap();
+                    let revocation = tonk_identity::revocation::mint_root_revocation(
+                        notes.clone(),
+                        chain,
+                        &leaf,
+                    )
+                    .await
+                    .unwrap();
+                    crate::router::http::post_cbor(&remote, &revocation)
+                        .await
+                        .unwrap();
+                }
+            }
+            Revocation::FromTheAgentSpace => {
+                let session = owner(&agent, &remote, "withdrawal").await;
+                let writer = SpaceWriter::open(&scratch_root(), &session, &agent.did(), &remote)
+                    .await
+                    .unwrap();
+                writer.withdraw(&chains).await.unwrap();
+                writer.close().await;
+            }
+        }
+
+        for (name, arguments) in [
+            ("tonk_query", &read as &dyn Fn(usize) -> Value),
+            ("tonk_evaluate", &write),
+        ] {
+            let (elapsed, refused) =
+                refused_within(&client, &events, name, arguments, since, budget).await;
+            println!("{how:?}: {name} refused {elapsed:?} after the revocation");
+            assert_eq!(refused.outcome, telemetry::Outcome::Refused, "{refused:?}");
+            assert!(
+                matches!(
+                    refused.kind.as_deref(),
+                    Some("credential_revoked" | "access_denied" | "no_access")
+                ),
+                "{name} refused for another reason: {refused:?}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn revoking_an_approved_grant_refuses_reads_and_writes_within_the_budget() {
+        revoking_refuses_reads_and_writes(Revocation::AtTheService, REVOKE_BUDGET).await;
+    }
+
+    #[dialog_common::test]
+    async fn revoking_a_share_link_grant_refuses_reads_and_writes_within_the_budget() {
+        revoking_refuses_reads_and_writes(Revocation::FromTheAgentSpace, LINK_REVOKE_BUDGET).await;
     }
 
     #[dialog_common::test]
@@ -914,13 +1555,16 @@ concept!: &mcp-note
         approve(&agent, &remote, &shelf, &["get"], None, None, FOREIGN).await;
 
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
         };
         let key = SessionKey::derive("test");
         let tickets = crate::router::hosted::view::TicketKey::derive("test");
-        let endpoint = endpoint(&key, &tickets, &writers);
+        let events = Events::default();
+        let sink = events.sink();
+        let endpoint = recording(&key, &tickets, &writers, &sink);
         let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
 
         // The list is read from the agent space, names and all.
@@ -939,7 +1583,7 @@ concept!: &mcp-note
         };
         assert_eq!(
             entry(&notes.did()),
-            json!({ "subject": notes.did().to_string(), "access": "read-write", "name": "Notes" })
+            json!({ "subject": notes.did().to_string(), "access": "write", "name": "Notes" })
         );
         assert_eq!(
             entry(&shelf.did()),
@@ -956,6 +1600,12 @@ concept!: &mcp-note
                 )
                 .await;
             assert!(!error, "evaluate: {result}");
+        }
+        // The write's own steps, as the writer timed them, reach the event.
+        let written = events.last();
+        assert_eq!(written.outcome, telemetry::Outcome::Ok);
+        for step in ["writer.lock", "writer.pull", "writer.eval", "writer.push"] {
+            assert!(written.step(step).is_some(), "{step}: {:?}", written.steps);
         }
         let (found, error) = client
             .call(
@@ -1036,4 +1686,881 @@ concept!: &mcp-note
         service.stop().await.unwrap();
         other.stop().await.unwrap();
     }
+
+    #[dialog_common::test]
+    async fn chat_created_space_requires_confirmation_and_is_listed() {
+        use crate::router::hosted::creation::{CONFIRM, CREATE};
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let remote: url::Url = service.address.ucan_endpoint().parse().unwrap();
+        let agent = Ed25519Signer::generate().await.unwrap();
+        let owner = Ed25519Signer::generate().await.unwrap();
+        service
+            .address
+            .activate_customer(&owner, "owner@example.test")
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let grant = tonk_identity::created_space::permission(
+            &owner,
+            &agent.did(),
+            &remote,
+            dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+        )
+        .await
+        .unwrap();
+        let another_connection =
+            issue_agent_session_with_grants(agent.clone(), &remote, std::slice::from_ref(&grant))
+                .await
+                .unwrap()
+                .token;
+        let bearer = issue_agent_session_with_grants(agent, &remote, &[grant])
+            .await
+            .unwrap()
+            .token;
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote,
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        let card = Client::connect(&endpoint, bearer).await;
+        let other = Client::connect(&endpoint, another_connection).await;
+        let ask = client.result(CREATE, json!({"name":"Research"})).await;
+        let buttons = &ask["structuredContent"]["card"]["answers"];
+        let approve = buttons[1]["arguments"].clone();
+        assert_eq!(
+            other.result(CONFIRM, approve.clone()).await["isError"],
+            true
+        );
+        assert_eq!(
+            client
+                .result(CONFIRM, buttons[0]["arguments"].clone())
+                .await["isError"],
+            false
+        );
+        assert_eq!(client.result(CONFIRM, approve).await["isError"], true);
+        let list = client.result("tonk_list_spaces", json!({})).await;
+        assert_eq!(
+            list["structuredContent"]["spaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let ask = client.result(CREATE, json!({"name":"Research"})).await;
+        let answer = &ask["structuredContent"]["card"]["answers"][1];
+        assert_eq!(answer["tool"], CONFIRM);
+        // The host may evict its warm writer while ChatGPT is showing the card.
+        writers.open.lock().await.clear();
+        let receipt = card.result(CONFIRM, answer["arguments"].clone()).await;
+        let subject = receipt["structuredContent"]["space"]
+            .as_str()
+            .expect("creation receipt");
+        let list = client.result("tonk_list_spaces", json!({})).await;
+        assert!(
+            list["structuredContent"]["spaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["subject"] == subject
+                    && s["name"] == "Research"
+                    && s["access"] == "write")
+        );
+        service.stop().await.unwrap();
+    }
+
+    /// A command that changes who has access to a space or what it is
+    /// called is asked first, whatever the agent sends: `tonk_evaluate`
+    /// holds it and answers an ask, and only the person's answer runs it.
+    /// Leaving a space is the person's to confirm: `tonk_leave_space`
+    /// answers an ask and changes nothing, and only the card's answer
+    /// drops the grants the agent holds for it.
+    #[dialog_common::test]
+    async fn leaving_a_space_is_asked_first() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        let shelf = Ed25519Signer::generate().await.unwrap();
+        for subject in [agent.did(), shelf.did()] {
+            service
+                .address
+                .provision_subject(subject.as_ref())
+                .await
+                .unwrap();
+        }
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        approve(
+            &agent,
+            &remote,
+            &shelf,
+            // Read only: leaving needs no write access to the space left.
+            &["get"],
+            Some("Shelf"),
+            None,
+            FOREIGN,
+        )
+        .await;
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let client = Client::connect(&endpoint, token(&agent, &remote).await).await;
+        let shelf_did = shelf.did().to_string();
+        let listed = || {
+            let client = &client;
+            let shelf_did = shelf_did.clone();
+            async move {
+                let (spaces, error) = client.call("tonk_list_spaces", json!({})).await;
+                assert!(!error, "{spaces}");
+                spaces["spaces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry["subject"] == json!(shelf_did))
+            }
+        };
+        assert!(listed().await, "the shelf was not granted");
+
+        // Asked: a card, and the agent still holds the space.
+        let asked = client
+            .result("tonk_leave_space", json!({ "space": shelf_did }))
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        assert_eq!(ask["say"], "leave Shelf", "{ask}");
+        assert!(listed().await, "asking left the space");
+
+        // Its own space is not one it can leave.
+        let (refused, error) = client
+            .call(
+                "tonk_leave_space",
+                json!({ "space": agent.did().to_string() }),
+            )
+            .await;
+        assert!(error, "{refused}");
+
+        // Confirmed: the grants are dropped, and the receipt says so.
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply", "{ask}");
+        let left = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(left["isError"], false, "{left}");
+        let strip = &left["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{left}");
+        assert_eq!(strip["say"], "left Shelf", "{strip}");
+        assert!(!listed().await, "the space is still listed after leaving");
+
+        // Once only.
+        let again = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(again["isError"], true, "{again}");
+
+        service.stop().await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn a_key_command_is_asked_first_even_without_confirm() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        // The part of the core library a rename needs, as every space is
+        // seeded with it.
+        let seeded = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": RENAME_SCHEMA }),
+            )
+            .await;
+        assert_eq!(seeded["isError"], false, "{seeded}");
+        let run: u64 = rand::random();
+        let name = format!("Renamed {run}");
+        let rename = format!("tonk/rename-repository!:\n  subject: {space}\n  name: \"{name}\"\n");
+        let renamed = || {
+            let find = format!("tonk/repository:\n  this: {space}\n  name: ?name\n");
+            let client = &client;
+            let space = space.clone();
+            let name = name.clone();
+            async move {
+                let (found, error) = client
+                    .call("tonk_query", json!({ "space": space, "document": find }))
+                    .await;
+                assert!(!error, "{found}");
+                found.to_string().contains(&name)
+            }
+        };
+
+        // Sent as a plain write: held and asked, and nothing renamed.
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": rename }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        let say = ask["say"].as_str().unwrap();
+        assert!(say.starts_with("rename "), "{say}");
+        assert!(say.contains(&name), "{say}");
+        assert!(
+            !renamed().await,
+            "the rename ran before the person answered"
+        );
+
+        // Applied: the rename runs once.
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply", "{ask}");
+        let applied = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(applied["isError"], false, "{applied}");
+        assert_eq!(applied["structuredContent"]["card"]["kind"], "strip");
+        assert!(renamed().await, "the confirmed rename did not run");
+
+        // With another write beside it, it is refused: the person confirms
+        // the command alone.
+        let mixed =
+            format!("{rename}mcp-note!:\n  this: urn:mcp:{run}:beside\n  title: \"beside\"\n");
+        let (refused, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": SCHEMA.to_owned() + &mixed }),
+            )
+            .await;
+        assert!(error, "{refused}");
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+
+        // Spelled so the source does not name it: the worker still finds
+        // the command, nothing runs, and the person is asked.
+        let other = format!("Escaped {run}");
+        let escaped = format!(
+            "\"tonk/rename-repository\\u0021\":\n  subject: {space}\n  name: \"{other}\"\n"
+        );
+        let asked = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": escaped }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        assert_eq!(asked["structuredContent"]["card"]["kind"], "ask", "{asked}");
+        let (found, _) = client
+            .call(
+                "tonk_query",
+                json!({ "space": space, "document": format!("tonk/repository:\n  this: {space}\n  name: ?name\n") }),
+            )
+            .await;
+        assert!(
+            !found.to_string().contains(&other),
+            "an escaped rename ran unasked: {found}"
+        );
+
+        // A query beside it could bind its inputs to other values by the
+        // time the person answers: refused, and nothing runs.
+        let queried = format!("tonk/repository:\n  this: {space}\n  name: ?name\n{rename}");
+        let (refused, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": queried }),
+            )
+            .await;
+        assert!(error, "{refused}");
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+
+        service.stop().await.unwrap();
+    }
+
+    #[dialog_common::test]
+    async fn a_proposal_is_applied_once_and_only_in_its_own_session() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer.clone()).await;
+        // Another MCP session of the same connection: another writer.
+        let other = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        let run: u64 = rand::random();
+        let note = |label: &str| {
+            format!("mcp-note!:\n  this: urn:mcp:{run}:{label}\n  title: \"note {label}\"\n")
+        };
+        let holds = |label: &str| {
+            let find = format!("mcp.note:\n  this: urn:mcp:{run}:{label}\n  title: ?title\n");
+            let client = &client;
+            let space = space.clone();
+            let label = label.to_owned();
+            async move {
+                let (found, error) = client
+                    .call("tonk_query", json!({ "space": space, "document": find }))
+                    .await;
+                assert!(!error, "{found}");
+                found.to_string().contains(&format!("note {label}"))
+            }
+        };
+
+        // A plain write is saved at once, and its card is the receipt.
+        let wrote = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": SCHEMA }),
+            )
+            .await;
+        assert_eq!(wrote["isError"], false, "{wrote}");
+        let receipt = &wrote["structuredContent"]["card"];
+        assert_eq!(receipt["kind"], "strip", "{wrote}");
+        assert_eq!(receipt["byAgent"], true);
+        assert_eq!(receipt["agent"]["did"], json!(space));
+
+        // Proposed: an ask, and nothing written.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(proposed["isError"], false, "{proposed}");
+        let ask = &proposed["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{proposed}");
+        assert_eq!(ask["role"], "write");
+        assert_eq!(ask["changes"][0]["mark"], "+", "{ask}");
+        assert_eq!(ask["changes"][0]["name"], "note asked");
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["tool"], "tonk_proposal_dismiss");
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply");
+        assert_eq!(answers[1]["kind"], "main");
+        let arguments = answers[1]["arguments"].clone();
+        assert!(
+            proposed["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Nothing is written unless they apply it")
+        );
+        assert!(!holds("asked").await, "a proposal wrote");
+
+        // Another session does not hold it, and leaves it held.
+        let elsewhere = other.result("tonk_proposal_apply", arguments.clone()).await;
+        assert_eq!(elsewhere["isError"], true, "{elsewhere}");
+        assert_eq!(
+            elsewhere["structuredContent"]["card"]["label"],
+            "not applied"
+        );
+        assert!(!holds("asked").await, "another session applied it");
+
+        // Applied once, by its own session.
+        let applied = client
+            .result("tonk_proposal_apply", arguments.clone())
+            .await;
+        assert_eq!(applied["isError"], false, "{applied}");
+        let strip = &applied["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{applied}");
+        assert_eq!(strip["byAgent"], true);
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("added note asked to"),
+            "{strip}"
+        );
+        assert!(holds("asked").await, "the applied note is missing");
+
+        // Twice: refused, nothing more written.
+        let again = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(again["isError"], true, "{again}");
+        assert_eq!(again["structuredContent"]["card"]["kind"], "tell");
+
+        // Dismissed: nothing written, and it cannot be applied after.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("declined"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][1]["arguments"].clone();
+        let dismissed = client
+            .result("tonk_proposal_dismiss", arguments.clone())
+            .await;
+        assert_eq!(dismissed["isError"], false, "{dismissed}");
+        assert_eq!(dismissed["structuredContent"]["card"]["kind"], "strip");
+        let late = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(late["isError"], true, "{late}");
+        assert!(!holds("declined").await, "a dismissed proposal wrote");
+
+        // The space moves elsewhere after the preview: the change still does
+        // what the person saw, so it is applied at the new head.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("kept"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("meanwhile") }),
+            )
+            .await;
+        assert!(!error, "{moved}");
+        let kept = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(kept["isError"], false, "{kept}");
+        assert!(
+            holds("kept").await,
+            "a change unaffected by the move was refused"
+        );
+
+        // Someone changes the same item after the preview: the confirmed
+        // change is not written over what the person never saw.
+        let proposed = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("stale"), "confirm": true }),
+            )
+            .await;
+        let arguments = proposed["structuredContent"]["card"]["answers"][0]["arguments"].clone();
+        let theirs = format!("mcp-note!:\n  this: urn:mcp:{run}:stale\n  title: \"theirs\"\n");
+        let (moved, error) = client
+            .call(
+                "tonk_evaluate",
+                json!({ "space": space, "document": theirs }),
+            )
+            .await;
+        assert!(!error, "{moved}");
+        let stale = client.result("tonk_proposal_apply", arguments).await;
+        assert_eq!(stale["isError"], true, "{stale}");
+        let tell = &stale["structuredContent"]["card"];
+        assert_eq!(tell["label"], "note stale changed", "{stale}");
+        assert_eq!(
+            tell["ledger"][0],
+            json!({ "term": "theirs", "value": "theirs" })
+        );
+        assert_eq!(
+            tell["ledger"][1],
+            json!({ "term": "yours", "value": "note stale" })
+        );
+        assert!(!holds("stale").await, "a stale proposal wrote");
+        // The same change, held again at the new head: use mine writes it.
+        let answers = tell["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["label"], "use mine");
+        assert_eq!(answers[1]["label"], "keep theirs");
+        let mine = client
+            .result("tonk_proposal_apply", answers[0]["arguments"].clone())
+            .await;
+        assert_eq!(mine["isError"], false, "{mine}");
+        assert!(holds("stale").await, "use mine wrote nothing");
+
+        // A document that writes nothing has nothing to confirm.
+        let read = client
+            .result(
+                "tonk_evaluate",
+                json!({
+                    "space": space,
+                    "document": format!("mcp.note:\n  this: urn:mcp:{run}:asked\n  title: ?t\n"),
+                    "confirm": true,
+                }),
+            )
+            .await;
+        assert_eq!(read["isError"], false, "{read}");
+        assert_eq!(read["structuredContent"]["card"]["kind"], "strip", "{read}");
+        assert!(
+            read["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("would change nothing")
+        );
+        // Nor has one that writes what is there already.
+        let same = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": note("asked"), "confirm": true }),
+            )
+            .await;
+        assert_eq!(same["isError"], false, "{same}");
+        let strip = &same["structuredContent"]["card"];
+        assert_eq!(strip["kind"], "strip", "{same}");
+        assert!(
+            strip["say"]
+                .as_str()
+                .unwrap()
+                .starts_with("nothing changed in")
+        );
+
+        let open: Vec<Arc<SpaceWriter>> =
+            writers.open.lock().await.drain().map(|(_, w)| w).collect();
+        drop(open);
+        service.stop().await.unwrap();
+    }
+}
+
+/// Writers that answer the agent space's grants with `access`, and a
+/// space's reads and writes with `answer`; each records the trace id the
+/// request carried.
+struct Scripted {
+    agent: Did,
+    access: AgentAccess,
+    answer: fn() -> Response<Body>,
+    traces: std::cell::RefCell<Vec<Option<String>>>,
+}
+
+impl Writers for Scripted {
+    async fn call(
+        &self,
+        _verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        space: &Did,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        self.traces
+            .borrow_mut()
+            .push(telemetry::trace_of(request.headers()));
+        if request.uri().path() == ACCESS_ROUTE {
+            assert_eq!(space, &self.agent);
+            let mut response = rpc(StatusCode::OK, serde_json::to_value(&self.access).unwrap());
+            response
+                .headers_mut()
+                .insert(SERVER_TIMING, HeaderValue::from_static("pull;dur=7"));
+            return response;
+        }
+        (self.answer)()
+    }
+}
+
+/// The agent's own space and `space`, granted read and write.
+fn writable(agent: &Did, space: &Did) -> AgentAccess {
+    let mut access = own(agent);
+    access.spaces.insert(
+        space.to_string(),
+        SpaceAccess {
+            read: true,
+            write: true,
+            grants: vec!["bafy-write".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    access
+}
+
+#[dialog_common::test]
+async fn a_tool_call_answers_its_trace_and_the_time_of_each_step() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let writers = Scripted {
+        agent: agent.did(),
+        access: own(&agent.did()),
+        answer: || panic!("no space was named"),
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let response = endpoint
+        .serve(tool_request(
+            &bearer,
+            &session,
+            "tonk_list_spaces",
+            json!({}),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let trace = response.headers()[TRACE_HEADER]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let timing = response.headers()[SERVER_TIMING]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    // The trace reached the writer, and comes back to the client.
+    assert_eq!(*writers.traces.borrow(), vec![Some(trace.clone())]);
+    for step in ["verify;", "access;", "access.pull;dur=7", "total;"] {
+        assert!(timing.contains(step), "{step} missing from {timing}");
+    }
+    let event = events.only();
+    assert_eq!(event.trace, trace);
+    assert_eq!(event.tool, "tonk_list_spaces");
+    assert_eq!(event.outcome, telemetry::Outcome::Ok);
+    assert_eq!(event.kind, None);
+    assert_eq!(event.agent, telemetry::short_did(&agent.did()));
+    assert_eq!(event.step("access.pull"), Some(7.0));
+    assert!(event.ms >= 0.0);
+}
+
+#[dialog_common::test]
+async fn a_refusal_is_recorded_with_its_reason_and_space() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let mut access = own(&agent.did());
+    access.spaces.insert(
+        space.did().to_string(),
+        SpaceAccess {
+            read: true,
+            grants: vec!["bafy-read".into()],
+            ..SpaceAccess::default()
+        },
+    );
+    let writers = Scripted {
+        agent: agent.did(),
+        access,
+        answer: || panic!("a refused call reached a writer"),
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("read_only"));
+    assert_eq!(event.space, Some(telemetry::short_did(&space.did())));
+}
+
+#[dialog_common::test]
+async fn a_malformed_call_is_invalid_not_a_failure() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &Unreachable, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_query",
+        json!({ "document": "x: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Invalid);
+    assert_eq!(event.kind.as_deref(), Some("no_space"));
+
+    // A name this endpoint could not serve is not written as given.
+    call_tool(&endpoint, &bearer, &session, "Not A Tool!", json!({})).await;
+    assert_eq!(events.last().tool, "other");
+}
+
+#[dialog_common::test]
+async fn a_writer_failure_is_recorded_with_its_code_and_steps() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let writers = Scripted {
+        agent: agent.did(),
+        access: writable(&agent.did(), &space.did()),
+        answer: || {
+            let mut response = rpc(
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": "push: 503", "code": "WRITE_NOT_LANDED" }),
+            );
+            response.headers_mut().insert(
+                SERVER_TIMING,
+                HeaderValue::from_static("lock;dur=1, pull;dur=20, eval;dur=3, push;dur=40"),
+            );
+            response
+        },
+        traces: Default::default(),
+    };
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let bearer = token(&agent, &home()).await;
+    let session = connect(&endpoint, &bearer).await;
+
+    let response = endpoint
+        .serve(tool_request(
+            &bearer,
+            &session,
+            "tonk_evaluate",
+            json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+        ))
+        .await;
+    let timing = response.headers()[SERVER_TIMING]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(timing.contains("writer.push;dur=40.0"), "{timing}");
+    let trace = response.headers()[TRACE_HEADER]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // The access read and the write carried the same trace.
+    assert_eq!(
+        *writers.traces.borrow(),
+        vec![Some(trace.clone()), Some(trace)]
+    );
+
+    let event = events.only();
+    assert_eq!(event.outcome, telemetry::Outcome::Error);
+    assert_eq!(event.kind.as_deref(), Some("write_not_landed"));
+    assert_eq!(event.step("writer.pull"), Some(20.0));
+    assert_eq!(event.step("writer.push"), Some(40.0));
+    assert!(event.step("writer").is_some(), "{:?}", event.steps);
+}
+
+#[dialog_common::test]
+fn a_rejected_request_is_invalid_and_a_refused_one_refused() {
+    assert_eq!(
+        writer_outcome(StatusCode::BAD_REQUEST),
+        telemetry::Outcome::Invalid
+    );
+    assert_eq!(
+        writer_outcome(StatusCode::FORBIDDEN),
+        telemetry::Outcome::Refused
+    );
+    assert_eq!(
+        writer_outcome(StatusCode::GATEWAY_TIMEOUT),
+        telemetry::Outcome::Error
+    );
+}
+
+/// Writers whose every answer is a revoked refusal, as the writers answer
+/// once the session's grant is revoked.
+struct Revoked;
+
+impl Writers for Revoked {
+    async fn call(
+        &self,
+        _verified: &Verified,
+        _bearer: &str,
+        _mcp_session: &str,
+        _space: &Did,
+        _request: Request<Body>,
+    ) -> Response<Body> {
+        rpc(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+        )
+    }
+}
+
+#[dialog_common::test]
+async fn a_revoked_grant_is_recorded_as_a_refusal_not_a_failure() {
+    let agent = Ed25519Signer::generate().await.unwrap();
+    let space = Ed25519Signer::generate().await.unwrap();
+    let events = Events::default();
+    let sink = events.sink();
+    let key = SessionKey::derive("test");
+    let tickets = crate::router::hosted::view::TicketKey::derive("test");
+    let bearer = token(&agent, &home()).await;
+
+    // The session's own space: the agent space's writer refuses the read
+    // of its grants.
+    let endpoint = recording(&key, &tickets, &Revoked, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(&endpoint, &bearer, &session, "tonk_list_spaces", json!({})).await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
+
+    // A granted space: the front still lists the grant, and the space's
+    // writer is refused at its pull.
+    let writers = Scripted {
+        agent: agent.did(),
+        access: writable(&agent.did(), &space.did()),
+        answer: || {
+            rpc(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "pull: 403: revoked", "code": "CREDENTIAL_REVOKED" }),
+            )
+        },
+        traces: Default::default(),
+    };
+    let endpoint = recording(&key, &tickets, &writers, &sink);
+    let session = connect(&endpoint, &bearer).await;
+    let (_, error) = call_tool(
+        &endpoint,
+        &bearer,
+        &session,
+        "tonk_evaluate",
+        json!({ "space": space.did().to_string(), "document": "x!: {}" }),
+    )
+    .await;
+    assert!(error);
+    let event = events.last();
+    assert_eq!(event.outcome, telemetry::Outcome::Refused);
+    assert_eq!(event.kind.as_deref(), Some("credential_revoked"));
 }

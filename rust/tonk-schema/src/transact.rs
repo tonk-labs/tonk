@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
+use dialog_corpus::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::attribute::Relation;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
@@ -582,7 +582,7 @@ fn emit_name_assertion<U: Update>(
     update: &mut U,
     assert: bool,
 ) {
-    use dialog_artifacts::Statement as _;
+    use dialog_corpus::Statement as _;
 
     let Some(name) = name else {
         return;
@@ -671,7 +671,7 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         // A collection entry is written under `domain/key`; the key is
         // the literal the assertion named, carried in the field's key
         // operand. An entry with no key has no fact to write.
-        let the: dialog_artifacts::Relation = match attribute.the().attribute() {
+        let the: dialog_corpus::Relation = match attribute.the().attribute() {
             Some(the) => the,
             None => {
                 let key = query
@@ -705,7 +705,7 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::{Changes, Instruction};
+    use dialog_corpus::{Changes, Instruction};
     use dialog_query::ConceptDescriptor;
     use tonk_core::claim::SourceApplication;
 
@@ -768,7 +768,7 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let width_attr: dialog_artifacts::Relation = "xyz.tonk.column/width".parse().unwrap();
+        let width_attr: dialog_corpus::Relation = "xyz.tonk.column/width".parse().unwrap();
         let saw_width = changes.into_instructions().into_iter().any(|inst| {
             let artifact = match &inst {
                 Instruction::Assert(a, _) => a,
@@ -792,7 +792,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_corpus::Relation = "db.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
@@ -836,7 +836,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_corpus::Relation = "db.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -877,11 +877,11 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name: dialog_artifacts::Relation = "db.name/referent".parse().unwrap();
+        let meta_name: dialog_corpus::Relation = "db.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
-            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_artifacts::Pick::All) if a.the == meta_name));
+            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_corpus::Pick::All) if a.the == meta_name));
         assert!(
             !saw_meta_name,
             "anonymous bindings should not emit any db.meta/name claim"

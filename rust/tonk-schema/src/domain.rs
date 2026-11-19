@@ -21,7 +21,7 @@
 // compile under `-D warnings`.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Attribute;
 use dialog_repository::SiteAddress;
 
@@ -436,7 +436,7 @@ pub mod sync {
 /// tab's latest location + route. Route models pick whichever of these they
 /// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
 ///
-/// [`Entity`]: dialog_artifacts::Entity
+/// [`Entity`]: dialog_corpus::Entity
 pub mod site {
     use super::{Attribute, Entity};
 
@@ -1202,6 +1202,52 @@ pub mod command {
         pub struct Time(pub f64);
     }
 
+    /// Attributes of the `space/invite-agent` command.
+    pub mod invite_agent {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The agent to let into the space: its agent space's subject DID.
+        /// Derived attribute: `xyz.tonk.invite-agent/agent`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Agent(pub Entity);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-agent/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-agent")]
+        pub struct Time(pub f64);
+    }
+
+    /// Attributes of the `space/invite-email` command.
+    pub mod invite_email {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The address of the account to let in, as typed. Derived
+        /// attribute: `xyz.tonk.invite-email/email`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Email(pub String);
+
+        /// The space to let it into. Derived attribute:
+        /// `xyz.tonk.invite-email/space`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Space(pub Entity);
+
+        /// When it was asked, so asking again is a new command.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.invite-email")]
+        pub struct Time(pub f64);
+    }
+
     /// Attributes of the `member/expel` command.
     pub mod expel {
         use super::super::Entity;
@@ -1276,9 +1322,39 @@ pub mod command {
             pub struct Name(pub String);
         }
 
+        /// `space/create-branch` — give a space a branch it does not have.
+        pub mod create_branch {
+            use dialog_corpus::Entity;
+            use dialog_query::Attribute;
+
+            /// The space (its subject DID) to make the branch in.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Space(pub Entity);
+
+            /// The new branch's name.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Name(pub String);
+
+            /// What the branch starts from: `main` (the space's default
+            /// branch as it is now) or `empty` (the standard library and
+            /// nothing else). A branch of the same name on the space's
+            /// remote takes precedence over either.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Base(pub String);
+
+            /// The tab's site that asked, whose missing-branch state the
+            /// handler clears once the branch exists.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.create-branch")]
+            pub struct Site(pub Entity);
+        }
+
         /// `space/remove` — drop a space from this device.
         pub mod remove_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to remove. Called what it is: the old
@@ -1485,7 +1561,7 @@ pub mod command {
         /// `member/expel` — revoke a member's access to a space.
         /// `library/install` — add a library component to the space.
         pub mod install_component {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The component (`tonk:library/<name>`): which library file.
@@ -1500,7 +1576,7 @@ pub mod command {
         }
 
         pub mod expel_member {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The DID the member's membership is keyed on.
@@ -1544,7 +1620,7 @@ pub mod command {
 
         /// `tonk/add-passkey` — seal the account under a second passkey.
         pub mod add_passkey {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The account to add a passkey to.
@@ -1563,7 +1639,7 @@ pub mod command {
         /// `tonk/forget-invite` — drop a space's invite row once its
         /// link has been copied.
         pub mod forget_invite {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The copy's timestamp, so each one is a distinct transient.
@@ -1580,7 +1656,7 @@ pub mod command {
         /// `space/replicate` — pull a space the account has but this
         /// device does not.
         pub mod replicate_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to pull, as its subject DID.
@@ -1602,7 +1678,7 @@ pub mod command {
 
         /// `intent/interpret` — what was typed in the command palette.
         pub mod intent_interpret {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The palette opening it belongs to: one per opening, made by
@@ -1627,9 +1703,33 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `intent/suggest` — what a line typed in the command palette
+        /// could mean. The fields every ask carries; the optional ones
+        /// (`subject`, `site`, `expression`, `memory`) are read from the
+        /// command's rows by the provider.
+        pub mod intent_suggest {
+            use dialog_query::Attribute;
+
+            /// What was typed; empty asks what can be done without saying
+            /// more.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Input(pub String);
+
+            /// The caller's clock in milliseconds.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Now(pub f64);
+
+            /// How many readings at most.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Max(pub u64);
+        }
+
         /// `site/select` — what the page in a tab has selected.
         pub mod site_select {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The tab's site entity (`window.tonk.context.site`).
@@ -2124,7 +2224,7 @@ pub mod credential {
 /// thing that happens to share the noun.
 pub mod invite {
     use super::Attribute;
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
 
     /// Where this space's invite has got to.
     ///
@@ -2347,6 +2447,19 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
+
+    /// When the invitation was minted, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct MintedAt(pub u64);
+
+    /// Where the invitation lists among its space's links, unix
+    /// milliseconds: the place of the link it replaced.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct ListedAt(pub u64);
 }
 
 /// Attributes that live on [`Remote`] entities only.

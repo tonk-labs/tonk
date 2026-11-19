@@ -153,18 +153,17 @@ pub struct AgentAuthorization {
     /// again to an app of the same provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The spaces the agent may reach.
+    /// Spaces chosen during authorization.
     pub spaces: Vec<AgentSpaceChoice>,
 }
 
-/// One space an agent may reach, and how: `read`, or `write` for read
-/// and write.
+/// A space and its approved level of access.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSpaceChoice {
     /// The space's routing key.
     pub key: String,
-    /// `read` or `write`.
+    /// `read`, `write`, or `share` for full space use including passlinks.
     pub access: String,
 }
 
@@ -219,6 +218,11 @@ pub struct PasskeyAddition {
     /// The access service's `/ucan/` endpoint the custody cell
     /// resolves through.
     pub endpoint: String,
+    /// Browser/OS label recorded with the added passkey, filled in by the
+    /// page that creates it: the account's passkey list names each one by
+    /// it, so an added passkey without one would never be listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_on: Option<String>,
 }
 
 /// The browser a custody handoff should link to the account it opens.

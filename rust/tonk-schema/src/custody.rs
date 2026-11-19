@@ -1,8 +1,8 @@
 //! Sealed material: a message only its recipient can open, and a
 //! principal whose seed one of those messages carries.
 
-use dialog_artifacts::Entity;
 use dialog_common::ConditionalSend;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
@@ -494,15 +494,27 @@ where
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::authority::Identify>
         + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_repository::Hydrate>
-        + dialog_capability::Provider<dialog_artifacts::Preload>
-        + dialog_capability::Provider<dialog_artifacts::Speculation>
+        + dialog_capability::Provider<dialog_effects::archive::Load>
+        + dialog_capability::Provider<dialog_effects::blob::Load>
+        + dialog_capability::Provider<dialog_corpus::Preload>
+        + dialog_capability::Provider<dialog_corpus::Speculation>
         + dialog_capability::Provider<
             dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::archive::Get>,
-        > + dialog_capability::Provider<
+        >
+        + dialog_capability::Provider<
             dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::memory::Resolve>,
-        > + dialog_common::ConditionalSync
-        + 'static,
+        >
+        + dialog_common::ConditionalSync
+        + 'static
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>,
+        >
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>,
+        >
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>,
+        >,
 {
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::Principal as _;
@@ -594,15 +606,27 @@ where
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::authority::Identify>
         + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_repository::Hydrate>
-        + dialog_capability::Provider<dialog_artifacts::Preload>
-        + dialog_capability::Provider<dialog_artifacts::Speculation>
+        + dialog_capability::Provider<dialog_effects::archive::Load>
+        + dialog_capability::Provider<dialog_effects::blob::Load>
+        + dialog_capability::Provider<dialog_corpus::Preload>
+        + dialog_capability::Provider<dialog_corpus::Speculation>
         + dialog_capability::Provider<
             dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::archive::Get>,
-        > + dialog_capability::Provider<
+        >
+        + dialog_capability::Provider<
             dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::memory::Resolve>,
-        > + dialog_common::ConditionalSync
-        + 'static,
+        >
+        + dialog_common::ConditionalSync
+        + 'static
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>,
+        >
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>,
+        >
+        + dialog_capability::Provider<
+            dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>,
+        >,
 {
     use dialog_credentials::key::ExtractableKey as _;
     use dialog_query::{Output as _, Query, Term};

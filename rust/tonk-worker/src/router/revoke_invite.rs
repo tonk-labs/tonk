@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
-use tonk_schema::{Invitation, InvitationExecution};
+use tonk_schema::{Invitation, InvitationExecution, InvitationListed, InvitationMinted};
 use tonk_worker_api::{InvitationKind, InvitationSummary};
 
 use super::AppState;
@@ -458,6 +458,37 @@ pub async fn list(
             TonkWorkerError::Internal(format!("invitation execution query failed: {error:?}"))
         })?;
 
+    // Mint times, where recorded: an invitation minted before they were
+    // has none and lists first, as the oldest.
+    let minted: Vec<InvitationMinted> = session
+        .handle()
+        .query()
+        .select(Query::<InvitationMinted> {
+            this: Term::var("this"),
+            minted_at: Term::var("minted_at"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invitation mint time query failed: {error:?}"))
+        })?;
+
+    // Places, for links that replaced another: they list where it did.
+    let listed: Vec<InvitationListed> = session
+        .handle()
+        .query()
+        .select(Query::<InvitationListed> {
+            this: Term::var("this"),
+            listed_at: Term::var("listed_at"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("invitation place query failed: {error:?}"))
+        })?;
+
     let mut rows = proved_invitations(session.handle(), &tonk, &subject)
         .await?
         .into_iter()
@@ -483,11 +514,84 @@ pub async fn list(
                     "unconfigured".to_string()
                 },
                 invitation: invitation.this.to_string(),
+                minted_at: minted
+                    .iter()
+                    .find(|row| row.this == invitation.this)
+                    .map(|row| row.minted_at.0),
+                listed_at: listed
+                    .iter()
+                    .find(|row| row.this == invitation.this)
+                    .map(|row| row.listed_at.0),
             }
         })
         .collect::<Vec<_>>();
-    rows.sort_by(|left, right| left.target_cid.cmp(&right.target_cid));
+    oldest_first(&mut rows);
     Ok(Json(rows))
+}
+
+/// Order invitations oldest first: the first open link is a space's
+/// default, and it must stay first when a newer link is made beside it. A
+/// link that replaced another lists in its place (see
+/// [`InvitationSummary::place`]); ties fall back to the target CID so the
+/// order is total.
+fn oldest_first(rows: &mut [InvitationSummary]) {
+    rows.sort_by(|left, right| {
+        (left.place(), &left.target_cid).cmp(&(right.place(), &right.target_cid))
+    });
+}
+
+#[cfg(test)]
+mod order_tests {
+    use tonk_worker_api::{InvitationKind, InvitationSummary};
+
+    fn row(target: &str, minted_at: Option<u64>) -> InvitationSummary {
+        InvitationSummary {
+            target_cid: target.into(),
+            kind: InvitationKind::Open,
+            recipient_root: None,
+            status: "active".into(),
+            invitation: String::new(),
+            minted_at,
+            listed_at: None,
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_lists_a_reset_link_in_the_place_of_the_one_it_replaced() {
+        // The default (minted at 1_000) was reset after a second link was
+        // made: the reset link, minted last, lists where the default did.
+        let mut rows = vec![
+            row("bafy-second", Some(2_000)),
+            InvitationSummary {
+                listed_at: Some(1_000),
+                ..row("bafy-reset", Some(3_000))
+            },
+        ];
+        super::oldest_first(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|row| row.target_cid.as_str()).collect();
+        assert_eq!(order, ["bafy-reset", "bafy-second"]);
+    }
+
+    #[dialog_common::test]
+    fn it_lists_invitations_oldest_first_whatever_their_cids() {
+        let mut rows = vec![
+            row("bafy-a-newest", Some(3_000)),
+            row("bafy-z-oldest", Some(1_000)),
+            row("bafy-m-legacy", None),
+            row("bafy-b-middle", Some(2_000)),
+        ];
+        super::oldest_first(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|row| row.target_cid.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "bafy-m-legacy",
+                "bafy-z-oldest",
+                "bafy-b-middle",
+                "bafy-a-newest"
+            ]
+        );
+    }
 }
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
@@ -515,7 +619,7 @@ mod tests {
             .await
             .expect("the member's branch opens");
         branch
-            .pull()
+            .pull(dialog_repository::Download::MinimalRanges)
             .perform(&member.operator)
             .await
             .map(|_| ())
@@ -996,7 +1100,7 @@ mod tests {
             tonk.reactor
                 .repository(&key)
                 .branch("main")
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .perform(&tonk.operator)
                 .await
                 .expect("the founder pulls the member's write");
@@ -1049,7 +1153,7 @@ mod tests {
                 .reactor
                 .repository(&key)
                 .branch("main")
-                .pull()
+                .pull(dialog_repository::Download::MinimalRanges)
                 .assuming_upstream()
                 .perform(&member.operator)
                 .await

@@ -31,7 +31,7 @@ use ::axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use dialog_artifacts::{ArtifactSelector, Entity, Relation, Value};
+use dialog_corpus::{Entity, Relation, Selector, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -260,7 +260,7 @@ pub async fn guest(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
-    let selector = ArtifactSelector::new().the(attribute).of(entity);
+    let selector = Selector::new().the(attribute).of(entity);
     let stream = branch
         .claims()
         .select(selector)

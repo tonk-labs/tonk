@@ -12,7 +12,7 @@
 //! to bucket transients without re-querying the schema.
 
 use crate::meta::AnchorName;
-use dialog_artifacts::{Relation, Value, ValueDataType};
+use dialog_corpus::{Relation, Value, ValueDataType};
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -402,9 +402,9 @@ impl TryFrom<SourceClaim> for Claim {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransactRequest {
     /// In document order. Each claim contributes facts to the
-    /// transaction; the reactor buckets transient applications
-    /// separately so they can be retracted before the durable
-    /// write.
+    /// transaction; the reactor writes a transient application's into
+    /// the `control:` layer, where they are the dispatch's stimulus and
+    /// never reach durable storage.
     pub claims: Vec<SourceClaim>,
 }
 

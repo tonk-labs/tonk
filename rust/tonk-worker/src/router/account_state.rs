@@ -533,9 +533,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
             // them.
             session
                 .handle()
-                .pull()
-                .download()
-                .operational()
+                .pull(dialog_repository::Download::Operational)
                 .perform(&tonk.operator)
                 .await
                 .map_err(|error| {
@@ -573,8 +571,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                     retract_library_before_first_contact(tonk).await;
                     session
                         .handle()
-                        .pull()
-                        .download()
+                        .pull(dialog_repository::Download::Everything)
                         .perform(&tonk.operator)
                         .await
                         .map(|_| ())
@@ -734,9 +731,7 @@ pub(crate) async fn pull_and_push_account_main(tonk: &TonkState) -> Result<Publi
     timing.next("pull");
     session
         .handle()
-        .pull()
-        .download()
-        .operational()
+        .pull(dialog_repository::Download::Operational)
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
@@ -903,7 +898,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
         .map_err(|error| format!("account branch unavailable: {error}"))?;
     // Adopt the upstream head and materialize the OPERATIONAL regions.
     //
-    // A plain `.download()` walked every block the revision references,
+    // `Download::Everything` walked every block the revision references,
     // history included — and history lives in the same tree as the
     // data, so it dragged the branch's entire lineage down before
     // anything could render. `.operational()` walks only the regions a
@@ -918,9 +913,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
     // than pointing at blocks the store lacks.
     session
         .handle()
-        .pull()
-        .download()
-        .operational()
+        .pull(dialog_repository::Download::Operational)
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
@@ -1596,7 +1589,111 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         project_member_names(tonk, &ready.subject, &name, profile_changed).await;
     }
 
+    if let Err(error) = recover_created_spaces(tonk, &ready).await {
+        log!("recover agent-created spaces: {error}");
+    }
     super::adopt::reconcile_account_spaces(tonk).await;
+    Ok(())
+}
+
+/// Import immutable custody receipts through the currently linked account.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn recover_created_spaces(
+    tonk: &TonkState,
+    ready: &ReadyAccountBranch,
+) -> anyhow::Result<()> {
+    use dialog_ucan::UcanDelegation;
+    use tonk_identity::created_space::{Handoff, LIST};
+    let Some(link) = super::account::account_link(tonk).await else {
+        return Ok(());
+    };
+    anyhow::ensure!(link.issuer() == &ready.subject, "account link changed");
+    let remote: url::Url = account_remote(tonk).await?.parse()?;
+    let request = tonk_identity::request::build_device_invocation(
+        tonk.profile.credential().signer().clone(),
+        &link,
+        LIST.map(str::to_string).to_vec(),
+        Default::default(),
+    )
+    .await?;
+    let response = super::http::post_cbor(&remote, &request).await?;
+    let receipts: Vec<String> = serde_json::from_slice(&response.body)?;
+    for receipt in receipts {
+        let bytes = hex::decode(receipt)?;
+        let grant = DelegationChain::try_from(bytes.as_slice())?;
+        let subject = grant.issuer().clone();
+        if dialog_repository::secrets::held_principal(tonk.profile.state(), &subject, &tonk.profile)
+            .await?
+            .is_some_and(|key| key.to == ready.subject)
+        {
+            continue;
+        }
+        let handoff = Handoff::read(grant, &ready.subject).await?;
+        let home = tonk_invite::home_address(&handoff.owner_grant)?
+            .ok_or_else(|| anyhow::anyhow!("space has no home"))?;
+        anyhow::ensure!(home == remote, "space handoff names a different home");
+        tonk.profile
+            .access()
+            .save(UcanDelegation(handoff.owner_grant.clone()))
+            .perform(&tonk.operator)
+            .await?;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await?;
+        // The signed owner grant also serves as the imported marker shared
+        // across devices. A later import must not restore revoked leaves.
+        let imported = main
+            .handle()
+            .delegations()
+            .issued_to(ready.subject.clone())
+            .perform(&tonk.operator)
+            .await?
+            .iter()
+            .any(|held| held.0.proof_cids() == handoff.owner_grant.proof_cids());
+        if !imported {
+            for leaf in &handoff.grants {
+                tonk_account::delegations::retain_space_delegation(
+                    main.handle(),
+                    leaf,
+                    &tonk.operator,
+                )
+                .await?;
+            }
+            let configuration = super::repository::space_config(home.as_str())?;
+            super::repository::record_space_mount(
+                tonk,
+                &subject,
+                &configuration,
+                Some(&handoff.name),
+            )
+            .await;
+        }
+        anyhow::ensure!(
+            super::adopt::ensure_space_mounted(tonk, subject.as_str()).await?,
+            "created space has no local mount"
+        );
+        if tonk_account::delegations::retain_space_delegation(
+            main.handle(),
+            &handoff.owner_grant,
+            &tonk.operator,
+        )
+        .await?
+        {
+            tonk.sync_queue
+                .mark_dirty(&ready.key, super::sync::now_millis());
+        }
+        dialog_repository::secrets::hold_principal(
+            tonk.profile.state(),
+            &subject,
+            SeedKind::Space.held(),
+            dialog_repository::secrets::sealed_message(&ready.subject, handoff.sealed),
+            &tonk.profile,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -1883,7 +1980,7 @@ pub(crate) mod tests {
 
         super::record_account_branch(&state, &account, &probe_address()).await;
 
-        let peer: dialog_artifacts::Entity = "did:web:probe.example"
+        let peer: dialog_corpus::Entity = "did:web:probe.example"
             .parse()
             .expect("the derived peer DID is an entity");
         let session = state
@@ -1945,7 +2042,7 @@ pub(crate) mod tests {
             .select(Query::<PeerAddress> {
                 this: Term::from(
                     "did:web:probe.example"
-                        .parse::<dialog_artifacts::Entity>()
+                        .parse::<dialog_corpus::Entity>()
                         .expect("the derived peer DID is an entity"),
                 ),
                 address: Term::var("address"),
@@ -2843,7 +2940,7 @@ pub(crate) mod tests {
     /// open from storage afterwards.
     #[cfg(not(target_arch = "wasm32"))]
     async fn pull_the_account_and_stop_when_its_head_moves(download: bool) {
-        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_corpus::{Fact, Instruction, Value};
         use std::future::{Future as _, poll_fn};
         use std::task::Poll;
 
@@ -2873,7 +2970,7 @@ pub(crate) mod tests {
                 .transaction()
                 .integrate(
                     std::iter::once(Instruction::Assert(
-                        Artifact {
+                        Fact {
                             the: "test/round".parse().expect("a valid attribute"),
                             of: format!("test:round-{round}")
                                 .parse()
@@ -2881,7 +2978,7 @@ pub(crate) mod tests {
                             is: Value::UnsignedInt(round),
                             cause: None,
                         },
-                        dialog_artifacts::Pick::All,
+                        dialog_corpus::Pick::All,
                     ))
                     .collect(),
                 )
@@ -2907,12 +3004,11 @@ pub(crate) mod tests {
                 .reactor
                 .profile_repository()
                 .branch(&device.active_branch)
-                .pull();
-            let pull = if download {
-                pull.download().operational()
-            } else {
-                pull
-            };
+                .pull(if download {
+                    dialog_repository::Download::Operational
+                } else {
+                    dialog_repository::Download::MinimalRanges
+                });
             let mut pulling = Box::pin(pull.perform(&device.operator));
             loop {
                 let polled = poll_fn(|context| Poll::Ready(pulling.as_mut().poll(context))).await;
@@ -2946,7 +3042,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_pulls_the_account_after_signing_out_and_back_in() {
-        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_corpus::{Fact, Instruction, Value};
         use dialog_varsig::Principal as _;
         use std::sync::Arc;
 
@@ -2959,13 +3055,13 @@ pub(crate) mod tests {
         let facts: Vec<_> = (0..2048)
             .map(|n| {
                 Instruction::Assert(
-                    Artifact {
+                    Fact {
                         the: "test/fact".parse().expect("a valid attribute"),
                         of: format!("test:{n}").parse().expect("a valid entity"),
                         is: Value::UnsignedInt(n),
                         cause: None,
                     },
-                    dialog_artifacts::Pick::All,
+                    dialog_corpus::Pick::All,
                 )
             })
             .collect();
@@ -4037,7 +4133,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stale_profile_library() -> String {
         const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-        let marker = "<hub-collection class=\"stack chrome\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
+        let marker = "<hub-collection class=\"hub-rows\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
         let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
         let historical = CURRENT.replacen(marker, &stale, 1);
         assert_ne!(historical, CURRENT, "the historical fixture must differ");

@@ -2,12 +2,12 @@
 //! receive and browser clients send.
 //!
 //! A query names a [`Predicate`] plus its term bindings. The
-//! predicate is either a concept descriptor (an object) or a named
-//! formula (a string), invoked by name like dialog's own formulas
-//! (`{ "assert": "math/sum", ... }`). Concept queries resolve
-//! through dialog's planner as before; named formulas are
-//! dispatched by the worker (the tree-introspection `tree/*` family
-//! today, other formulas later).
+//! predicate is a concept descriptor (an object), which resolves
+//! through dialog's planner. A bare name (a string) still parses, so
+//! a request carrying one is answered with a refusal rather than a
+//! decode error: the worker answers concept queries only, and a
+//! formula or a resolver is asked through a concept whose rule uses
+//! it.
 
 use dialog_query::{ConceptDescriptor, ConceptQuery, Parameters};
 use serde::{Deserialize, Serialize};
@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 pub enum Predicate {
     /// A concept descriptor — resolved through dialog's planner.
     Concept(ConceptDescriptor),
-    /// A named formula — dispatched by the worker by name (e.g.
-    /// `"tree/node"`). Params travel in [`Query::terms`].
+    /// A bare name, such as `"tree/node"`. It parses so that the worker
+    /// can refuse it by name; no worker answers one.
     Formula(String),
 }
 

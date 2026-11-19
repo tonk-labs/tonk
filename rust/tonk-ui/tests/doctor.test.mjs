@@ -130,3 +130,15 @@ test("bundles remain copyable when worker logs are unavailable", () => {
     assert.equal(projectWorkerHealth({ log: [] }).log.length, 0);
     assert.equal(projectWorkerHealth({}).log, null);
 });
+
+test("every worker probe targets a route the worker serves", () => {
+    const table = readFileSync(new URL("../../tonk-worker/src/router/route_table.rs", import.meta.url), "utf8");
+    const routes = new Set([...table.matchAll(/^\s*"(\/[^"]*)",$/gm)].map(match => match[1]));
+    assert.ok(routes.has("/api/account"), "route table should parse");
+    // Answered by the service-worker glue, never the wasm router.
+    const glue = new Set(["/api/health"]);
+    for (const [, path] of probes) {
+        if (!path.startsWith("/api/")) continue;
+        assert.ok(routes.has(path) || glue.has(path), `${path} is not a worker route`);
+    }
+});

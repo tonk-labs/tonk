@@ -794,8 +794,14 @@ pub async fn execute_browser(
                             approved = Some(approval);
                         }
                         Err(error) => {
+                            // Its correlation already checked out, so this
+                            // is the real browser, now on an error page with
+                            // nothing to retry from: stop, don't wait.
                             let detail = format!("local-space link approval failed: {error:#}");
-                            let _ = continuation.send(Err(detail));
+                            let _ = continuation.send(Err(detail.clone()));
+                            break Err(anyhow::anyhow!(
+                                "{detail}; rerun `tonk space link {name}` to resume"
+                            ));
                         }
                     }
                 }
@@ -847,7 +853,19 @@ pub async fn execute_browser(
                         }
                         Err(error) => {
                             let detail = format!("local-space publication failed: {error:#}");
-                            let _ = continuation.send(Err(detail));
+                            let _ = continuation.send(Err(detail.clone()));
+                            // The browser is left on this callback's error
+                            // page with nothing to retry from, so stop rather
+                            // than wait out the timeout. The journal resumes.
+                            if tonk_invite::local_space_link::validate_cancellation(
+                                &request, &received,
+                            )
+                            .is_ok()
+                            {
+                                break Err(anyhow::anyhow!(
+                                    "{detail}; rerun `tonk space link {name}` to resume"
+                                ));
+                            }
                         }
                     }
                 }
@@ -887,6 +905,11 @@ pub async fn execute_browser(
                     correlation: received,
                 } => {
                     tonk_invite::local_space_link::validate_cancellation(&request, &received)?;
+                    if recovery.is_some() {
+                        bail!(
+                            "space link declined: {reason}; rerun `tonk space link {name}` to resume"
+                        );
+                    }
                     bail!("space link declined: {reason}");
                 }
             }

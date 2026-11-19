@@ -1257,18 +1257,12 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
         );
     }
 
-    // Both mean "sign in first": `needs-account` when the space also has
-    // no remote, `account-required` when it has one. The remedy is the
-    // same account hand-off either way.
+    // Both account refusals use the same sign-in hand-off in the space bar.
     if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
         || blocked.code == tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
     {
         abandon(state, &blocked.detail);
         set_state(host, ShareState::Blocked);
-        // Outside the bar (the Hub's card menu) nothing hears the event
-        // below, so the host names the refusal for its own stylesheet to
-        // word. `set_state` clears it on the next state.
-        let _ = host.set_attribute(BLOCKED_ATTRIBUTE, &blocked.code);
         if let Some(fab) = host
             .closest("tonk-fab")
             .ok()
@@ -1497,17 +1491,11 @@ fn read_link_field(row: &JsValue) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The refusal code a `blocked` host names, so a surface with no bar to
-/// act on it (the Hub) can still word it. Today `needs-account` and
-/// `account-required`.
-const BLOCKED_ATTRIBUTE: &str = "data-share-blocked";
-
 /// Stamp the state on the host. The view stylesheet keys the label and spinner
 /// off `data-share-state`, so the element owns the state machine and the
 /// stylesheet owns the appearance.
 fn set_state(host: &HtmlElement, state: ShareState) {
     let _ = host.set_attribute("data-share-state", state.as_str());
-    let _ = host.remove_attribute(BLOCKED_ATTRIBUTE);
     // The row the user actually sees is a sibling in the bar's share stack —
     // this element is headless there. Stamp the state onto it too so the row
     // can answer in place ("copy link" → "copying…" → "copied"), which is the
@@ -2161,6 +2149,36 @@ mod tests {
             state.borrow().pending.is_none(),
             "the clipboard write is abandoned, not left open"
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn it_sends_both_account_refusals_to_the_space_bar() {
+        let document = window().unwrap().document().unwrap();
+        let bar = document.create_element("tonk-fab").unwrap();
+        let host = fresh_host();
+        bar.append_child(&host).unwrap();
+        let reason = Rc::new(RefCell::new(None));
+        let observed = Rc::clone(&reason);
+        let _listener = crate::shadow::bind(&bar, "fabb-account-needed", move |event| {
+            *observed.borrow_mut() = event
+                .dyn_ref::<web_sys::CustomEvent>()
+                .and_then(|event| event.detail().as_string());
+        });
+
+        for code in [
+            tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED,
+        ] {
+            let state = Rc::new(RefCell::new(ShareStateCell::default()));
+            state.borrow_mut().pending_time = Some(42.0);
+            set_state(&host, ShareState::Copying);
+            let subscription = ShareBlockedBehaviour { state };
+
+            subscription.render_reset(&host, &js_sys::Array::of1(&blocked_row(code, 42.0)).into());
+
+            assert_eq!(read_state(&host), ShareState::Blocked);
+            assert_eq!(reason.borrow_mut().take().as_deref(), Some(code));
+        }
     }
 
     /// A refusal from an earlier click is a replay and must be ignored — the
