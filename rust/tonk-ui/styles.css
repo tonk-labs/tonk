@@ -3664,8 +3664,20 @@ tonk-notebook-index {
     text-decoration: none;
     font: 600 17px/1.1 var(--cond);
   }
-  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol:has(.obtn[hidden]) .ghost {
+  /* The footer pairs dismiss with whichever action is showing: the
+     passkey action, or the recovery-phrase login once the person switches.
+     Dismiss spans the row only when neither is. */
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol:not(:has(.obtn:not([hidden]))) .ghost {
     flex-basis: 100%;
+  }
+  /* The switch to a recovery phrase is not a footer button: it sits on its
+     own row above the explanation. */
+  #tonk-register:is([data-fabb-task], [data-account-task]) #tonk-register-phrase-switch {
+    order: 89;
+    flex-basis: 100%;
+    font-weight: 400;
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 
   @media (max-width: 519px) {

@@ -977,13 +977,28 @@ pub(crate) mod tests {
     /// passkey and CDP cannot export. One silent assertion; the page
     /// must be on the passkey's relying-party origin.
     async fn custody_prf_outputs(driver: &WebDriver) -> Result<(String, String)> {
+        custody_prf_outputs_of(driver, None).await
+    }
+
+    /// [`custody_prf_outputs`] for one credential, by its base64 id as
+    /// `WebAuthn.getCredentials` reports it, when the authenticator holds
+    /// several.
+    async fn custody_prf_outputs_of(
+        driver: &WebDriver,
+        credential: Option<&str>,
+    ) -> Result<(String, String)> {
         let outcome = driver
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                const [keyContext, kekContext] = [arguments[0], arguments[1]];
+                const [keyContext, kekContext, credential] = [arguments[0], arguments[1], arguments[2]];
+                const allowCredentials = credential ? [{
+                    type: "public-key",
+                    id: Uint8Array.from(atob(credential), letter => letter.charCodeAt(0)),
+                }] : undefined;
                 navigator.credentials.get({ publicKey: {
                     challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    allowCredentials,
                     userVerification: "required",
                     extensions: { prf: { eval: {
                         first: new TextEncoder().encode(keyContext),
@@ -1005,6 +1020,7 @@ pub(crate) mod tests {
                     serde_json::json!(std::str::from_utf8(
                         tonk_identity::envelope::CUSTODY_KEK_CONTEXT
                     )?),
+                    serde_json::json!(credential),
                 ],
             )
             .await?;
@@ -2054,6 +2070,135 @@ pub(crate) mod tests {
                 }
                 dump_browser_log(&second, &env).await;
                 anyhow::bail!("the fresh browser never signed in to {root} with the phrase");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        first.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
+    /// A passkey added from settings opens the account on its own
+    /// (BUG-346): the worker adds it with one `/custody/add`, which
+    /// writes its custody cell and provisions its custody space, so a
+    /// fresh browser holding only that passkey signs in to the same
+    /// account. Before, the added passkey was only recorded locally and a
+    /// new device could not open the account with it.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_signs_in_on_a_fresh_browser_with_only_an_added_passkey(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "added-passkey@example.com";
+
+        let (first, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&first, &env, EMAIL).await?;
+        first.enter_default_frame().await?;
+        let root = get_json(&first, "/api/identity/root").await?;
+        let root = successful_body("root after sign-up", &root)["rootDid"]
+            .as_str()
+            .context("root status omitted rootDid")?
+            .to_string();
+
+        let held = || async {
+            let held = ChromeDevTools::new(first.handle.clone())
+                .execute_cdp_with_params(
+                    "WebAuthn.getCredentials",
+                    serde_json::json!({ "authenticatorId": authenticator }),
+                )
+                .await?;
+            anyhow::Ok(held["credentials"].as_array().cloned().unwrap_or_default())
+        };
+        let before = held().await?;
+        assert_eq!(before.len(), 1, "sign-up registers one passkey");
+
+        open_hub_settings(&first, &env).await?;
+        click(&first, "[data-add-passkey]").await?;
+
+        // The new credential, and the card's confirmation if the guest's
+        // click did not carry the ceremony on its own.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let added = loop {
+            let now = held().await?;
+            if now.len() == 2 {
+                break now
+                    .into_iter()
+                    .find(|credential| !before.contains(credential))
+                    .context("the added credential is the one sign-up did not make")?;
+            }
+            first.enter_default_frame().await?;
+            if let Ok(button) = first.find(By::Css("#tonk-custody-continue")).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                let _ = button.click().await;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&first, &env).await;
+                anyhow::bail!("adding a passkey never registered a second credential");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let added_id = added["credentialId"]
+            .as_str()
+            .context("Chrome omitted the added credential's id")?
+            .to_string();
+
+        // Settings lists both passkeys once the addition is recorded.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            open_hub_settings(&first, &env).await?;
+            let listed = first
+                .execute(
+                    "return document.querySelectorAll('.passkey-card').length;",
+                    Vec::new(),
+                )
+                .await?;
+            if listed.json().as_u64() == Some(2) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&first, &env).await;
+                anyhow::bail!("settings never listed the added passkey");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // A fresh browser holding only the added passkey, with the PRF
+        // outputs that credential derives (the one thing CDP cannot copy).
+        first.enter_default_frame().await?;
+        let (key_output, kek_output) = custody_prf_outputs_of(&first, Some(&added_id)).await?;
+        let (second, second_authenticator) = driver_with_prf_authenticator(&env).await?;
+        ChromeDevTools::new(second.handle.clone())
+            .execute_cdp_with_params(
+                "WebAuthn.addCredential",
+                serde_json::json!({ "authenticatorId": second_authenticator, "credential": added }),
+            )
+            .await?;
+        graft_prf_outputs(&second, &key_output, &kek_output).await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        await_register_action(&second, "log in with passkey").await?;
+        click_register_action(&second).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            second.enter_default_frame().await?;
+            if let Ok(status) = get_json(&second, "/api/identity/root").await
+                && status["body"]["rootDid"].as_str() == Some(root.as_str())
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    eprintln!(
+                        "PROBE register status: {:?}",
+                        status.text().await.unwrap_or_default()
+                    );
+                }
+                dump_browser_log(&second, &env).await;
+                anyhow::bail!("the fresh browser never signed in to {root} with the added passkey");
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
