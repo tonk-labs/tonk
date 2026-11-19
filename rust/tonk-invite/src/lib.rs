@@ -610,16 +610,20 @@ impl Invite {
         self.redelegate(session, Some(expiration)).await
     }
 
+    /// Whether any certificate in this invitation has reached its signed deadline.
+    pub fn is_expired(&self) -> bool {
+        self.chain
+            .expiration()
+            .is_some_and(|limit| limit <= Timestamp::now())
+    }
+
     async fn redelegate(
         self,
         audience: &Did,
         expiration: Option<Timestamp>,
     ) -> Result<ClaimedInvite> {
         let parent_deadline = self.chain.expiration();
-        anyhow::ensure!(
-            parent_deadline.is_none_or(|limit| limit > Timestamp::now()),
-            "this passlink expired"
-        );
+        anyhow::ensure!(!self.is_expired(), "this passlink expired");
         let expiration = match (parent_deadline, expiration) {
             (Some(parent), Some(requested)) => Some(parent.min(requested)),
             (parent, requested) => parent.or(requested),

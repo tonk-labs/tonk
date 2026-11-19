@@ -1527,7 +1527,7 @@ concept!: &join/failure
       as: text
     kind:
       description: >
-        The failure class: malformed, audience-mismatch, revoked,
+        The failure class: malformed, audience-mismatch, expired, revoked,
         unavailable, refused, or claim-failed.
       the: xyz.tonk.join/kind
       as: text

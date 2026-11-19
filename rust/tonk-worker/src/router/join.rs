@@ -249,6 +249,11 @@ impl From<JoinFailure> for TonkWorkerError {
         match kind {
             JoinFailureKind::Malformed => TonkWorkerError::Router(message),
             JoinFailureKind::AudienceMismatch => TonkWorkerError::Forbidden(message),
+            JoinFailureKind::Expired => TonkWorkerError::Upstream {
+                status: 410,
+                code: Some("PASSLINK_EXPIRED".into()),
+                message,
+            },
             JoinFailureKind::Revoked => TonkWorkerError::Upstream {
                 status: 403,
                 code: Some("CREDENTIAL_REVOKED".to_string()),
@@ -282,10 +287,11 @@ mod failure_vocabulary {
     use super::{AuthorizeError, JoinFailure, JoinFailureKind};
     use crate::TonkWorkerError;
 
-    const KINDS: [JoinFailureKind; 7] = [
+    const KINDS: [JoinFailureKind; 8] = [
         JoinFailureKind::Malformed,
         JoinFailureKind::AudienceMismatch,
         JoinFailureKind::Revoked,
+        JoinFailureKind::Expired,
         JoinFailureKind::Unavailable,
         JoinFailureKind::Refused,
         JoinFailureKind::ClaimFailed,
@@ -301,6 +307,7 @@ mod failure_vocabulary {
                 "This passlink is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
+                "This passlink expired. Ask for a new one.",
                 "Tonk could not reach this space. Try again.",
                 "This space's host declined the invite. Its owner needs to check the space's plan.",
                 "Tonk could not join this space.",
@@ -318,6 +325,7 @@ mod failure_vocabulary {
                 "malformed",
                 "audience-mismatch",
                 "revoked",
+                "expired",
                 "unavailable",
                 "refused",
                 "claim-failed",
@@ -917,7 +925,9 @@ async fn prepare_parsed_join(
     // Audience: an open invite redelegates to whoever redeems it; a
     // targeted one only ever redeems for the DID it names.
     let claimed = invite.clone().claim(&member).await.map_err(|error| {
-        if open {
+        if invite.is_expired() {
+            JoinFailure::new(JoinFailureKind::Expired, "signed passlink deadline reached")
+        } else if open {
             JoinFailure::claim_failed(format!("invite did not extend: {error}"))
         } else {
             JoinFailure::audience_mismatch(format!("invite is not for this account: {error}"))
@@ -1504,6 +1514,9 @@ fn classify_pull(error: &PullError) -> JoinFailure {
 /// reads a log.
 fn classify_authorization(authorization: &AuthorizeError) -> JoinFailure {
     match authorization {
+        AuthorizeError::Expired { .. } => {
+            JoinFailure::new(JoinFailureKind::Expired, "remote access has expired")
+        }
         AuthorizeError::Revoked { .. } => JoinFailure::revoked("remote access has been revoked"),
         AuthorizeError::InvalidAudience { .. } | AuthorizeError::UnprovenSubject { .. } => {
             JoinFailure::audience_mismatch(format!("remote refused: {authorization}"))
