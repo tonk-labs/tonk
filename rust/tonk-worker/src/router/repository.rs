@@ -2320,7 +2320,7 @@ async fn run_invite(
     // use), so opening the Hub replicated the whole account. The state is
     // this device's view of a click it made; nothing about it needs the
     // space's branch. See `plan/share-intent.md`.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
@@ -2455,14 +2455,14 @@ async fn publish_share_blocked<'a>(
     // context, and the control's is profile main (see `PROFILE_WITH`
     // in tonk-fab's share). A refusal only on the space never reached
     // it, so every refused click waited out the control's timeout.
-    publish_invite_state(&tonk, blocked).await;
+    publish_share_fact(&tonk, blocked).await;
 
     // The same refusal in the shape the share control subscribes to, on
     // profile main for the reason the grant is. Only a terminal reason
     // becomes a terminal status: a refusal the user can repair (no
     // account yet, no remote yet) leaves the request open, because the
     // click has not finished failing — it is waiting on something.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
     )
@@ -2477,7 +2477,7 @@ async fn publish_share_blocked<'a>(
 /// and must not reach storage, and because the row is a per-session view
 /// of one click rather than a durable record — the durable record of a
 /// minted invite is `Invitation`, on the space.
-async fn publish_invite_state<S: dialog_artifacts::Statement>(tonk: &TonkState, state: S) {
+async fn publish_share_fact<S: dialog_corpus::Statement>(tonk: &TonkState, fact: S) {
     let main = match tonk
         .reactor
         .profile_repository()
@@ -2491,7 +2491,7 @@ async fn publish_invite_state<S: dialog_artifacts::Statement>(tonk: &TonkState, 
             return;
         }
     };
-    main.state.assert_overlay(state);
+    main.state.assert_overlay(fact);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
