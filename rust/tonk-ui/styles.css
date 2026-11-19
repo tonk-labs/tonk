@@ -3689,6 +3689,20 @@ tonk-notebook-index {
     font: 600 17px/1.1 var(--cond);
     text-decoration: underline; text-underline-offset: 4px;
 }
+/* Signing in with a recovery phrase: a link beside the email, and a field
+   sized for twelve words. */
+#tonk-register #tonk-register-phrase-switch {
+    display: block; width: auto; min-height: 44px; margin-top: 12px; padding: 10px 0;
+    text-align: left; cursor: pointer;
+    border: 0; background: transparent; color: var(--ink);
+    font: 600 15px/1.1 var(--cond);
+    text-decoration: underline; text-underline-offset: 4px;
+}
+#tonk-register #tonk-register-phrase {
+    box-sizing: border-box; width: 100%; min-height: 128px;
+    font: 600 16px/1.6 var(--mono, ui-monospace, monospace);
+    text-transform: none; resize: vertical;
+}
 #tonk-register #tonk-register-resend[hidden],
 #tonk-register #tonk-register-wait-title[hidden] { display: none; }
 #tonk-register #tonk-register-resend:focus-visible {

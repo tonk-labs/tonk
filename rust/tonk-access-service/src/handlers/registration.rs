@@ -73,6 +73,7 @@ pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Res
                 Some(RegistrationCommand::Resend) => AccessOperation::Resend,
                 Some(
                     RegistrationCommand::ProviderAdd
+                    | RegistrationCommand::CustodyAdd
                     | RegistrationCommand::CreateSpace
                     | RegistrationCommand::CreatedSpaces
                     | RegistrationCommand::Suspend

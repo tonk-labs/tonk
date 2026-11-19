@@ -87,6 +87,14 @@ pub struct WebAuthnRequest {
     /// passkeys for this origin cannot answer with another account's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    /// This browser signed in with the account's recovery phrase and holds
+    /// no passkey for it, so an account action asks for the phrase first.
+    ///
+    /// Said outright rather than read from a missing [`Self::credential_id`]:
+    /// approving or removing an agent names no credential on purpose, so
+    /// that any passkey of the account will do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phrase_only: bool,
 }
 
 /// What a custody handoff should do once it holds the handles.
@@ -113,6 +121,15 @@ pub enum CustodyIntent {
     /// either can open it. Needs two ceremonies, so the handoff carries
     /// two sets of handles.
     AddPasskey(PasskeyAddition),
+    /// Seal the account a passkey holds under a recovery phrase, so the
+    /// twelve words open it too. The handoff carries the passkey's
+    /// handles and, beside them, the words: never inside this request,
+    /// which is serialized.
+    AddRecoveryPhrase(RecoveryPhraseAddition),
+    /// Open the account a recovery phrase holds and link this browser to
+    /// it, as [`Self::Login`] does with a passkey. The handoff carries the
+    /// words instead of passkey handles.
+    LoginWithRecoveryPhrase(DeviceLink),
     /// Make an agent for an app signing in over OAuth: sign its grants to
     /// the chosen spaces with the account this passkey holds, and send
     /// the page to the app's callback.
@@ -223,6 +240,18 @@ pub struct PasskeyAddition {
     /// it, so an added passkey without one would never be listed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_on: Option<String>,
+}
+
+/// Setting up an account's recovery phrase.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryPhraseAddition {
+    /// The account the passkey must open, so a mismatched assertion is
+    /// refused rather than sealing the wrong secret under the phrase.
+    pub account_did: String,
+    /// The access service's `/ucan/` endpoint the passkey's custody cell
+    /// resolves through.
+    pub endpoint: String,
 }
 
 /// The browser a custody handoff should link to the account it opens.

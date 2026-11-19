@@ -179,13 +179,53 @@ pub async fn build_enroll_invocation(
     email: &str,
     custody: &CustodyMaterial<'_>,
 ) -> Result<Vec<u8>> {
+    build_custody_invocation(
+        device,
+        link,
+        vec!["customer".to_string(), "enroll".to_string()],
+        Some(email),
+        custody,
+    )
+    .await
+}
+
+/// Build a `/custody/add` container for the access service: add a
+/// custodian to an active account, provisioning its custody space and
+/// writing its cell as one command.
+///
+/// Carries the same custody material enrollment does. The consent must
+/// be issued to the account `link` roots at; that is what binds the
+/// write to this account.
+pub async fn build_custody_add_invocation(
+    device: impl Into<Signer>,
+    link: &DelegationChain,
+    custody: &CustodyMaterial<'_>,
+) -> Result<Vec<u8>> {
+    build_custody_invocation(
+        device,
+        link,
+        vec!["custody".to_string(), "add".to_string()],
+        None,
+        custody,
+    )
+    .await
+}
+
+/// A device-signed invocation carrying custody material as blocks
+/// beside it, named by CID in its arguments.
+async fn build_custody_invocation(
+    device: impl Into<Signer>,
+    link: &DelegationChain,
+    command: Vec<String>,
+    email: Option<&str>,
+    custody: &CustodyMaterial<'_>,
+) -> Result<Vec<u8>> {
     let recovery = serde_ipld_dagcbor::to_vec(custody.recovery)
         .context("failed to encode the publish invocation")?;
     let consent = custody.consent.encoded().to_vec();
     let sealed = custody.sealed.to_vec();
 
-    let arguments = BTreeMap::from([
-        ("email".to_string(), Promised::String(email.to_string())),
+    let mut arguments = BTreeMap::from([
         (
             "custody".to_string(),
             Promised::String(custody.custody.to_string()),
@@ -197,20 +237,17 @@ pub async fn build_enroll_invocation(
         ("consent".to_string(), Promised::Link(dagcbor_cid(&consent))),
         ("sealed".to_string(), Promised::Link(dagcbor_cid(&sealed))),
     ]);
-    let invocation = build_device_invocation(
-        device,
-        link,
-        vec!["customer".to_string(), "enroll".to_string()],
-        arguments,
-    )
-    .await?;
+    if let Some(email) = email {
+        arguments.insert("email".to_string(), Promised::String(email.to_string()));
+    }
+    let invocation = build_device_invocation(device, link, command, arguments).await?;
     let mut tokens = Container::from_bytes(&invocation)
-        .context("failed to reopen the enroll container")?
+        .context("failed to reopen the custody container")?
         .into_tokens();
     tokens.extend([recovery, consent, sealed]);
     Container::new(tokens)
         .to_bytes()
-        .context("failed to encode the enroll container")
+        .context("failed to encode the custody container")
 }
 
 /// Build a `/provider/add` container for the access service.

@@ -338,6 +338,8 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
         tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => "authorize-agent",
         tonk_worker_api::CustodyIntent::RevokeAgent(_) => "revoke-agent",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "add-recovery-phrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "login-with-recovery-phrase",
         tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
         tonk_worker_api::CustodyIntent::Login(_) => "login",
@@ -351,6 +353,8 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
         tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => AccountAction::AuthorizeAgent,
         tonk_worker_api::CustodyIntent::RevokeAgent(_) => AccountAction::RevokeAgent,
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => AccountAction::AddRecoveryPhrase,
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => AccountAction::LogIn,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)
         | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
@@ -362,6 +366,8 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
 fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "addRecoveryPhrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "useRecoveryPhrase",
         _ => "usePasskey",
     }
 }
@@ -437,6 +443,399 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
         }
     });
 }
+
+/// The card that sets up a recovery phrase, in the top document.
+///
+/// The words are generated, shown and confirmed here and nowhere else:
+/// the guest that asked holds no words, and the command it sent carries
+/// none. `tonkIdentity.generateRecoveryPhrase` stages the phrase in this
+/// document; the confirming click runs `addRecoveryPhrase`, which asserts
+/// the account's passkey on that click and hands the worker its PRF
+/// outputs and the phrase's bytes. Leaving the card drops the staged
+/// phrase with the page, and nothing was saved.
+fn run_recovery_phrase_card(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!("custody: a card is already up; the recovery phrase card was not raised");
+        return;
+    }
+    let words = match generate_recovery_phrase() {
+        Ok(words) => words,
+        Err(error) => {
+            report(&error);
+            BUSY.with(|busy| busy.set(false));
+            return;
+        }
+    };
+    let Some(host) = mount_phrase_card(&words) else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+
+    let asked = three_positions(words.len());
+    let confirm_words = words.clone();
+    let confirm_asked = asked.clone();
+    on_click(&host, "#tonk-phrase-written", move || {
+        show_phrase_confirmation(&confirm_asked);
+    });
+    let copied_words = words.join(" ");
+    on_click(&host, "#tonk-phrase-copy", move || {
+        copy_words(&copied_words);
+    });
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        if !phrase_confirmed(&confirm_words, &asked) {
+            set_card_message(
+                "Those words do not match. Check the words you wrote down and try again.",
+            );
+            return;
+        }
+        set_card_text("Waiting for passkey…");
+        match begin_with("addRecoveryPhrase", intent.clone(), credential_id.clone()) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                match mediation.finish().await {
+                    Ok(_) => {
+                        set_card_text(
+                            "Your recovery phrase is saved. Keep the words somewhere safe and offline.",
+                        );
+                        remove_card_after(4000);
+                    }
+                    Err(error) => {
+                        report(&error.message);
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(6000);
+                    }
+                }
+            }),
+            Err(error) => {
+                report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(6000);
+            }
+        }
+    });
+}
+
+/// Ask for the account's recovery phrase in place of its passkey, for a
+/// browser that signed in with the phrase. The words are staged here and
+/// the worker opens the account with them, as it would with a passkey.
+fn run_phrase_entry_card(intent: tonk_worker_api::CustodyIntent) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!(
+            "custody: a card is already up; {} not raised",
+            intent_label(&intent)
+        );
+        return;
+    }
+    let Some(host) = mount_phrase_entry_card() else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    let passkey_intent = intent.clone();
+    on_click(&host, "#tonk-phrase-use-passkey", move || {
+        remove_card();
+        run_command_ceremony(passkey_intent.clone(), None);
+    });
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        let words = card()
+            .and_then(|card| card.query_selector("#tonk-phrase-entry").ok().flatten())
+            .and_then(|field| js_sys::Reflect::get(&field, &"value".into()).ok())
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        if let Err(message) = stage_phrase(&words) {
+            set_card_message(&message);
+            return;
+        }
+        set_card_text("Opening your account…");
+        match begin_with("useRecoveryPhrase", intent.clone(), None) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                match mediation.finish().await {
+                    Ok(_) => remove_card(),
+                    Err(error) => {
+                        report(&error.message);
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(6000);
+                    }
+                }
+            }),
+            Err(error) => {
+                report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(6000);
+            }
+        }
+    });
+}
+
+/// Check typed words with `tonkIdentity.stageRecoveryPhrase` and keep
+/// the phrase for the ceremony that follows; a refusal is the sentence
+/// to show.
+fn stage_phrase(words: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "Recovery phrases are not available in this browser.".to_owned())?;
+    let stage: js_sys::Function = js_sys::Reflect::get(&identity, &"stageRecoveryPhrase".into())
+        .ok()
+        .and_then(|value| value.dyn_into().ok())
+        .ok_or("Recovery phrases are not available in this browser.")?;
+    let input = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&input, &"words".into(), &words.into());
+    stage
+        .call1(&identity, &input)
+        .map(|_| ())
+        .map_err(|refusal| {
+            match js_sys::Reflect::get(&refusal, &"code".into())
+                .ok()
+                .and_then(|code| code.as_string())
+                .as_deref()
+            {
+                Some("WordCount") => {
+                    "A recovery phrase has twelve words. Check you entered all of them.".to_owned()
+                }
+                Some("UnknownWord") => {
+                    "One of the words is not a recovery phrase word. Check its spelling.".to_owned()
+                }
+                _ => "These words are not a recovery phrase. Check each word and their order."
+                    .to_owned(),
+            }
+        })
+}
+
+fn mount_phrase_entry_card() -> Option<Element> {
+    let document = web_sys::window().and_then(|window| window.document())?;
+    let body = document.body()?;
+    let host = document.create_element("div").ok()?;
+    host.set_id(CARD_ID);
+    host.set_inner_html(PHRASE_ENTRY_HTML);
+    body.append_child(&host).ok()?;
+    Some(host)
+}
+
+const PHRASE_ENTRY_HTML: &str = r#"
+<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
+            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
+<div role="dialog" aria-modal="true" aria-label="recovery phrase"
+     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
+            display:flex;flex-direction:column;gap:7px;
+            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
+            color:var(--ink, #38182a);text-transform:none">
+  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
+              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
+              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
+              letter-spacing:.02em;text-transform:lowercase">recovery phrase needed</div>
+  <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
+              background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
+    <p id="tonk-custody-text" style="margin:0;font-weight:600">
+      Confirm this account action with your recovery phrase.</p>
+    <textarea id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false"
+      aria-label="recovery phrase" placeholder="your twelve words, in order"
+      style="min-height:120px;padding:10px 12px;border:0;box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+             font:600 15px/1.6 var(--mono, ui-monospace, monospace);resize:vertical"></textarea>
+    <button id="tonk-phrase-use-passkey" type="button"
+      style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
+      use a passkey instead</button>
+  </div>
+  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
+    <button id="tonk-custody-dismiss" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
+                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      not now</button>
+    <button id="tonk-custody-continue" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
+                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      continue</button>
+  </div>
+</div>
+</div>
+"#;
+
+/// A new phrase from `tonkIdentity.generateRecoveryPhrase`, staged in
+/// this document, as its words.
+fn generate_recovery_phrase() -> Result<Vec<String>, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "tonkIdentity is missing")?;
+    let generate: js_sys::Function =
+        js_sys::Reflect::get(&identity, &"generateRecoveryPhrase".into())
+            .ok()
+            .and_then(|value| value.dyn_into().ok())
+            .ok_or("tonkIdentity.generateRecoveryPhrase is missing")?;
+    let generated = generate
+        .call0(&identity)
+        .map_err(|_| "the recovery phrase was not generated")?;
+    let words = js_sys::Reflect::get(&generated, &"words".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .ok_or("the recovery phrase came back without words")?;
+    Ok(words.split(' ').map(str::to_owned).collect())
+}
+
+/// Put the words on the clipboard, in order, and say so on the button.
+///
+/// The words are already in this document, which is the only place they
+/// are shown; copying hands them to the person's own clipboard and
+/// nowhere else.
+fn copy_words(words: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let promise = window.navigator().clipboard().write_text(words);
+    wasm_bindgen_futures::spawn_local(async move {
+        let said = match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(_) => "copied",
+            Err(_) => "could not copy: write the words down instead",
+        };
+        if let Some(button) =
+            card().and_then(|card| card.query_selector("#tonk-phrase-copy").ok().flatten())
+        {
+            button.set_text_content(Some(said));
+        }
+    });
+}
+
+/// Three distinct word positions to ask back, in order.
+fn three_positions(count: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = Vec::with_capacity(3);
+    while picked.len() < 3.min(count) {
+        let position = (js_sys::Math::random() * count as f64) as usize % count;
+        if !picked.contains(&position) {
+            picked.push(position);
+        }
+    }
+    picked.sort_unstable();
+    picked
+}
+
+fn phrase_confirmed(words: &[String], asked: &[usize]) -> bool {
+    let Some(card) = card() else {
+        return false;
+    };
+    asked.iter().enumerate().all(|(index, position)| {
+        card.query_selector(&format!("#tonk-phrase-check-{index}"))
+            .ok()
+            .flatten()
+            .and_then(|input| input.dyn_into::<web_sys::HtmlInputElement>().ok())
+            .is_some_and(|input| input.value().trim().eq_ignore_ascii_case(&words[*position]))
+    })
+}
+
+/// Swap the words for three inputs asking for some of them back, and
+/// clear the words from the page.
+fn show_phrase_confirmation(asked: &[usize]) {
+    let Some(card) = card() else {
+        return;
+    };
+    if let Ok(Some(list)) = card.query_selector("#tonk-phrase-words") {
+        list.remove();
+    }
+    if let Ok(Some(written)) = card.query_selector("#tonk-phrase-written") {
+        written.remove();
+    }
+    if let Ok(Some(copy)) = card.query_selector("#tonk-phrase-copy") {
+        copy.remove();
+    }
+    if let Ok(Some(checks)) = card.query_selector("#tonk-phrase-checks") {
+        let rows: String = asked
+            .iter()
+            .enumerate()
+            .map(|(index, position)| {
+                format!(
+                    r#"<label style="display:flex;align-items:center;gap:8px">word {}
+                      <input id="tonk-phrase-check-{index}" type="text" autocomplete="off" autocapitalize="off"
+                        spellcheck="false" style="flex:1;min-height:32px;padding:4px 8px;border:0;
+                        box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font:inherit"></label>"#,
+                    position + 1
+                )
+            })
+            .collect();
+        checks.set_inner_html(&rows);
+        let _ = checks.remove_attribute("hidden");
+    }
+    set_card_message("Enter these words from your recovery phrase to show you have it.");
+    if let Ok(Some(save)) = card.query_selector("#tonk-custody-continue") {
+        let _ = save.remove_attribute("hidden");
+    }
+}
+
+fn mount_phrase_card(words: &[String]) -> Option<Element> {
+    let document = web_sys::window().and_then(|window| window.document())?;
+    let body = document.body()?;
+    let host = document.create_element("div").ok()?;
+    host.set_id(CARD_ID);
+    host.set_attribute("data-recovery-phrase", "").ok()?;
+    // BIP-39 English words are lowercase ASCII, so they need no escaping.
+    let list: String = words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            format!(
+                "<li><span style=\"opacity:.6\">{}.</span> {word}</li>",
+                index + 1
+            )
+        })
+        .collect();
+    host.set_inner_html(&PHRASE_CARD_HTML.replace("{words}", &list));
+    body.append_child(&host).ok()?;
+    Some(host)
+}
+
+const PHRASE_CARD_HTML: &str = r#"
+<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
+            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
+<div role="dialog" aria-modal="true" aria-label="recovery phrase"
+     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
+            display:flex;flex-direction:column;gap:7px;
+            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
+            color:var(--ink, #38182a);text-transform:none">
+  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
+              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
+              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
+              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
+              letter-spacing:.02em;text-transform:lowercase">recovery phrase</div>
+  <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
+              background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
+    <p id="tonk-custody-text" style="margin:0;font-weight:600">
+      Write these 12 words down, in order, and keep them offline. Anyone with them can sign in as
+      you, forever: a recovery phrase cannot be revoked or replaced. They are shown only once.
+    </p>
+    <ol id="tonk-phrase-words" data-recovery-words
+        style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 12px;margin:0;padding:0;list-style:none;
+               font:600 14px/1.5 var(--mono, ui-monospace, monospace)">{words}</ol>
+    <button id="tonk-phrase-copy" type="button"
+      style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
+      copy the 12 words</button>
+    <div id="tonk-phrase-checks" hidden style="display:grid;gap:6px"></div>
+  </div>
+  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
+    <button id="tonk-custody-dismiss" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
+                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      cancel</button>
+    <button id="tonk-phrase-written" type="button"
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
+                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      I wrote them down</button>
+    <button id="tonk-custody-continue" type="button" hidden
+            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
+                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
+                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
+                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
+      save with passkey</button>
+  </div>
+</div>
+</div>
+"#;
 
 /// Raise the top-document consent a guest-asserted command needs when the
 /// click that asserted it no longer counts here, or a first ask failed.
@@ -561,6 +960,26 @@ pub fn install() {
                     // Enrollment arrives mid-ceremony, on a page whose
                     // gesture is still live.
                     intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
+                    // Setting up a recovery phrase shows its words here,
+                    // in the top document, never in the sealed guest:
+                    // the card's own last click asks for the passkey.
+                    intent @ tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => {
+                        run_recovery_phrase_card(intent, message.credential_id)
+                    }
+                    // A browser signed in with a recovery phrase holds no
+                    // passkey for the account, and the worker says so.
+                    // Approving an agent, removing one or deleting the
+                    // account then asks for the phrase, with the passkey
+                    // still on offer. A missing credential id is not that
+                    // signal: approving and removing an agent name none on
+                    // purpose, so that any passkey of the account will do.
+                    intent @ (tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+                    | tonk_worker_api::CustodyIntent::RevokeAgent(_)
+                    | tonk_worker_api::CustodyIntent::PurgeAccount(_))
+                        if message.phrase_only =>
+                    {
+                        run_phrase_entry_card(intent)
+                    }
                     // A command the guest asserted, on the click that is
                     // still live here: ask now. Past it, the card asks for
                     // one explicit top-document click.
@@ -588,6 +1007,8 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
     let method = match &intent {
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "addRecoveryPhrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "useRecoveryPhrase",
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
@@ -820,6 +1241,8 @@ pub(crate) fn begin_with(
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => Some(creation.email.clone()),
         tonk_worker_api::CustodyIntent::Enroll(enrollment) => enrollment.email.clone(),
         tonk_worker_api::CustodyIntent::AddPasskey(_)
+        | tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_)
+        | tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
         | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)

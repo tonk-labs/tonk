@@ -349,6 +349,20 @@ pub mod recovery {
     pub struct DisplayName(pub String);
 }
 
+/// Attributes of an account's recovery phrase, keyed on the custody DID
+/// the phrase derives. A namespace of its own so a phrase never reads as
+/// a passkey: the passkey list requires `xyz.tonk.recovery` attributes a
+/// phrase does not have.
+pub mod recovery_phrase {
+    use super::Attribute;
+
+    /// When the phrase was set up, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery.phrase")]
+    #[pick(last)]
+    pub struct CreatedAt(pub u64);
+}
+
 pub mod device {
     use super::{Attribute, Entity};
 
@@ -1633,6 +1647,21 @@ pub mod command {
             /// decode identically — the namespace already does that.
             #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
             #[domain("xyz.tonk.command.add-passkey")]
+            pub struct Account(pub Entity);
+        }
+
+        /// `tonk/add-recovery-phrase` — seal the account under the
+        /// recovery phrase the page staged.
+        pub mod add_recovery_phrase {
+            use dialog_corpus::Entity;
+            use dialog_query::Attribute;
+
+            /// The account to set a recovery phrase up for. As with
+            /// [`super::add_passkey::Account`], the verb carries no data
+            /// (the words never ride on a command), so this is what makes
+            /// it nameable.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.add-recovery-phrase")]
             pub struct Account(pub Entity);
         }
 

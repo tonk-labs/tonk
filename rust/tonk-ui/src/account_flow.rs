@@ -988,13 +988,28 @@ pub(crate) mod tests {
     /// passkey and CDP cannot export. One silent assertion; the page
     /// must be on the passkey's relying-party origin.
     async fn custody_prf_outputs(driver: &WebDriver) -> Result<(String, String)> {
+        custody_prf_outputs_of(driver, None).await
+    }
+
+    /// [`custody_prf_outputs`] for one credential, by its base64 id as
+    /// `WebAuthn.getCredentials` reports it, when the authenticator holds
+    /// several.
+    async fn custody_prf_outputs_of(
+        driver: &WebDriver,
+        credential: Option<&str>,
+    ) -> Result<(String, String)> {
         let outcome = driver
             .execute_async(
                 r#"
                 const done = arguments[arguments.length - 1];
-                const [keyContext, kekContext] = [arguments[0], arguments[1]];
+                const [keyContext, kekContext, credential] = [arguments[0], arguments[1], arguments[2]];
+                const allowCredentials = credential ? [{
+                    type: "public-key",
+                    id: Uint8Array.from(atob(credential), letter => letter.charCodeAt(0)),
+                }] : undefined;
                 navigator.credentials.get({ publicKey: {
                     challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    allowCredentials,
                     userVerification: "required",
                     extensions: { prf: { eval: {
                         first: new TextEncoder().encode(keyContext),
@@ -1016,6 +1031,7 @@ pub(crate) mod tests {
                     serde_json::json!(std::str::from_utf8(
                         tonk_identity::envelope::CUSTODY_KEK_CONTEXT
                     )?),
+                    serde_json::json!(credential),
                 ],
             )
             .await?;
@@ -1959,6 +1975,337 @@ pub(crate) mod tests {
 
         first.quit().await?;
         second.quit().await?;
+        Ok(())
+    }
+
+    /// The whole recovery-phrase journey a directory reviewer depends on
+    /// (BUG-343, BUG-344): set up a phrase from settings on one browser,
+    /// then sign in with nothing but the twelve words on a fresh browser
+    /// that has no passkey at all, and land in the same account.
+    ///
+    /// The words are read off the top document's card, where they are
+    /// shown, and three of them are asked back before the passkey is.
+    #[dialog_common::test]
+    async fn it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "recovery-phrase@example.com";
+
+        let first = driver_with_prf(&env).await?;
+        sign_up(&first, &env, EMAIL).await?;
+        first.enter_default_frame().await?;
+        let root = get_json(&first, "/api/identity/root").await?;
+        let root = successful_body("root after sign-up", &root)["rootDid"]
+            .as_str()
+            .context("root status omitted rootDid")?
+            .to_string();
+
+        // Setup: acknowledge that it cannot be revoked, then ask for it.
+        open_hub_settings(&first, &env).await?;
+        click(&first, "[data-recovery-ack]").await?;
+        click(&first, "[data-add-recovery-phrase]").await?;
+
+        // The words show in the top document, never in the guest.
+        first.enter_default_frame().await?;
+        wait_for_displayed(&first, "#tonk-phrase-words").await?;
+        let words: Vec<String> = first
+            .execute(
+                "return [...document.querySelectorAll('#tonk-phrase-words li')]
+                   .map((li) => li.textContent.replace(/^\\s*\\d+\\.\\s*/, '').trim());",
+                Vec::new(),
+            )
+            .await?
+            .convert()?;
+        assert_eq!(
+            words.len(),
+            12,
+            "a recovery phrase is twelve words: {words:?}"
+        );
+
+        // The card is a centred dialog, like the login ceremony, not a
+        // corner card.
+        let geometry = first
+            .execute(
+                "const dialog = document.querySelector('[data-phrase-dialog] [role=dialog]');
+                 if (!dialog) return null;
+                 const rect = dialog.getBoundingClientRect();
+                 const frame = document.querySelector('[data-phrase-dialog]');
+                 return { centre: rect.left + rect.width / 2,
+                          viewport: frame.getBoundingClientRect().left + frame.clientWidth / 2,
+                          width: rect.width };",
+                Vec::new(),
+            )
+            .await?;
+        let geometry = geometry.json();
+        let off_centre = (geometry["centre"].as_f64().unwrap_or(0.0)
+            - geometry["viewport"].as_f64().unwrap_or(f64::MAX))
+        .abs();
+        assert!(
+            off_centre < 2.0 && geometry["width"].as_f64().unwrap_or(0.0) > 432.0,
+            "the recovery phrase dialog is centred and wider than the corner card: {geometry}"
+        );
+
+        // Copy puts the twelve words, in order, on the clipboard.
+        ChromeDevTools::new(first.handle.clone())
+            .execute_cdp_with_params(
+                "Browser.grantPermissions",
+                serde_json::json!({
+                    "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
+                }),
+            )
+            .await?;
+        click(&first, "#tonk-phrase-copy").await?;
+        wait_for_text_containing(&first, "#tonk-phrase-copy", "copied").await?;
+        let copied = first
+            .execute_async(
+                "const done = arguments[arguments.length - 1];
+                 navigator.clipboard.readText().then(done, error => done('ERROR ' + error));",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            copied.json().as_str(),
+            Some(words.join(" ").as_str()),
+            "copy puts the twelve words on the clipboard"
+        );
+        click(&first, "#tonk-phrase-written").await?;
+        wait_for_displayed(&first, "#tonk-phrase-check-0").await?;
+        // Enter back the three words the card asks for, by position.
+        first
+            .execute(
+                "const words = arguments[0];
+                 for (const label of document.querySelectorAll('#tonk-phrase-checks label')) {
+                   const position = Number(label.textContent.match(/word (\\d+)/)[1]);
+                   const input = label.querySelector('input');
+                   input.value = words[position - 1];
+                   input.dispatchEvent(new Event('input', { bubbles: true }));
+                 }",
+                vec![serde_json::json!(words)],
+            )
+            .await?;
+        click(&first, "#tonk-custody-continue").await?;
+        wait_for_text_containing(&first, "#tonk-custody-text", "recovery phrase is saved").await?;
+
+        // Settings now shows it, and offers no second one.
+        open_hub_settings(&first, &env).await?;
+        wait_for_displayed(&first, "[data-recovery-phrase-row]").await?;
+        let offered = first
+            .execute(
+                "const setup = document.querySelector('[data-recovery-setup]');
+                 return !!setup && setup.checkVisibility();",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            offered.json().as_bool(),
+            Some(false),
+            "setup is offered only once"
+        );
+
+        // A fresh browser with no authenticator: only the words.
+        let second = env.driver().await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        click(&second, "#tonk-register-phrase-switch").await?;
+        let field = wait_for_displayed(&second, "#tonk-register-phrase").await?;
+        let size = second
+            .execute(
+                "const field = document.querySelector('#tonk-register-phrase');
+                 const rect = field.getBoundingClientRect();
+                 return { width: rect.width, height: rect.height };",
+                Vec::new(),
+            )
+            .await?;
+        let size = size.json();
+        assert!(
+            size["height"].as_f64().unwrap_or(0.0) >= 120.0
+                && size["width"].as_f64().unwrap_or(0.0) >= 300.0,
+            "the phrase field has room for twelve words: {size}"
+        );
+        field.send_keys(words.join(" ")).await?;
+        click(&second, "#tonk-register-phrase-login").await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            second.enter_default_frame().await?;
+            if let Ok(status) = get_json(&second, "/api/identity/root").await
+                && status["body"]["rootDid"].as_str() == Some(root.as_str())
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    eprintln!(
+                        "PROBE register status: {:?}",
+                        status.text().await.unwrap_or_default()
+                    );
+                }
+                dump_browser_log(&second, &env).await;
+                anyhow::bail!("the fresh browser never signed in to {root} with the phrase");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        first.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
+    /// A passkey added from settings opens the account on its own
+    /// (BUG-346): the worker adds it with one `/custody/add`, which
+    /// writes its custody cell and provisions its custody space, so a
+    /// fresh browser holding only that passkey signs in to the same
+    /// account. Before, the added passkey was only recorded locally and a
+    /// new device could not open the account with it.
+    #[cfg(feature = "integration-tests")]
+    #[dialog_common::test]
+    async fn it_signs_in_on_a_fresh_browser_with_only_an_added_passkey(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "added-passkey@example.com";
+
+        let (first, authenticator) = driver_with_prf_authenticator(&env).await?;
+        sign_up(&first, &env, EMAIL).await?;
+        first.enter_default_frame().await?;
+        let root = get_json(&first, "/api/identity/root").await?;
+        let root = successful_body("root after sign-up", &root)["rootDid"]
+            .as_str()
+            .context("root status omitted rootDid")?
+            .to_string();
+
+        let held = || async {
+            let held = ChromeDevTools::new(first.handle.clone())
+                .execute_cdp_with_params(
+                    "WebAuthn.getCredentials",
+                    serde_json::json!({ "authenticatorId": authenticator }),
+                )
+                .await?;
+            anyhow::Ok(held["credentials"].as_array().cloned().unwrap_or_default())
+        };
+        let before = held().await?;
+        assert_eq!(before.len(), 1, "sign-up registers one passkey");
+
+        open_hub_settings(&first, &env).await?;
+        click(&first, "[data-add-passkey]").await?;
+
+        // The new credential, and the card's confirmation if the guest's
+        // click did not carry the ceremony on its own.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let added = loop {
+            let now = held().await?;
+            if now.len() == 2 {
+                break now
+                    .into_iter()
+                    .find(|credential| !before.contains(credential))
+                    .context("the added credential is the one sign-up did not make")?;
+            }
+            first.enter_default_frame().await?;
+            if let Ok(button) = first.find(By::Css("#tonk-custody-continue")).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                let _ = button.click().await;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&first, &env).await;
+                anyhow::bail!("adding a passkey never registered a second credential");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        let added_id = added["credentialId"]
+            .as_str()
+            .context("Chrome omitted the added credential's id")?
+            .to_string();
+
+        // Settings lists both passkeys once the addition is recorded.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            open_hub_settings(&first, &env).await?;
+            let listed = first
+                .execute(
+                    "return document.querySelectorAll('[data-settings-passkey-device]').length;",
+                    Vec::new(),
+                )
+                .await?;
+            if listed.json().as_u64() == Some(2) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&first, &env).await;
+                anyhow::bail!("settings never listed the added passkey");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // A fresh browser holding only the added passkey, with the PRF
+        // outputs that credential derives (the one thing CDP cannot copy).
+        first.enter_default_frame().await?;
+        let (key_output, kek_output) = custody_prf_outputs_of(&first, Some(&added_id)).await?;
+        let (second, second_authenticator) = driver_with_prf_authenticator(&env).await?;
+        ChromeDevTools::new(second.handle.clone())
+            .execute_cdp_with_params(
+                "WebAuthn.addCredential",
+                serde_json::json!({ "authenticatorId": second_authenticator, "credential": added }),
+            )
+            .await?;
+        graft_prf_outputs(&second, &key_output, &kek_output).await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        type_into_register_dialog(&second, EMAIL).await?;
+        await_register_action(&second, "sign in with passkey").await?;
+        click_register_action(&second).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            second.enter_default_frame().await?;
+            if let Ok(status) = get_json(&second, "/api/identity/root").await
+                && status["body"]["rootDid"].as_str() == Some(root.as_str())
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    eprintln!(
+                        "PROBE register status: {:?}",
+                        status.text().await.unwrap_or_default()
+                    );
+                }
+                dump_browser_log(&second, &env).await;
+                anyhow::bail!("the fresh browser never signed in to {root} with the added passkey");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        first.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
+    /// An account that has not opened its activation link is offered no
+    /// recovery phrase: settings says to activate first, and there is no
+    /// setup to start.
+    #[dialog_common::test]
+    async fn it_offers_no_recovery_phrase_before_activation(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "recovery-phrase-inactive@example.com";
+
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, EMAIL).await?;
+        dismiss_register_dialog(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "[data-recovery-panel] .recovery-inactive").await?;
+        let setup = driver
+            .execute(
+                "const button = document.querySelector('[data-add-recovery-phrase]');
+                 return !!button && button.checkVisibility();",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            setup.json().as_bool(),
+            Some(false),
+            "no setup before activation"
+        );
+        driver.quit().await?;
         Ok(())
     }
 

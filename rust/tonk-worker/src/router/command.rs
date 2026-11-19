@@ -691,6 +691,7 @@ pub fn command_providers() -> CommandProviders {
         // has a legacy shape to migrate.
         .command::<tonk_schema::command::SignInVia>(Profile)
         .command::<tonk_schema::command::FinishSignInVia>(Profile)
+        .command::<tonk_schema::command::AddRecoveryPhrase>(Profile)
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>(Profile)
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>(Both)
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>(Profile)
