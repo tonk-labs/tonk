@@ -2018,8 +2018,9 @@ pub(crate) mod tests {
                 "const dialog = document.querySelector('[data-phrase-dialog] [role=dialog]');
                  if (!dialog) return null;
                  const rect = dialog.getBoundingClientRect();
-                 const frame = document.querySelector('[data-phrase-dialog]').getBoundingClientRect();
-                 return { centre: rect.left + rect.width / 2, viewport: frame.left + frame.width / 2,
+                 const frame = document.querySelector('[data-phrase-dialog]');
+                 return { centre: rect.left + rect.width / 2,
+                          viewport: frame.getBoundingClientRect().left + frame.clientWidth / 2,
                           width: rect.width };",
                 Vec::new(),
             )
