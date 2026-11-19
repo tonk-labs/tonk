@@ -2662,7 +2662,7 @@ element!: &hub-discover
             const row = el('li', 'contact-space', '', spaces);
             const link = el('a', '', space.name || space.subject, row);
             link.href = `/space/${space.subject}`;
-            const access = space.access === 'write' ? 'write' : 'read';
+            const access = space.access === 'share' ? 'full access & sharing' : space.access === 'write' ? 'write' : 'read';
             const via = space.viaLink ? ' · from a passlink' : '';
             el('span', 'contact-access', (space.expiresAt ? `${access} · until ${date(space.expiresAt)}` : access) + via, row);
             // A removal under way or failed, as the worker reports it: the
@@ -6998,7 +6998,7 @@ element!: &account-settings
           group.setAttribute('role', 'radiogroup');
           group.setAttribute('aria-label', row.label);
           const current = chosen.get(row.key) ?? 'none';
-          for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'read & write']]) {
+          for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'read & write'], ['share', 'full access & sharing']]) {
             const option = document.createElement('button');
             option.type = 'button';
             option.setAttribute('role', 'radio');
@@ -7030,7 +7030,7 @@ element!: &account-settings
         const agent = self.agentChosen();
         const spaces = [...self.querySelectorAll('.agent-space')]
           .map((row) => ({ key: row.dataset.key, access: row.querySelector('[aria-checked="true"]:not(:disabled)')?.dataset.access }))
-          .filter((space) => space.access === 'read' || space.access === 'write');
+          .filter((space) => ['read', 'write', 'share'].includes(space.access));
         const summaries = self.querySelectorAll('[data-agent-summary]');
         for (const summary of summaries) {
           summary.replaceChildren();
@@ -7045,7 +7045,7 @@ element!: &account-settings
             if (space.none) { k.textContent = 'can reach'; v.textContent = 'its own space'; }
             else {
               k.textContent = self.querySelector(`.agent-space[data-key="${CSS.escape(space.key)}"] .agent-space-name`)?.textContent ?? space.key;
-              v.textContent = space.access === 'write' ? 'read & write' : 'read';
+              v.textContent = space.access === 'share' ? 'full space access, including making passlinks' : space.access === 'write' ? 'read & write' : 'read';
             }
             row.append(k, v);
             summary.append(row);
