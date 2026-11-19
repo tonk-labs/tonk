@@ -78,7 +78,7 @@ impl Offer {
         if !matches!(invite.audience, InviteAudience::Open { .. }) {
             return Err(
                 "This invitation is addressed to one person, so an agent cannot join with it. \
-                 Ask for a share link instead."
+                 Ask for a passlink instead."
                     .into(),
             );
         }
@@ -347,7 +347,7 @@ pub fn tools() -> Vec<Value> {
             "title": "Join a Tonk space",
             "description": "Ask the person to let you join a Tonk space from an invite link \
                 they gave you. Shows a card in the chat where they choose your access (read, \
-                or read and write) and join; you are the one who joins, as this connection's \
+                or write) and join; you are the one who joins, as this connection's \
                 agent, not as them. This call joins nothing. When they join, the card tells \
                 you, and the space is in tonk_list_spaces. If the host shows no card, ask \
                 the person to grant you the space in Tonk instead.",
@@ -403,19 +403,24 @@ pub fn resources() -> Vec<Value> {
 }
 
 /// The `resources/read` result for `uri`, or `None` when it is not the
-/// card. The card loads nothing: it talks only to the host.
-pub fn read_resource(uri: &str) -> Option<Value> {
+/// card. The card talks only to the host; from `origin`, the provider the
+/// host reached, it loads nothing but Tonk's fonts.
+pub fn read_resource(uri: &str, origin: &str) -> Option<Value> {
     if uri != CARD_URI {
         return None;
     }
+    let origin = origin.trim_end_matches('/');
     Some(json!({
         "contents": [{
             "uri": CARD_URI,
             "mimeType": CARD_MIME,
-            "text": CARD,
+            "text": super::in_agent::splice(CARD, origin),
             "_meta": {
-                "ui": { "csp": { "connectDomains": [], "resourceDomains": [] }, "prefersBorder": true },
-                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [] },
+                "ui": {
+                    "csp": { "connectDomains": [], "resourceDomains": [origin] },
+                    "prefersBorder": true,
+                },
+                "openai/widgetCSP": { "connect_domains": [], "resource_domains": [origin] },
             },
         }],
     }))
@@ -479,11 +484,7 @@ pub async fn call<W: Writers>(
         .clone()
         .unwrap_or_else(|| "this space".to_owned());
     if let Some(granted) = &offer.granted {
-        let words = if granted == "write" {
-            "read and write"
-        } else {
-            "read"
-        };
+        let words = if granted == "write" { "write" } else { "read" };
         return Some(json!({
             "content": [{
                 "type": "text",
@@ -512,17 +513,12 @@ pub async fn call<W: Writers>(
     let text = match joined {
         Some("read") if offer.write => format!(
             "You already have read access to {label}, space {}. The card lets the person \
-             give you read and write access too; you do not have it until they do.",
+             give you write access too; you do not have it until they do.",
             offer.space
         ),
         Some(access) => format!(
             "You already have {} access to {label}, space {}. Nothing to ask.",
-            if access == "write" {
-                "read and write"
-            } else {
-                "read"
-            },
-            offer.space
+            access, offer.space
         ),
         None => format!(
             "Showing the invitation to {label}. You have not joined: the person chooses \

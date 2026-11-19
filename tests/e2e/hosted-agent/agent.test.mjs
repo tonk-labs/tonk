@@ -40,8 +40,10 @@ const run = process.env.GITHUB_RUN_ID
 const writableName = `e2e write ${run}`;
 const readableName = `e2e read ${run}`;
 const agent = `e2e ${run}`;
-// Writes per session, sent all at once.
-const WRITES = 8;
+// Writes per session, sent all at once. Each write holds the space's
+// writer lock through pull, evaluate and push, so they run one by one; 8
+// of them came close to the writer's 45 s deadline on the preview.
+const WRITES = 4;
 // What approving may upload before it answers: the agent space and its
 // grants (30 to 60 measured), plus mounting the chosen spaces in a browser
 // that never had them (about 100), but never the agent's library, which
@@ -234,7 +236,7 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
             .map(({ subject, name, access }) => [subject, { name, access }]),
         ),
         {
-          [spaces.writable]: { name: writableName, access: 'read-write' },
+          [spaces.writable]: { name: writableName, access: 'write' },
           [spaces.readable]: { name: readableName, access: 'read' },
         },
         `listed ${JSON.stringify(listed)}`,
