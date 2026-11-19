@@ -243,6 +243,9 @@ fn show(host: &HtmlElement, stage: Stage, email: Option<&str>) {
     ] {
         if let Some(button) = button(host, selector) {
             button.set_hidden(!shown);
+            if shown && let Some(footer) = button.parent_element() {
+                let _ = footer.append_child(&button);
+            }
             button.set_disabled(false);
         }
     }
@@ -258,10 +261,6 @@ fn show(host: &HtmlElement, stage: Stage, email: Option<&str>) {
     if let (Some(Action::Account(label)), Some(button)) = (action, button(host, ACCOUNT)) {
         button.set_text_content(Some(label));
     }
-    if let Ok(Some(actions)) = host.query_selector(".account__actions") {
-        let solo = action.is_none() && stage != Stage::Checking;
-        let _ = actions.toggle_attribute_with_force("data-solo", solo);
-    }
 }
 
 #[derive(Default)]
@@ -274,23 +273,13 @@ impl CustomElement for EmailInvite {
         &[]
     }
     fn inject_children(&mut self, this: &HtmlElement) {
-        this.set_inner_html(include_str!("email_invite.html"));
+        this.set_inner_html(&crate::task_page::page(include_str!("email_invite.html")));
     }
     fn connected_callback(&mut self, this: &HtmlElement) {
         if this.has_attribute("data-bound") {
             return;
         }
         let _ = this.set_attribute("data-bound", "");
-        if let Some(doc) = this.owner_document()
-            && doc.get_element_by_id("tonk-activate-styles").is_none()
-            && let Ok(style) = doc.create_element("style")
-        {
-            style.set_id("tonk-activate-styles");
-            style.set_text_content(Some(include_str!("account.css")));
-            if let Some(head) = doc.head() {
-                let _ = head.append_child(&style);
-            }
-        }
         if !valid_id(&locator()) {
             show(this, Stage::Incomplete, None);
             return;
