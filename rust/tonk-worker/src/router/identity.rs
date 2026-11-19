@@ -248,11 +248,9 @@ pub(crate) async fn persist_root(
     state: &TonkState,
     request: SaveRootRequest,
 ) -> Result<RootStatus, TonkWorkerError> {
-    if request.credential_id.is_empty() {
-        return Err(TonkWorkerError::Router(
-            "credentialId must not be empty".to_string(),
-        ));
-    }
+    // An empty credential id is a browser that holds the account
+    // without a passkey: it signed in with the recovery phrase. Ceremonies
+    // then pin no credential, and an approval offers the phrase.
     let passkey = request
         .passkey
         .map(|mut metadata| {

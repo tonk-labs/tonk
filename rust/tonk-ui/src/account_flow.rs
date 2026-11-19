@@ -1951,6 +1951,147 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The whole recovery-phrase journey a directory reviewer depends on
+    /// (BUG-343, BUG-344): set up a phrase from settings on one browser,
+    /// then sign in with nothing but the twelve words on a fresh browser
+    /// that has no passkey at all, and land in the same account.
+    ///
+    /// The words are read off the top document's card, where they are
+    /// shown, and three of them are asked back before the passkey is.
+    #[dialog_common::test]
+    async fn it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "recovery-phrase@example.com";
+
+        let first = driver_with_prf(&env).await?;
+        sign_up(&first, &env, EMAIL).await?;
+        first.enter_default_frame().await?;
+        let root = get_json(&first, "/api/identity/root").await?;
+        let root = successful_body("root after sign-up", &root)["rootDid"]
+            .as_str()
+            .context("root status omitted rootDid")?
+            .to_string();
+
+        // Setup: acknowledge that it cannot be revoked, then ask for it.
+        open_hub_settings(&first, &env).await?;
+        click(&first, "[data-recovery-ack]").await?;
+        click(&first, "[data-add-recovery-phrase]").await?;
+
+        // The words show in the top document, never in the guest.
+        first.enter_default_frame().await?;
+        wait_for_displayed(&first, "#tonk-phrase-words").await?;
+        let words: Vec<String> = first
+            .execute(
+                "return [...document.querySelectorAll('#tonk-phrase-words li')]
+                   .map((li) => li.textContent.replace(/^\\s*\\d+\\.\\s*/, '').trim());",
+                Vec::new(),
+            )
+            .await?
+            .convert()?;
+        assert_eq!(
+            words.len(),
+            12,
+            "a recovery phrase is twelve words: {words:?}"
+        );
+        click(&first, "#tonk-phrase-written").await?;
+        wait_for_displayed(&first, "#tonk-phrase-check-0").await?;
+        // Enter back the three words the card asks for, by position.
+        first
+            .execute(
+                "const words = arguments[0];
+                 for (const label of document.querySelectorAll('#tonk-phrase-checks label')) {
+                   const position = Number(label.textContent.match(/word (\\d+)/)[1]);
+                   const input = label.querySelector('input');
+                   input.value = words[position - 1];
+                   input.dispatchEvent(new Event('input', { bubbles: true }));
+                 }",
+                vec![serde_json::json!(words)],
+            )
+            .await?;
+        click(&first, "#tonk-custody-continue").await?;
+        wait_for_text_containing(&first, "#tonk-custody-text", "recovery phrase is saved").await?;
+
+        // Settings now shows it, and offers no second one.
+        open_hub_settings(&first, &env).await?;
+        wait_for_displayed(&first, "[data-recovery-phrase-row]").await?;
+        let offered = first
+            .execute(
+                "const setup = document.querySelector('[data-recovery-setup]');
+                 return !!setup && setup.checkVisibility();",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            offered.json().as_bool(),
+            Some(false),
+            "setup is offered only once"
+        );
+
+        // A fresh browser with no authenticator: only the words.
+        let second = env.driver().await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        click(&second, "#tonk-register-phrase-switch").await?;
+        let field = wait_for_displayed(&second, "#tonk-register-phrase").await?;
+        field.send_keys(words.join(" ")).await?;
+        click(&second, "#tonk-register-phrase-login").await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            second.enter_default_frame().await?;
+            if let Ok(status) = get_json(&second, "/api/identity/root").await
+                && status["body"]["rootDid"].as_str() == Some(root.as_str())
+            {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                if let Ok(status) = second.find(By::Css("#tonk-register-status")).await {
+                    eprintln!(
+                        "PROBE register status: {:?}",
+                        status.text().await.unwrap_or_default()
+                    );
+                }
+                dump_browser_log(&second, &env).await;
+                anyhow::bail!("the fresh browser never signed in to {root} with the phrase");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        first.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
+    /// An account that has not opened its activation link is offered no
+    /// recovery phrase: settings says to activate first, and there is no
+    /// setup to start.
+    #[dialog_common::test]
+    async fn it_offers_no_recovery_phrase_before_activation(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "recovery-phrase-inactive@example.com";
+
+        let driver = driver_with_prf(&env).await?;
+        enroll_only(&driver, &env, EMAIL).await?;
+        dismiss_register_dialog(&driver).await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "[data-recovery-panel] .recovery-inactive").await?;
+        let setup = driver
+            .execute(
+                "const button = document.querySelector('[data-add-recovery-phrase]');
+                 return !!button && button.checkVisibility();",
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            setup.json().as_bool(),
+            Some(false),
+            "no setup before activation"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_explains_email_verification_before_account_sync(
         env: TestEnvironment,

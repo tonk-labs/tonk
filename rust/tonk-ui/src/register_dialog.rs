@@ -139,7 +139,19 @@ const DIALOG_HTML: &str = r##"
          passkey" for one that is taken. Which of the two is the whole
          reason the address is checked before any ceremony runs. -->
     <button class="obtn pre" id="tonk-register-action" hidden></button>
+    <!-- Signing in with the account's recovery phrase instead of a
+         passkey. The words locate the account themselves, so this path
+         needs no email; they are read here, in the top document, and go
+         to the worker as bytes. -->
+    <div class="orow mblk editing" id="tonk-register-phrase-row" hidden>
+      <span class="k">recovery phrase</span>
+      <span class="v"><textarea class="ed" id="tonk-register-phrase" rows="3" autocomplete="off"
+            autocapitalize="off" spellcheck="false" aria-label="recovery phrase"
+            placeholder="your twelve words"></textarea></span>
+    </div>
+    <button class="obtn" id="tonk-register-phrase-login" hidden>log in with recovery phrase</button>
   </div>
+  <button type="button" class="ghost" id="tonk-register-phrase-switch">use a recovery phrase instead</button>
   <div class="oexp mblk">
     <h2 id="tonk-register-wait-title" hidden>check your email</h2>
     <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
@@ -571,6 +583,10 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     on_click(&host, ACTION, submit);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, "#tonk-register-resend", resend_verification);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, "#tonk-register-phrase-switch", toggle_phrase_login);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, "#tonk-register-phrase-login", submit_phrase_login);
     watch_address(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
@@ -2982,7 +2998,154 @@ fn address() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// The line under the input, where an answer or a wait shows.
+/// Swap between signing in with a passkey and with a recovery phrase.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn toggle_phrase_login() {
+    let Some(host) = host_element() else {
+        return;
+    };
+    let query = |selector: &str| host.query_selector(selector).ok().flatten();
+    let Some(row) = query("#tonk-register-phrase-row") else {
+        return;
+    };
+    let showing = !row.has_attribute("hidden");
+    let set_hidden = |element: Option<Element>, hidden: bool| {
+        if let Some(element) = element {
+            let _ = if hidden {
+                element.set_attribute("hidden", "")
+            } else {
+                element.remove_attribute("hidden")
+            };
+        }
+    };
+    set_hidden(Some(row), showing);
+    set_hidden(query("#tonk-register-phrase-login"), showing);
+    set_hidden(query(EMAIL_ROW), !showing);
+    set_hidden(
+        query(ACTION),
+        !showing
+            || query(ACTION)
+                .is_none_or(|action| action.text_content().unwrap_or_default().is_empty()),
+    );
+    if let Some(switch) = query("#tonk-register-phrase-switch") {
+        switch.set_text_content(Some(if showing {
+            "use a recovery phrase instead"
+        } else {
+            "use a passkey instead"
+        }));
+    }
+    set_status(if showing {
+        "Enter your email address. We’ll tell you whether to create a passkey or sign in."
+    } else {
+        "Enter the twelve words of your recovery phrase, in order."
+    });
+    if !showing
+        && let Some(field) = query("#tonk-register-phrase")
+        && let Some(field) = field.dyn_ref::<HtmlElement>()
+    {
+        let _ = field.focus();
+    }
+}
+
+/// Sign in with the typed recovery phrase.
+///
+/// The words are checked here first, so a mistyped word is said on the
+/// field before anything is fetched. Then the worker opens the account
+/// the phrase's custody cell holds and links this browser, the way a
+/// passkey sign-in does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn submit_phrase_login() {
+    if ACTION_PENDING.with(|pending| pending.replace(true)) {
+        return;
+    }
+    let words = host_element()
+        .and_then(|host| host.query_selector("#tonk-register-phrase").ok().flatten())
+        .and_then(|field| js_sys::Reflect::get(&field, &"value".into()).ok())
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    if let Err(message) = stage_recovery_phrase(&words) {
+        ACTION_PENDING.with(|pending| pending.set(false));
+        set_status(&message);
+        return;
+    }
+    set_status("Opening your account…");
+    let link = crate::ceremony::proposed_remote().map(|remote| tonk_worker_api::DeviceLink {
+        device_name: crate::device_name::current(),
+        endpoint: remote.clone(),
+        provider: remote,
+    });
+    let started = match link {
+        Ok(link) => crate::custody_relay::begin(
+            "useRecoveryPhrase",
+            tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(link),
+        ),
+        Err(error) => Err(crate::custody_relay::CeremonyError::said(error)),
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let outcome = match started {
+            Ok(mediation) => mediation.finish().await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        ACTION_PENDING.with(|pending| pending.set(false));
+        match outcome {
+            Ok(()) => {
+                announce_account_change();
+                LAST_FABB_TASK_SUCCESS.with(|success| success.set(true));
+                set_status("Signed in.");
+                close();
+            }
+            Err(error) => {
+                tonk_common::log!(
+                    "register: recovery-phrase sign-in failed: {}",
+                    error.message
+                );
+                set_status(&user_error::ceremony(AccountAction::LogIn, &error));
+            }
+        }
+    });
+}
+
+/// Hand typed words to `tonkIdentity.stageRecoveryPhrase`, which checks
+/// them and keeps the phrase for the sign-in that follows. A refusal is
+/// the sentence to show.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn stage_recovery_phrase(words: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "Recovery phrases are not available in this browser.")?;
+    let stage: js_sys::Function = js_sys::Reflect::get(&identity, &"stageRecoveryPhrase".into())
+        .ok()
+        .and_then(|value| value.dyn_into().ok())
+        .ok_or("Recovery phrases are not available in this browser.")?;
+    let input = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&input, &"words".into(), &words.into());
+    stage
+        .call1(&identity, &input)
+        .map(|_| ())
+        .map_err(|refusal| {
+            let code = js_sys::Reflect::get(&refusal, &"code".into())
+                .ok()
+                .and_then(|code| code.as_string());
+            match code.as_deref() {
+                Some("WordCount") => {
+                    "A recovery phrase has twelve words. Check you entered all of them.".to_owned()
+                }
+                Some("UnknownWord") => js_sys::Reflect::get(&refusal, &"message".into())
+                    .ok()
+                    .and_then(|message| message.as_string())
+                    .map(|message| {
+                        format!("{}. Check its spelling.", message.trim_end_matches('.'))
+                    })
+                    .unwrap_or_else(|| {
+                        "One of the words is not a recovery phrase word.".to_owned()
+                    }),
+                _ => "These words are not a recovery phrase. Check each word and their order."
+                    .to_owned(),
+            }
+        })
+}
+
+/// The line under the input, where an answer or a wait shows./// The line under the input, where an answer or a wait shows.
 fn set_status(text: &str) {
     if let Some(slot) = web_sys::window()
         .and_then(|window| window.document())

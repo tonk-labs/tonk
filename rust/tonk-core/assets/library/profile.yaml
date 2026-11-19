@@ -644,6 +644,9 @@ view!:
       .hub-page account-settings tonk-display[model="tonk:account/registered"] > tonk-view,
       .hub-page account-settings [data-account-registered] { display:contents; }
       .hub-page account-settings .account-panels tonk-dialog { display:contents; }
+      /* The recovery phrase takes a row of its own, so the panels after
+         it keep their places: sign out on the left, delete beside it. */
+      .hub-page account-settings .recovery-panel { grid-column:1 / -1; }
       .hub-page account-settings .settings-panel { min-width:0; margin:0; padding:28px;
         background:var(--card); font-family:var(--sans); text-transform:none; }
       .hub-page account-settings .settings-panel h2 { margin:0 0 24px;
@@ -673,9 +676,15 @@ view!:
         color:var(--soft); font:400 13px/1.5 var(--sans); }
       .hub-page account-settings .expl { max-width:60ch; margin:14px 0 0;
         font:400 15px/1.6 var(--sans); }
-      .hub-page account-settings .recovery-panel:has([data-recovery-setup]) .recovery-inactive,
-      .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) .recovery-inactive,
-      .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) [data-recovery-setup] { display:none; }
+      /* The setup's template names no field, so its display draws it
+         even with no active account to render: key on the display's
+         own state instead. Setup only for an active account with no
+         phrase; the activation note only while the account is not
+         active. */
+      .hub-page account-settings .recovery-panel .recovery-inactive,
+      .hub-page account-settings .recovery-panel tonk-display[view="recovery-setup"]:not([data-state="ready"]),
+      .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) tonk-display[view="recovery-setup"] { display:none; }
+      .hub-page account-settings .recovery-panel:has(tonk-display[view="recovery-setup"][data-state="empty"]):not(:has([data-recovery-phrase-row])) .recovery-inactive { display:block; }
       .hub-page account-settings .recovery-ack { display:flex; align-items:flex-start; gap:10px;
         max-width:60ch; margin:14px 0 0; font:400 15px/1.6 var(--sans); }
       .hub-page account-settings .recovery-ack input { margin-top:5px; flex:none; }

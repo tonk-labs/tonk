@@ -531,6 +531,10 @@ pub(crate) async fn record_custody_cell(
 /// The row is what settings reads to know a phrase exists, and what
 /// [`super::account_state::recovery_phrase`] checks to refuse a second
 /// one.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) async fn record_recovery_phrase(
     state: &crate::worker::TonkState,
     custody: &dialog_varsig::Did,

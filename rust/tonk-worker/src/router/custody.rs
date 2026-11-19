@@ -627,6 +627,10 @@ fn customer_reply(customer: &str) -> Result<wasm_bindgen::JsValue, String> {
 /// The code a custody reply carries when the account already has a
 /// recovery phrase. A phrase cannot be revoked, so a second one would
 /// only add another way in beside the first.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) const RECOVERY_PHRASE_EXISTS: &str = "RecoveryPhraseExists";
 
 /// Seal the account the passkey holds under a recovery phrase, and make
@@ -688,10 +692,18 @@ async fn add_recovery_phrase(
 /// The code a custody reply carries when the account is not active yet,
 /// so the page can say to open the activation link first rather than
 /// showing a generic failure.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) const ACCOUNT_NOT_ACTIVE: &str = "AccountNotActive";
 
 /// The refusal [`add_custodian`] answers for an account the access
 /// service does not serve yet.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) fn account_not_active() -> String {
     format!(
         "{ACCOUNT_NOT_ACTIVE}\u{1f}Activate your account first: open the link in the email we sent you."
