@@ -33,6 +33,13 @@ card tells you; then the space is in `tonk_list_spaces`. If the host shows no
 card, ask the person to grant you the space in Tonk at {origin}. A link is a
 key to the space: never repeat it back or write it into a space.
 
+When someone asks for a share link that lets other people join, call
+`tonk_create_share_link` with the space's subject. Look for `canShare: true` in
+`tonk_list_spaces`. The person approves in chat and copies the passlink from the
+receipt. Anyone with it can join, write and share. If sharing is missing,
+the person can reconnect the agent and choose full access & sharing for that
+space. A view URL gives no access by itself.
+
 When the person asks you to leave a space granted to you, call
 `tonk_leave_space` with its subject. It leaves nothing: it shows a card, and
 only the person's answer there drops your access. Do not claim you left until
