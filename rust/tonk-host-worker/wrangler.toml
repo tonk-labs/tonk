@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 # wrangler serves `build/` as it is.
 
 # One space writer per space and MCP session: the only place revisions for
-# that pair are signed. The object keeps nothing durable; its peer and
+# that pair are signed. Pending creation cards use object storage; its peer and
 # caches live in memory, and the access service holds the space.
 [[durable_objects.bindings]]
 name = "SPACE_WRITER"

@@ -215,7 +215,6 @@ pub struct SpaceWriter {
     caps: ReadCaps,
     /// Changes proposed in this writer's session, until the person
     /// answers (see [`super::propose`]).
-    creations: super::propose::Proposals,
     proposals: super::propose::Proposals,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
@@ -261,7 +260,6 @@ impl SpaceWriter {
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
             caps: ReadCaps::default(),
-            creations: Default::default(),
             proposals: super::propose::Proposals::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
@@ -1340,36 +1338,24 @@ impl SpaceWriter {
     pub async fn create_space(
         &self,
         provider: &url::Url,
-        request: super::creation::CreateRequest,
+        decision: super::creation::CreationDecision,
     ) -> anyhow::Result<serde_json::Value> {
         use super::card::{Agent, Card, Look, Place, Role};
-        use super::creation::{CONFIRM, CreateRequest};
+        use super::creation::{CONFIRM, CreationDecision};
         use dialog_ucan_core::promise::Promised;
-        use serde_json::{Value, json};
+        use serde_json::json;
         use tonk_identity::created_space::{self, Handoff};
         anyhow::ensure!(
             self.space == self.agent,
             "only an agent's own writer can create a space"
         );
-        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
         let agent = Agent {
             did: self.agent.to_string(),
             name: None,
         };
         let result = |text: String, card: Card, space: Option<String>| json!({"content":[{"type":"text","text":text}],"structuredContent":{"card":card.to_value(),"space":space},"isError":false});
-        match request {
-            CreateRequest::Propose { name } => {
-                anyhow::ensure!(
-                    !name.trim().is_empty() && name.chars().count() <= 100,
-                    "Choose a name between 1 and 100 characters."
-                );
-                let (id, _) = self.creations.hold(
-                    name.clone(),
-                    Value::Null,
-                    Value::Null,
-                    super::propose::Effect::Create,
-                    now,
-                );
+        match decision {
+            CreationDecision::Ask { id, name } => {
                 let say = format!(
                     "Create {name}? You will own it. This agent will have read and write access until you revoke it or its grant expires."
                 );
@@ -1397,21 +1383,12 @@ impl SpaceWriter {
                 );
                 Ok(result(say, card, None))
             }
-            CreateRequest::Answer {
-                id,
-                approve,
-                permission,
-            } => {
-                let held = self.creations.take(&id, now).map_err(|_| {
-                    anyhow::anyhow!("This creation request expired or was already answered.")
-                })?;
-                if !approve {
-                    return Ok(result(
-                        "Cancelled".into(),
-                        Card::strip(None, None, "Cancelled", agent),
-                        None,
-                    ));
-                }
+            CreationDecision::Cancel => Ok(result(
+                "Cancelled".into(),
+                Card::strip(None, None, "Cancelled", agent),
+                None,
+            )),
+            CreationDecision::Approve { name, permission } => {
                 let bytes = hex::decode(permission)?;
                 let permission = DelegationChain::try_from(bytes.as_slice())?;
                 anyhow::ensure!(
@@ -1424,8 +1401,7 @@ impl SpaceWriter {
                     "creation permission is for another service"
                 );
                 let owner = permission.issuer().clone();
-                let receipt =
-                    created_space::mint(&owner, &self.agent, &held.document, provider).await?;
+                let receipt = created_space::mint(&owner, &self.agent, &name, provider).await?;
                 let encoded = hex::encode(receipt.to_bytes()?);
                 let handoff = Handoff::read(receipt, &owner).await?;
                 let mut chain = permission;
@@ -1448,23 +1424,23 @@ impl SpaceWriter {
                 let space = handoff.subject.to_string();
                 let entry = super::access::DirectoryEntry {
                     space: handoff.subject.clone(),
-                    name: Some(held.document.clone()),
+                    name: Some(name.clone()),
                     address: Some(provider.to_string()),
                 };
                 self.retain_grants(&handoff.grants,&[entry]).await.map_err(|e|anyhow::anyhow!("Space {space} was provisioned for its owner, but saving the agent grants failed: {e}"))?;
-                self.initialize_created_space(&handoff.subject, &held.document, provider)
+                self.initialize_created_space(&handoff.subject, &name, provider)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!("Created {space}, but initializing its library failed: {e}")
                     })?;
                 let say = format!(
                     "Created {}. You own it and the agent has read and write access.",
-                    held.document
+                    name
                 );
                 let card = Card::strip(
                     Some(Place {
                         did: space.clone(),
-                        name: Some(held.document),
+                        name: Some(name),
                         item: None,
                     }),
                     Some(Role::Write),

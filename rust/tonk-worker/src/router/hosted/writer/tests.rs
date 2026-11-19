@@ -1265,7 +1265,11 @@ concept!: &writer-note
 
     #[dialog_common::test]
     async fn chat_created_space_survives_agent_revocation() {
-        use crate::router::{agents::withdraw, hosted::creation::CreateRequest, http::post_cbor};
+        use crate::router::{
+            agents::withdraw,
+            hosted::creation::{CreateRequest, PendingCreations},
+            http::post_cbor,
+        };
         use dialog_credentials::{
             Signer,
             secret::{Context, SealedSecret},
@@ -1289,12 +1293,18 @@ concept!: &writer-note
         )
         .await
         .unwrap();
+        let mut cards = PendingCreations::default();
         let ask = writer
             .create_space(
                 &fixture.remote,
-                CreateRequest::Propose {
-                    name: "Research".into(),
-                },
+                cards
+                    .decide(
+                        CreateRequest::Propose {
+                            name: "Research".into(),
+                        },
+                        1,
+                    )
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -1307,15 +1317,10 @@ concept!: &writer-note
             permission: hex::encode(permission.to_bytes().unwrap()),
         };
         let created = writer
-            .create_space(&fixture.remote, confirm())
+            .create_space(&fixture.remote, cards.decide(confirm(), 2).unwrap())
             .await
             .unwrap();
-        assert!(
-            writer
-                .create_space(&fixture.remote, confirm())
-                .await
-                .is_err()
-        );
+        assert!(cards.decide(confirm(), 3).is_err());
         let space: Did = created["structuredContent"]["space"]
             .as_str()
             .unwrap()

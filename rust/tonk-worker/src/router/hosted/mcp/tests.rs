@@ -919,6 +919,8 @@ concept!: &mcp-note
 
     /// One writer per space and writer DID, as the Durable Objects are.
     struct NativeWriters {
+        pending:
+            tokio::sync::Mutex<HashMap<Did, crate::router::hosted::creation::PendingCreations>>,
         remote: url::Url,
         open: tokio::sync::Mutex<HashMap<String, Arc<SpaceWriter>>>,
         /// Each space a writer opened for, and where it mounted it.
@@ -998,7 +1000,18 @@ concept!: &mcp-note
             if parts.uri.path() == crate::router::hosted::creation::CREATE_ROUTE {
                 let body = body.collect().await.unwrap().to_bytes();
                 let request = serde_json::from_slice(&body).unwrap();
-                return match writer.create_space(&self.remote, request).await {
+                let decision = {
+                    let mut pending = self.pending.lock().await;
+                    let cards = pending.entry(writer.did().clone()).or_default();
+                    match cards.decide(request, dialog_ucan_core::time::Timestamp::now().to_unix())
+                    {
+                        Ok(decision) => decision,
+                        Err(reason) => {
+                            return rpc(StatusCode::UNPROCESSABLE_ENTITY, json!({"error":reason}));
+                        }
+                    }
+                };
+                return match writer.create_space(&self.remote, decision).await {
                     Ok(answer) => rpc(StatusCode::OK, answer),
                     Err(error) => rpc(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -1271,6 +1284,7 @@ concept!: &mcp-note
         .await;
 
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
@@ -1411,6 +1425,7 @@ concept!: &mcp-note
         approve(&agent, &remote, &shelf, &["get"], None, None, FOREIGN).await;
 
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
@@ -1579,6 +1594,7 @@ concept!: &mcp-note
             .unwrap()
             .token;
         let writers = NativeWriters {
+            pending: Default::default(),
             remote,
             open: Default::default(),
             mounts: Default::default(),
@@ -1614,6 +1630,8 @@ concept!: &mcp-note
         let ask = client.result(CREATE, json!({"name":"Research"})).await;
         let answer = &ask["structuredContent"]["card"]["answers"][1];
         assert_eq!(answer["tool"], CONFIRM);
+        // The host may evict its warm writer while ChatGPT is showing the card.
+        writers.open.lock().await.clear();
         let receipt = card.result(CONFIRM, answer["arguments"].clone()).await;
         let subject = receipt["structuredContent"]["space"]
             .as_str()
@@ -1666,6 +1684,7 @@ concept!: &mcp-note
         )
         .await;
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
@@ -1745,6 +1764,7 @@ concept!: &mcp-note
             .unwrap();
         let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
@@ -1877,6 +1897,7 @@ concept!: &mcp-note
             .unwrap();
         let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
