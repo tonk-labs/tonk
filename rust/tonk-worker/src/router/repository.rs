@@ -2320,7 +2320,7 @@ async fn run_invite(
     // use), so opening the Hub replicated the whole account. The state is
     // this device's view of a click it made; nothing about it needs the
     // space's branch. See `plan/share-intent.md`.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
@@ -2430,18 +2430,19 @@ async fn publish_share_blocked<'a>(
     use tonk_schema::command::ShareBlocked;
     use tonk_schema::domain::share;
 
+    let blocked = ShareBlocked {
+        this: subject.clone(),
+        blocked: share::Blocked(code.to_owned()),
+        detail: share::Detail(detail.to_owned()),
+        time: share::Time(time),
+    };
     let tonk = state.read().await;
     if let Err(error) = tonk
         .reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
         .overlay()
-        .assert(ShareBlocked {
-            this: subject.clone(),
-            blocked: share::Blocked(code.to_owned()),
-            detail: share::Detail(detail.to_owned()),
-            time: share::Time(time),
-        })
+        .assert(blocked.clone())
         .write()
         .perform(&tonk.operator)
         .await
@@ -2449,26 +2450,34 @@ async fn publish_share_blocked<'a>(
         log!("failed to publish share refusal for '{repo_name}': {error}");
     }
 
+    // The share control reads profile main, not the space: every
+    // subscription on one element shares the element's routing
+    // context, and the control's is profile main (see `PROFILE_WITH`
+    // in tonk-fab's share). A refusal only on the space never reached
+    // it, so every refused click waited out the control's timeout.
+    publish_share_fact(&tonk, blocked).await;
+
     // The same refusal in the shape the share control subscribes to, on
     // profile main for the reason the grant is. Only a terminal reason
     // becomes a terminal status: a refusal the user can repair (no
     // account yet, no remote yet) leaves the request open, because the
     // click has not finished failing — it is waiting on something.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
     )
     .await;
 }
 
-/// Publish the share control's view of an invite onto PROFILE main's
-/// overlay, keyed on the space's subject.
+/// Publish the share control's view of an invite (its state, or the
+/// refusal that ends it) onto PROFILE main's overlay, keyed on the
+/// space's subject.
 ///
 /// Overlay because the url carries the membership seed in its fragment
 /// and must not reach storage, and because the row is a per-session view
 /// of one click rather than a durable record — the durable record of a
 /// minted invite is `Invitation`, on the space.
-async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::InviteState) {
+async fn publish_share_fact<S: dialog_corpus::Statement>(tonk: &TonkState, fact: S) {
     let main = match tonk
         .reactor
         .profile_repository()
@@ -2482,7 +2491,7 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
             return;
         }
     };
-    main.state.assert_overlay(state);
+    main.state.assert_overlay(fact);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -13077,6 +13086,27 @@ block/insert!:
         );
     }
 
+    /// A refusal reaches the share control where it listens: profile main.
+    ///
+    /// The control reads every share fact through one routing context,
+    /// profile main. With the refusal only on the space, a signed-out
+    /// copy-link click in the space bar waited out its 15-second timeout and
+    /// said "couldn't copy" instead of asking the person to sign in.
+    #[dialog_common::test]
+    async fn it_publishes_the_refusal_where_the_share_control_reads() {
+        let (_app, state, key) = fresh_repo_signed_out("test-refusal-on-profile").await;
+
+        run_invite_with_time(&state, &key, 5678.0).await;
+
+        let blocked = profile_share_blocked_rows(&state).await;
+        assert_eq!(blocked.len(), 1, "one refusal on profile main: {blocked:?}");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+        );
+        assert_eq!(blocked[0].2, 5678.0, "echoes the command's timestamp");
+    }
+
     /// POST a remote config to `key`, exactly as the topbar and the share
     /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
@@ -13205,6 +13235,38 @@ block/insert!:
         let env =
             crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
         let _ = super::run_invite(&env, repo, time).await;
+    }
+
+    /// Read back every `ShareBlocked` row on profile main (overlay
+    /// included) as `(blocked, detail, time)`.
+    async fn profile_share_blocked_rows(state: &AppState) -> Vec<(String, String, f64)> {
+        use dialog_query::{Output as _, Term};
+        use tonk_schema::command::ShareBlocked;
+
+        let tonk = state.read().await;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main opens");
+        let rows: Vec<ShareBlocked> = main
+            .handle()
+            .query()
+            .select(dialog_query::Query::<ShareBlocked> {
+                this: Term::var("this"),
+                blocked: Term::var("blocked"),
+                detail: Term::var("detail"),
+                time: Term::var("time"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("share-blocked query");
+        rows.into_iter()
+            .map(|row| (row.blocked.0, row.detail.0, row.time.0))
+            .collect()
     }
 
     /// Read back every `ShareBlocked` row on the repo's content branch overlay
