@@ -135,7 +135,9 @@ fn as_customer(answer: Answer) -> Receipt {
     match answer {
         Answer::Customer(receipt) => receipt,
         Answer::Subscription(receipt) => panic!("expected a customer receipt, got {receipt:?}"),
-        Answer::Done => panic!("expected a customer receipt, got an operator command's answer"),
+        Answer::Done | Answer::CreatedSpaces(_) => {
+            panic!("expected a customer receipt, got an operator command's answer")
+        }
     }
 }
 

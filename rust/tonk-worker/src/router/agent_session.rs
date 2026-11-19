@@ -590,11 +590,27 @@ async fn authorize_inner(
         js_sys::Date::now() - started
     );
 
-    // The token is the session alone: what the agent may reach is in its
-    // own space, where the host reads it like any other space's content.
-    let issued = tonk_identity::agent::issue_agent_session(Signer::from(agent), &home)
-        .await
-        .map_err(|error| error.to_string())?;
+    // Each connection can request a new space for approval in chat.
+    let permissions = {
+        let tonk = state.read().await;
+        let provider = super::account_state::account_remote(&tonk)
+            .await
+            .map_err(said)?
+            .parse::<url::Url>()
+            .map_err(|error| error.to_string())?;
+        vec![
+            tonk_identity::created_space::permission(&root, &agent_did, &provider, expires)
+                .await
+                .map_err(|error| error.to_string())?,
+        ]
+    };
+    let issued = tonk_identity::agent::issue_agent_session_with_grants(
+        Signer::from(agent),
+        &home,
+        &permissions,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     tonk_common::log!(
         "agent {agent_did} {} with {} new space grant(s)",
         if authorization.agent.is_some() {
@@ -717,9 +733,15 @@ async fn create_agent(
         js_sys::Date::now() - started
     );
     let tonk = state.read().await;
-    mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
-        .await
-        .map_err(said)?;
+    mark(
+        &tonk,
+        &key,
+        &agent_did,
+        authorization.name.trim(),
+        authorization.provider.as_deref(),
+    )
+    .await
+    .map_err(said)?;
     Ok((agent, key, pushing))
 }
 
@@ -808,12 +830,18 @@ pub(super) async fn open_held(
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-/// Mark the agent space as one, and note which provider's apps it is for.
+/// Mark the agent space as one, name it `name`, and note which
+/// provider's apps it is for.
+///
+/// The name lands here, with the approval's push, so the agent's cards
+/// name it at once: the library seed that also writes it runs after the
+/// approval has answered, and can take minutes to sync.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn mark(
     tonk: &crate::TonkState,
     key: &str,
     agent: &Did,
+    name: &str,
     provider: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
     let this: dialog_corpus::Entity = agent.to_string().parse().map_err(failure)?;
@@ -823,6 +851,12 @@ pub(super) async fn mark(
         .branch(super::repository::CONTENT_BRANCH)
         .transaction()
         .assert(tonk_schema::agent::AgentSpace::new(this.clone()));
+    if !name.trim().is_empty() {
+        transaction = transaction.assert(tonk_schema::RepositoryName {
+            this: this.clone(),
+            name: tonk_schema::domain::repo::Name(name.trim().to_owned()),
+        });
+    }
     if let Some(provider) = provider {
         transaction = transaction.assert(tonk_schema::agent::AgentProvider::new(this, provider));
     }
@@ -1414,7 +1448,7 @@ mod tests {
             let key =
                 super::super::repository::create_space_from_seed(&state, name, None, seed).await?;
             let tonk = state.read().await;
-            mark(&tonk, &key, &did, provider).await?;
+            mark(&tonk, &key, &did, name, provider).await?;
             agents.push((did, key));
         }
 

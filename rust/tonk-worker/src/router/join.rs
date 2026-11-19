@@ -298,13 +298,13 @@ mod failure_vocabulary {
         assert_eq!(
             messages,
             vec![
-                "This share link is invalid.",
+                "This passlink is invalid.",
                 "This invite was issued to a different identity.",
                 "This invite has been revoked.",
                 "Tonk could not reach this space. Try again.",
                 "This space's host declined the invite. Its owner needs to check the space's plan.",
                 "Tonk could not join this space.",
-                "This space is private. Ask someone in it for an invite link.",
+                "This space is private. Ask someone in it for a passlink.",
             ],
         );
     }
