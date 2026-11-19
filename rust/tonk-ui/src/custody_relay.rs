@@ -39,56 +39,25 @@ thread_local! {
 
 const CARD_ID: &str = "tonk-custody-consent";
 
-/// The card wears the hub's dialog look: its sheet, radius and soft
-/// shadow, the label face for the heading, a plain `not now` and a solid
-/// `use passkey`. The top page has no Tonk tokens, so the values are
-/// gooey's (`tonk-look.css`), written out. Floating, it is centred over the
-/// hub's backdrop; anchored, it sits under a guest dialog's column where
-/// [`position_card`] puts it, with no backdrop.
+/// A trusted passkey task can also occupy the seat supplied by an open guest task.
 const CARD_HTML: &str = r#"
-<div class="tc-card" role="dialog" aria-modal="true" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
-  <h2 id="tonk-custody-heading">passkey needed</h2>
-  <p id="tonk-custody-text">Tonk is securing something to your account and needs your passkey to
-    unlock the account&rsquo;s custody key on this device.</p>
-  <div id="tonk-custody-actions">
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">use your passkey</h2></header>
+  <div class="fabb-request"><p id="tonk-custody-text" role="status">Use your passkey to unlock the key that protects your account on this device.</p></div>
+  <div id="tonk-custody-actions" class="fabb-actions">
     <button id="tonk-custody-dismiss" type="button">not now</button>
-    <button id="tonk-custody-continue" type="button" class="tc-main">use passkey</button>
+    <button id="tonk-custody-continue" type="button">use passkey</button>
   </div>
-</div>
-<div class="tc-backdrop"></div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
 <style>
-#tonk-custody-consent { color-scheme: light dark;
-  --tc-text: light-dark(#38182a, #f7f6f5); --tc-soft: light-dark(#5b4953, #c9bec4);
-  --tc-sheet: light-dark(#f7f6f5, #23141c); --tc-main-text: light-dark(#f7f6f5, #38182a);
-  --tc-wash: color-mix(in oklab, var(--tc-text) 6%, transparent);
-  --tc-wash-strong: color-mix(in oklab, var(--tc-text) 12%, transparent);
-  --tc-label: 600 14px/1.3 "IBM Plex Sans Condensed", "Tonk Narrow", sans-serif; }
-#tonk-custody-consent .tc-backdrop { position: fixed; inset: 0; z-index: 2147483646;
-  background: light-dark(rgb(56 24 42 / 32%), rgb(0 0 0 / 45%)); }
-#tonk-custody-consent .tc-card { position: fixed; z-index: 2147483647; left: 50%; top: 50%;
-  translate: -50% -50%; box-sizing: border-box; width: min(440px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px); overflow: auto; padding: 18px 20px 20px;
-  border-radius: 12px; background: var(--tc-sheet); color: var(--tc-text);
-  box-shadow: 0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 6%)),
-    0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
-    0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
-  font: 400 16px/1.5 "IBM Plex Sans", system-ui, sans-serif; text-align: left; text-transform: none; }
-#tonk-custody-consent h2 { margin: 0 0 12px; font: 600 16px/1.3 "IBM Plex Sans Condensed", "Tonk Narrow", sans-serif;
-  letter-spacing: .02em; text-transform: none; }
-#tonk-custody-consent p { margin: 0; text-wrap: pretty; }
-#tonk-custody-consent #tonk-custody-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-#tonk-custody-consent button { height: 36px; padding: 0 10px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--tc-text); font: var(--tc-label); letter-spacing: .02em;
-  cursor: pointer; transition: background-color 150ms ease-out, scale 150ms ease-out; }
-#tonk-custody-consent button:hover { background: var(--tc-wash); }
-#tonk-custody-consent button:focus-visible { outline: none; background: var(--tc-wash-strong); }
-#tonk-custody-consent button.tc-main { background: var(--tc-text); color: var(--tc-main-text); }
-#tonk-custody-consent button.tc-main:is(:hover, :focus-visible) { background: color-mix(in oklab, var(--tc-main-text) 12%, var(--tc-text)); }
-#tonk-custody-consent button:active { scale: .96; }
-@media (pointer: coarse) { #tonk-custody-consent button { height: 44px; } }
-#tonk-custody-consent[data-anchored] .tc-backdrop { display: none; }
-#tonk-custody-consent[data-anchored] .tc-card { translate: none; }
-@media (prefers-reduced-motion: reduce) { #tonk-custody-consent button { transition: none; } }
+#tonk-custody-consent { color-scheme:light; }
+dialog#tonk-custody-consent { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100%; max-width:none; max-height:none; border:0; }
+#tonk-custody-consent .fabb-top { grid-row:1; }
+#tonk-custody-consent .tc-card { grid-row:2; border-radius:var(--tonk-radius-sheet,12px); }
+#tonk-custody-consent[data-anchored] { display:contents; }
+#tonk-custody-consent[data-anchored] .fabb-top { display:none; }
+#tonk-custody-consent[data-anchored] .tc-card { position:fixed; z-index:2147483647; margin:0; max-height:calc(100dvh - 32px); overflow:auto; }
 </style>
 "#;
 
@@ -241,17 +210,27 @@ fn position_card() {
 fn mount_card(anchored: bool) -> Option<Element> {
     let document = web_sys::window().and_then(|window| window.document())?;
     let body = document.body()?;
-    let host = document.create_element("div").ok()?;
+    let host = document
+        .create_element(if anchored { "div" } else { "dialog" })
+        .ok()?;
+    host.set_class_name("fabb-page");
+    host.set_attribute("aria-labelledby", "tonk-custody-heading")
+        .ok()?;
     host.set_id(CARD_ID);
     if anchored {
         host.set_attribute("data-anchored", "").ok()?;
     }
-    host.set_inner_html(CARD_HTML);
-    if anchored && let Ok(Some(card)) = host.query_selector(".tc-card") {
-        // Under a dialog's column, not a modal of its own.
-        let _ = card.remove_attribute("aria-modal");
-    }
+    host.set_inner_html(&crate::task_page::page(CARD_HTML));
     body.append_child(&host).ok()?;
+    if !anchored
+        && host
+            .dyn_ref::<web_sys::HtmlDialogElement>()?
+            .show_modal()
+            .is_err()
+    {
+        host.remove();
+        return None;
+    }
     position_card();
     if !anchored
         && let Ok(Some(button)) = host.query_selector("#tonk-custody-continue")
@@ -262,20 +241,16 @@ fn mount_card(anchored: bool) -> Option<Element> {
     if !anchored {
         // Escape is `not now`, as a dialog's is; once the answer is out
         // there is nothing to dismiss.
-        let closure =
-            Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(|event: web_sys::KeyboardEvent| {
-                if event.key() != "Escape" {
-                    return;
-                }
-                if let Some(dismiss) = card()
-                    .and_then(|card| card.query_selector("#tonk-custody-dismiss").ok().flatten())
-                    .and_then(|dismiss| dismiss.dyn_into::<web_sys::HtmlElement>().ok())
-                {
-                    event.prevent_default();
-                    dismiss.click();
-                }
-            });
-        let _ = host.add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref());
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+            event.prevent_default();
+            if let Some(dismiss) = card()
+                .and_then(|card| card.query_selector("#tonk-custody-dismiss").ok().flatten())
+                .and_then(|dismiss| dismiss.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                dismiss.click();
+            }
+        });
+        let _ = host.add_event_listener_with_callback("cancel", closure.as_ref().unchecked_ref());
         closure.forget();
     }
     if anchored {
@@ -1352,16 +1327,7 @@ mod tests {
         let window = web_sys::window().unwrap();
         let style = window.get_computed_style(&rows).unwrap().unwrap();
         assert_eq!(style.get_property_value("border-radius").unwrap(), "12px");
-        let backdrop = host.query_selector(".tc-backdrop").unwrap().unwrap();
-        assert_eq!(
-            window
-                .get_computed_style(&backdrop)
-                .unwrap()
-                .unwrap()
-                .get_property_value("display")
-                .unwrap(),
-            "none"
-        );
+        assert!(host.query_selector(".fabb-top").unwrap().is_some());
         assert!(!rows.has_attribute("aria-modal"));
         remove_card();
         // A subsequent unrelated custody request floats as the hub's
@@ -1381,7 +1347,7 @@ mod tests {
                 .unwrap(),
             "12px"
         );
-        assert!(host.query_selector(".tc-backdrop").unwrap().is_some());
+        assert!(host.matches("dialog:modal").unwrap());
         assert_eq!(
             window.document().unwrap().active_element().unwrap().id(),
             "tonk-custody-continue"

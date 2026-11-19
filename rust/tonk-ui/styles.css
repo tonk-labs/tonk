@@ -3206,9 +3206,6 @@ tonk-notebook-index {
     width: 18px; height: 18px; flex: 0 0 18px;
     background: var(--ink); border-radius: 50%;
   }
-  #tonk-register[data-anchored] .fabb-task-title {
-    margin-left: auto; text-align: right;
-  }
   #tonk-register[data-anchored] .orow {
     box-sizing: border-box; flex: 0 0 100%;
     min-height: 48px; height: auto; padding: 18px 18px 14px;
@@ -3519,10 +3516,6 @@ tonk-notebook-index {
     border: 2px solid var(--ink);
     border-radius: 50%;
   }
-  #tonk-register:is([data-fabb-task], [data-account-task]) .fabb-task-title {
-    margin-left: auto;
-    text-align: right;
-  }
   #tonk-register:is([data-fabb-task], [data-account-task]) .orow {
     box-sizing: border-box;
     flex: 0 0 100%;
@@ -3616,20 +3609,8 @@ tonk-notebook-index {
     text-decoration: none;
     font: 600 17px/1.1 var(--cond);
   }
-  /* The footer pairs dismiss with whichever action is showing: the
-     passkey action, or the recovery-phrase login once the person switches.
-     Dismiss spans the row only when neither is. */
-  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol:not(:has(.obtn:not([hidden]))) .ghost {
+  #tonk-register:is([data-fabb-task], [data-account-task]) .ocol:has(.obtn[hidden]) .ghost {
     flex-basis: 100%;
-  }
-  /* The switch to a recovery phrase is not a footer button: it sits on its
-     own row above the explanation. */
-  #tonk-register:is([data-fabb-task], [data-account-task]) #tonk-register-phrase-switch {
-    order: 89;
-    flex-basis: 100%;
-    font-weight: 400;
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
 
   @media (max-width: 519px) {
@@ -3708,9 +3689,62 @@ tonk-notebook-index {
     font: 600 17px/1.1 var(--cond);
     text-decoration: underline; text-underline-offset: 4px;
 }
+/* Signing in with a recovery phrase: a link beside the email, and a field
+   sized for twelve words. */
+#tonk-register #tonk-register-phrase-switch {
+    display: block; width: auto; min-height: 44px; margin-top: 12px; padding: 10px 0;
+    text-align: left; cursor: pointer;
+    border: 0; background: transparent; color: var(--ink);
+    font: 600 15px/1.1 var(--cond);
+    text-decoration: underline; text-underline-offset: 4px;
+}
+#tonk-register #tonk-register-phrase {
+    box-sizing: border-box; width: 100%; min-height: 128px;
+    font: 600 16px/1.6 var(--mono, ui-monospace, monospace);
+    text-transform: none; resize: vertical;
+}
 #tonk-register #tonk-register-resend[hidden],
 #tonk-register #tonk-register-wait-title[hidden] { display: none; }
 #tonk-register #tonk-register-resend:focus-visible {
     outline: 2px solid var(--ink); outline-offset: 2px;
 }
 #tonk-register[data-awaiting-email] .obtn:disabled { opacity: .45; }
+
+/* Web Awesome assigns native buttons a fixed height and adds space above
+   form fields. The task sheet owns those dimensions, including its touch floor. */
+.fabb-page .fabb-actions button { height: auto; }
+.fabb-page .fabb-field :is(input, select, textarea) { margin: 0; }
+
+/* The account task uses the same page and sheet as activation and joining.
+   Its top-document dialog keeps the passkey gesture and return focus. */
+#tonk-register.register-page {
+  inset: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  overflow: auto; overscroll-behavior: contain; color-scheme: light;
+}
+#tonk-register.register-page .register-record {
+  display: grid; grid-template-columns: minmax(5rem, auto) 1fr;
+  gap: 12px; padding-block: 4px; font: var(--fp-message);
+}
+#tonk-register.register-page .register-record .k { color: var(--fp-soft); }
+#tonk-register.register-page .register-record .v { overflow-wrap: anywhere; }
+#tonk-register.register-page .register-message p { margin: 0; }
+#tonk-register.register-page .fabb-field:last-child,
+#tonk-register-email-row:has(+ #tonk-register-new-note[hidden]:last-child) { margin-bottom: 0; }
+#tonk-register.register-page .register-message:not([hidden]) { margin-top: 12px; }
+#tonk-register.register-page[data-fabb-task] .fabb-page { background: transparent; }
+#tonk-register.register-page[data-fabb-task] .fabb-top { display: none; }
+#tonk-register.register-page[data-fabb-task] .fabb-task {
+  position: absolute; max-height: calc(100dvh - 32px); overflow: auto;
+}
+tonk-email-invite #email-invite-status:empty { margin: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  #tonk-register.register-page .fabb-field { transition: opacity 150ms ease-out; }
+  #tonk-register-name-row { animation: account-field-in 150ms ease-out; }
+  @keyframes account-field-in { from { opacity: 0; } to { opacity: 1; } }
+}
+
+#tonk-register .fabb-top > button {
+  display:inline-flex; align-items:center; min-height:44px; padding:0; border:0;
+  background:transparent; color:inherit; cursor:pointer;
+}
+#tonk-register .fabb-actions:not(:has(button:not([hidden]))) { display:none; }

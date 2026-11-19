@@ -12,6 +12,8 @@ pub enum JoinFailureKind {
     Malformed,
     /// The invite is addressed to a different identity.
     AudienceMismatch,
+    /// The passlink's signed deadline has elapsed.
+    Expired,
     /// The remote refused the invite's authority.
     Revoked,
     /// The remote could not be reached, or could not serve the space.
@@ -36,6 +38,7 @@ impl JoinFailureKind {
         match self {
             Self::Malformed => "malformed",
             Self::AudienceMismatch => "audience-mismatch",
+            Self::Expired => "expired",
             Self::Revoked => "revoked",
             Self::Unavailable => "unavailable",
             Self::Refused => "refused",
@@ -49,6 +52,7 @@ impl JoinFailureKind {
         match self {
             Self::Malformed => "This passlink is invalid.",
             Self::AudienceMismatch => "This invite was issued to a different identity.",
+            Self::Expired => "This passlink expired. Ask for a new one.",
             Self::Revoked => "This invite has been revoked.",
             Self::Unavailable => "Tonk could not reach this space. Try again.",
             Self::Refused => {

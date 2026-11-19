@@ -282,18 +282,18 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
 /// reached. This asserts the copy is here, because without it the tag
 /// renders inert and the menu silently stops responding to keys.
 #[dialog_common::test]
-fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
+fn it_carries_the_row_task_element_on_the_branch_that_renders_it() {
     assert!(
         PROFILE_LIBRARY.contains("concept!: &element"),
         "the element concept must be seeded on the profile branch, not only in core.yaml",
     );
     assert!(
-        PROFILE_LIBRARY.contains("element!: &hub-menu"),
-        "the menu's behaviour must be defined as branch data",
+        PROFILE_LIBRARY.contains("element!: &hub-row-task"),
+        "the row task's behaviour must be defined as branch data",
     );
     assert!(
-        PROFILE_LIBRARY.contains("<hub-menu"),
-        "and the account menu must actually be one",
+        PROFILE_LIBRARY.contains("<hub-row-task"),
+        "the space row must render the task",
     );
 }
 
@@ -533,12 +533,12 @@ fn it_distinguishes_leaving_from_deleting_a_space() {
 }
 
 #[dialog_common::test]
-fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
+fn it_uses_the_inline_question_for_hub_space_removal() {
     for contract in [
         "<space-remove ",
         "data-space-remove-open",
-        "<tonk-dialog appearance=\"hub\" data-space-remove-dialog",
-        "data-dialog=\"close\"",
+        "class=\"hub-ask\" data-space-remove-dialog",
+        "data-row-cancel",
         "type=\"submit\" html:form=\"remove-{subject}\"",
     ] {
         assert!(
@@ -813,13 +813,11 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
         ("in-browser/hub.css", GOOEY_HUB),
     ] {
         assert!(
-            text.starts_with(&format!(
-                "/* Vendored from tonk-labs/gooey {file} at ready-to-tonk "
-            )),
+            text.starts_with(&format!("/* Vendored from tonk-labs/gooey {file} at ")),
             "gooey/{file} must name the gooey revision it was copied from",
         );
     }
-    assert!(GOOEY_LOOK.contains(".tonk-hub { color-scheme: light dark; }"));
+    assert!(GOOEY_LOOK.contains(".tonk-hub, .tonk-desk { color-scheme: light dark; }"));
     assert!(GOOEY_HUB.contains(".hub-line { position: sticky;"));
 
     // The parts of the page the mocks have not reached yet keep their
@@ -984,9 +982,9 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
 fn it_copies_a_hub_spaces_address_without_minting() {
     assert!(
         PROFILE_LIBRARY.contains(
-            r#"<button type="button" role="menuitem" data-space-copy-link data-space={subject}>"#
+            r#"<button class="hub-btn" type="button" data-space-copy-link data-space={subject}>"#
         ),
-        "the Hub copy action is a plain menu item that names its space"
+        "the Hub copy action is a footer button that names its space"
     );
     assert!(
         !PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
@@ -1029,7 +1027,7 @@ fn it_answers_a_resend_activation_request_in_place() {
 }
 
 #[dialog_common::test]
-fn it_renames_a_space_from_the_hub_menu() {
+fn it_renames_a_space_from_the_hub_row() {
     for contract in [
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
@@ -1052,12 +1050,16 @@ fn it_renames_a_space_from_the_hub_menu() {
 #[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(PROFILE_LIBRARY, ".space-menu space-remove {").contains("display:contents"),
-        "authority-aware removal must remain a direct row in the card menu"
+        css_rule(
+            PROFILE_LIBRARY,
+            "space-actions > :is(space-create, space-remove) {"
+        )
+        .contains("display:contents"),
+        "authority-aware removal must remain in the row footer"
     );
     assert!(
-        PROFILE_LIBRARY.contains("data-space-actions-open aria-haspopup=\"menu\""),
-        "the card menu opener must expose its menu semantics"
+        PROFILE_LIBRARY.contains("<space-actions class=\"hub-own\">"),
+        "the space controls must share the row footer"
     );
 }
 
@@ -1475,7 +1477,8 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     // The join route's answers are a task page's buttons: 44px to see on a
     // touch screen.
     assert!(
-        TASK_FORMS_CSS.contains("@media (pointer:coarse){.fabb-actions :is(button,a){height:44px}")
+        TASK_FORMS_CSS
+            .contains("@media (pointer:coarse){.fabb-actions :is(button,a){min-height:44px}")
     );
 }
 

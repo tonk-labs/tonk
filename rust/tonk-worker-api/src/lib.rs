@@ -51,7 +51,7 @@ pub use identity::{
     WebAuthnRequest,
 };
 pub use invite::{
-    CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
+    CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary, PasslinkRole,
     RevokeInvitationAcknowledgement,
 };
 pub use join::{JoinFailureKind, JoinRequest, JoinResponse};
