@@ -1296,8 +1296,17 @@ impl SpaceWriter {
     ) -> anyhow::Result<()> {
         use super::super::repository;
         use tonk_schema::prelude::DidExt as _;
+        // The directory entry is already visible. Another peer may write to the
+        // new space during seeding, so give the initializer its own origin.
+        let initializer = WriterKey::derive(&WriterSession {
+            seed: self.key.seed.clone(),
+            powerline: self.key.chain.clone(),
+            mcp_session: space.to_string(),
+            home: self.home.clone(),
+        })
+        .await?;
         let peer = open_peer(
-            &self.key,
+            &initializer,
             &format!("{}/create-{space}", self.root),
             space,
             provider,
@@ -1354,9 +1363,13 @@ impl SpaceWriter {
                     !name.trim().is_empty() && name.chars().count() <= 100,
                     "Choose a name between 1 and 100 characters."
                 );
-                let (id, _) =
-                    self.creations
-                        .hold(name.clone(), Value::Null, Value::Null, false, now);
+                let (id, _) = self.creations.hold(
+                    name.clone(),
+                    Value::Null,
+                    Value::Null,
+                    super::propose::Effect::Create,
+                    now,
+                );
                 let say = format!(
                     "Create {name}? You will own it. This agent will have read and write access until you revoke it or its grant expires."
                 );

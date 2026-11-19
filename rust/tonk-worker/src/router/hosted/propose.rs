@@ -90,6 +90,8 @@ pub enum Effect {
     /// Leave the space the document names: drop every grant the agent
     /// space holds for it.
     Leave,
+    /// Create the user-owned space named in the proposal.
+    Create,
 }
 
 /// A held change, taken to be answered.
