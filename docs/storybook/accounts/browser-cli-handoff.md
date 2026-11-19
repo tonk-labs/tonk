@@ -39,6 +39,30 @@ email resolution and passkey delivery were not exercised because the fresh Nix
 test-server build was stopped before browser execution. These appearance checks
 do not mark the handoff journey verified.
 
+### Hosted MCP approval errors (WEB-10)
+
+The hosted MCP approval at `/settings/agent` can fail after the passkey succeeds
+when Tonk cannot find the account in a selected space's permission proof. The
+error names that space and gives one recovery step: restart the connection in
+the requesting app with that space set to **none**. If the space's display name
+is unavailable, the message asks the person to restart with all spaces set to
+**none**. It does not infer when the space was created or blame the passkey.
+
+**Debugging details** is collapsed by default below the recovery message. It
+retains the original error, including the account and space identifiers, as
+selectable plain text. Enter expands the focused disclosure, long identifiers
+wrap on narrow screens, and repeated reports of the same failure preserve an
+open disclosure. A different error collapses it; a new connection request clears
+the previous message and details. Error text is never interpreted as markup.
+
+Verified in an isolated Chromium fixture using the production markup, methods,
+and CSS from changes based on `e9912804` on 2026-11-05: named and unnamed space
+copy, keyboard expansion, 360px wrapping, repeated and replacement errors,
+literal HTML-like text, and clearing details for a new request. This is UI
+fixture evidence, not a live passkey or deployed OAuth verification. The change
+does not repair the underlying permission-proof selection. The existing WEB-10
+capture predates this error state.
+
 ## Current CLI access workflows
 
 The browser exposes two separate actions. **Invite someone** mints an ordinary
