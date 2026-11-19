@@ -1115,8 +1115,11 @@ pub(super) async fn grant(
     .await
 }
 
-#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-fn approval_scopes(subject: &Did, access: AgentAccess, share: bool) -> Vec<dialog_ucan::Scope> {
+pub(super) fn approval_scopes(
+    subject: &Did,
+    access: AgentAccess,
+    share: bool,
+) -> Vec<dialog_ucan::Scope> {
     let mut scopes = agent_grant_scopes(subject, access);
     if share {
         scopes.push(dialog_ucan::Scope {
@@ -1341,6 +1344,15 @@ mod tests {
                 .filter(|chain| chain.0.subject() == Some(&space.subject))
                 .count();
             assert_eq!(mine, space.chains.len(), "chains for {}", space.name);
+        }
+        for dialog_ucan::UcanDelegation(leaf) in &retained {
+            super::super::agents::ancestor(
+                &tonk,
+                &tonk.profile.did(),
+                leaf.subject().unwrap(),
+                leaf,
+            )
+            .await?;
         }
         assert_eq!(retained.len(), 3 + 6 + 1);
 

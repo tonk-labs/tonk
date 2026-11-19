@@ -560,10 +560,14 @@ pub(super) async fn ancestor(
         access::{Access, Prove},
     };
     let ability = leaf.ability();
-    let scope = tonk_invite::connection::candidate_build_scopes(subject)
-        .into_iter()
-        .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
-        .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
+    let scope = super::agent_session::approval_scopes(
+        subject,
+        tonk_invite::connection::AgentAccess::ReadWrite,
+        true,
+    )
+    .into_iter()
+    .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
+    .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
     let proof = Subject::from(profile.clone())
         .attenuate(Access)
         .invoke(Prove::<dialog_ucan::Ucan>::new(profile.clone(), scope))
