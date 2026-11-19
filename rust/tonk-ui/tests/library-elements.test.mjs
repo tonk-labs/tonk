@@ -160,15 +160,22 @@ test('a reset asks the worker to list the new link in the place of the one it re
   assert.match(calls[0][0], /invites\/bafy-a\/revoke$/);
 
   const posted = [];
+  const addresses = new Map();
   const mintSelf = {
     dataset: { space: 'did:key:space' },
-    made: () => new Map(),
-    api: async (path, body) => { posted.push([path, body]); return path.endsWith('/invite') ? { url: 'https://x/#k' } : []; },
+    made: () => addresses,
+    api: async (path, body) => {
+      assert.ok(path.endsWith('/invite'), 'a successful mint is independent of the listing');
+      posted.push([path, body]);
+      return { url: 'https://x/#k', targetCid: 'bafy-new' };
+    },
   };
   const mint = method('space-links', 'mint', {
     ClipboardItem: class {}, Blob: class {}, navigator: { clipboard: { write: async () => {} } },
   });
-  await mint(mintSelf, 'bafy-a');
+  const replacement = await mint(mintSelf, 'bafy-a');
+  assert.equal(replacement.target, 'bafy-new');
+  assert.equal(addresses.get('bafy-new'), replacement.url);
   await mint(mintSelf);
   const bodies = posted.filter(([path]) => path.endsWith('/invite')).map(([, body]) => body);
   assert.deepEqual(bodies, [{ replaces: 'bafy-a' }, {}]);

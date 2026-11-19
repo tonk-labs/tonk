@@ -370,7 +370,10 @@ pub(super) async fn mint_invite(
     );
 
     let response = match invite.audience {
-        InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
+        InviteAudience::Open { .. } => CreateInviteResponse::Open {
+            url,
+            target_cid: Some(super::revoke_invite::leaf_cid(&invite.chain)?.to_string()),
+        },
         InviteAudience::Scoped => CreateInviteResponse::Scoped {
             url,
             recipient_root: audience_did,
@@ -1044,6 +1047,10 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap();
         assert_eq!(listed.len(), 1, "the minted invitation is listed");
         assert_eq!(listed[0].invitation, expected.this.to_string());
+        let CreateInviteResponse::Open { target_cid, .. } = minted else {
+            panic!("expected an open invitation");
+        };
+        assert_eq!(target_cid.as_ref(), Some(&listed[0].target_cid));
         assert!(
             listed[0].minted_at.is_some(),
             "a fresh invitation lists when it was minted"

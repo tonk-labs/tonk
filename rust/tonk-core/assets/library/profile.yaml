@@ -5950,13 +5950,10 @@ element!: &space-links
           copied = navigator.clipboard.write([item]).then(() => true, () => false);
         } catch (_) { copied = Promise.resolve(false); }
         try {
-          const before = new Set(((await self.api(`${base}/invites`)) ?? []).map((row) => row.targetCid));
           const minted = await self.api(`${base}/invite`, replaces ? { replaces } : {});
-          const after = (await self.api(`${base}/invites`)) ?? [];
-          const fresh = after.map((row) => row.targetCid).filter((cid) => !before.has(cid));
-          if (fresh.length === 1) self.made().set(fresh[0], minted.url);
+          if (minted.targetCid) self.made().set(minted.targetCid, minted.url);
           settle.resolve(minted.url);
-          return { url: minted.url, target: fresh.length === 1 ? fresh[0] : null, copied: await copied };
+          return { url: minted.url, target: minted.targetCid, copied: await copied };
         } catch (error) {
           settle.reject(error);
           throw error;

@@ -40,6 +40,9 @@ pub enum CreateInviteResponse {
     Open {
         /// Public invitation URL.
         url: Url,
+        /// Target listed for this invitation. Older workers omit it.
+        #[serde(rename = "targetCid", default, skip_serializing_if = "Option::is_none")]
+        target_cid: Option<String>,
     },
 }
 
@@ -124,7 +127,7 @@ impl CreateInviteResponse {
     /// The minted invitation URL, independent of audience mode.
     pub fn url(&self) -> &Url {
         match self {
-            Self::Scoped { url, .. } | Self::Open { url } => url,
+            Self::Scoped { url, .. } | Self::Open { url, .. } => url,
         }
     }
 }
