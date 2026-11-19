@@ -1015,7 +1015,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     message: format!("`{field}` names {cid}, which the container does not carry"),
                 })
         };
-        let sealed = carried(&effect.sealed, "sealed")?;
+        let sealed = carried(effect.sealed, "sealed")?;
         // A sealed account secret is 68 bytes: an 8-byte header, a
         // 12-byte nonce, and 48 bytes of ciphertext over a 32-byte
         // secret. The bound leaves room for a version bump or a wider
@@ -1033,15 +1033,15 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         // Resolved for the refusal it produces: `recovery` must name a
         // block the container carries, whether or not the bytes are
         // used beyond the resolution below.
-        carried(&effect.recovery, "recovery")?;
-        let consent_bytes = carried(&effect.consent, "consent")?;
+        carried(effect.recovery, "recovery")?;
+        let consent_bytes = carried(effect.consent, "consent")?;
 
         // The recovery invocation, with its proofs resolved from the
         // same container. `resolve_invocation` hands back a chain with
         // an empty proof store — a carried block is a bare token — so a
         // recovery issued through a delegate resolves its own chain
         // from the blocks travelling beside it.
-        let recovery = bundle.resolve_invocation(&effect.recovery).map_err(|err| {
+        let recovery = bundle.resolve_invocation(effect.recovery).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("`recovery` does not decode as an invocation: {err}"),
             }
@@ -1142,7 +1142,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
 
         // The consent: the same shape `/provider/add` deposits, checked
         // now so activation can provision without asking again.
-        let consent = bundle.resolve_delegation(&effect.consent).map_err(|err| {
+        let consent = bundle.resolve_delegation(effect.consent).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("`consent` does not decode as a delegation: {err}"),
             }
@@ -1153,7 +1153,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .ok_or_else(|| RegistrationError::Invalid {
                 message: "`consent` carries no delegation".to_string(),
             })?;
-        self.verify_consent(head, &effect.custody, account).await?;
+        self.verify_consent(head, effect.custody, account).await?;
 
         // The recovery travels onward as the CHAIN, not the bare token:
         // a delegate-issued recovery names proofs, and the vault redeems

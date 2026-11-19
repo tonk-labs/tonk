@@ -690,6 +690,7 @@ pub(crate) async fn provision_consumer(
 /// Answers success when the service already provides that custody space
 /// for this account, so a retry after a lost answer finishes rather than
 /// failing.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) async fn add_custody(
     state: &crate::worker::TonkState,
     custody: &tonk_identity::request::CustodyMaterial<'_>,
