@@ -2446,33 +2446,14 @@ pub(crate) mod tests {
         enter_hub(&driver).await?;
         hub_style_applied(&driver).await?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let count = driver
-                .execute(
-                    "return document.querySelectorAll('[data-new-space]').length;",
-                    Vec::new(),
-                )
-                .await?
-                .json()
-                .as_u64()
-                .unwrap_or_default();
-            if count == 2 {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the Hub never rendered both create controls; found {count}",
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        wait_for_displayed(&driver, "[data-start-sheet]").await?;
 
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
                 r#"const top = document.querySelector('.hub-top').getBoundingClientRect();
-                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
-                   const line = document.querySelector('[data-spaces-sheet] .hub-line').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-start-sheet]').getBoundingClientRect();
+                   const line = document.querySelector('[data-start-sheet] .hub-line').getBoundingClientRect();
                    const mobile = getComputedStyle(document.querySelector('.mobile-nav'));
                    const logo = document.querySelector('.hub-logo').getBoundingClientRect();
                    const account = document.querySelector('.mobile-nav a[href="/settings"]');
@@ -2491,10 +2472,10 @@ pub(crate) mod tests {
             )
             .await?;
         let desktop = desktop.json();
-        // One 680px column, centred: the top and the sheet share its edges.
-        assert_eq!(desktop["topWidth"], 680, "{desktop}");
-        assert_eq!(desktop["sheetWidth"], 680, "{desktop}");
-        assert_eq!(desktop["sheetLeft"], (1200 - 680) / 2, "{desktop}");
+        // One 480px column, centred: the top and the sheet share its edges.
+        assert_eq!(desktop["topWidth"], 480, "{desktop}");
+        assert_eq!(desktop["sheetWidth"], 480, "{desktop}");
+        assert_eq!(desktop["sheetLeft"], (1200 - 480) / 2, "{desktop}");
         assert_eq!(desktop["lineHeight"], 48, "{desktop}");
         assert_eq!(desktop["logoHeight"], 22, "{desktop}");
         assert_eq!(desktop["mobileDisplay"], "none");
@@ -2508,7 +2489,7 @@ pub(crate) mod tests {
                 r#"const viewport = innerWidth;
                    const nav = document.querySelector('.mobile-nav');
                    const navRect = nav.getBoundingClientRect();
-                   const sheet = document.querySelector('[data-spaces-sheet]').getBoundingClientRect();
+                   const sheet = document.querySelector('[data-start-sheet]').getBoundingClientRect();
                    const visibleNew = [...document.querySelectorAll('[data-new-space]')]
                      .filter(element => element.getClientRects().length > 0);
                    return {
@@ -2532,7 +2513,7 @@ pub(crate) mod tests {
             assert_eq!(mobile["navItems"], 3);
             // The line's `new space` and the bar's, until the bar's future
             // is settled.
-            assert_eq!(mobile["visibleNew"], 2);
+            assert_eq!(mobile["visibleNew"], 1);
             assert_eq!(mobile["overflow"], false);
             // 16px at the sides.
             assert_eq!(mobile["sheetLeft"], 16, "{mobile}");
@@ -3478,7 +3459,7 @@ pub(crate) mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
         enter_hub(&driver).await?;
-        click(&driver, "[data-spaces-sheet] [data-new-space]").await?;
+        open_hub_create(&driver).await?;
         let form = "space-create[data-inline] form[data-space-create-form]";
         wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
         element(&driver, &format!("{form} input[name=name]"))
@@ -6157,6 +6138,26 @@ pub(crate) mod tests {
     /// Make a space from the inline row under the spaces line, then open
     /// it from its new row, the way a person goes on to it. The hub stays
     /// put after `make space`, so the helper presses the row's link.
+    async fn open_hub_create(driver: &WebDriver) -> Result<()> {
+        element(driver, "[data-spaces-sheet][data-list=ready]").await?;
+        element(
+            driver,
+            "[data-account-link]:is([data-state=empty],[data-state=ready])",
+        )
+        .await?;
+        if element(driver, "[data-start-sheet]")
+            .await?
+            .is_displayed()
+            .await?
+        {
+            click(driver, "[aria-controls=help-body]").await?;
+            click(driver, "[aria-controls=help-without]").await?;
+            click(driver, "[data-start-create]").await
+        } else {
+            click(driver, "[data-spaces-sheet] [data-new-space]").await
+        }
+    }
+
     async fn submit_hub_wizard_with(driver: &WebDriver, name: &str) -> Result<()> {
         enter_hub(driver).await?;
         let before = driver
@@ -6168,7 +6169,7 @@ pub(crate) mod tests {
             .await?
             .json()
             .clone();
-        click(driver, "[data-spaces-sheet] [data-new-space]").await?;
+        open_hub_create(driver).await?;
         let form = "space-create[data-inline] form[data-space-create-form]";
         wait_for_displayed(driver, &format!("{form} input[name=name]")).await?;
         element(driver, &format!("{form} input[name=name]"))

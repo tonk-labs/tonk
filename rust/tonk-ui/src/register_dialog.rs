@@ -681,7 +681,7 @@ fn commit_on_enter(host: &Element) {
         // means one fires the moment a half-typed address happens to
         // look plausible — before anyone has said which of create or
         // sign in they meant.
-        if event.is_composing() {
+        if event.is_composing() || event.repeat() {
             return;
         }
         if let Some(host) = host_element()
@@ -1022,6 +1022,17 @@ fn schedule_check() {
 }
 
 fn flush_lookup() {
+    if let Some(email) = address()
+        && !email.is_empty()
+        && !is_plausible(&email)
+    {
+        let timer = PENDING.with(|pending| pending.replace(0));
+        if let Some(window) = web_sys::window() {
+            window.clear_timeout_with_handle(timer);
+        }
+        set_status("Enter an email address, like name@example.com.");
+        return;
+    }
     let timer = PENDING.with(|pending| pending.replace(0));
     if timer != 0
         && let Some(window) = web_sys::window()
@@ -1098,7 +1109,15 @@ fn clear_state() {
             return;
         }
         let _ = host.remove_attribute("data-state");
-        if let Ok(Some(row)) = host.query_selector("#tonk-register-name-row") {
+        if let Ok(Some(row)) = host.query_selector(NAME_ROW) {
+            if let Some(input) = row
+                .query_selector("input")
+                .ok()
+                .flatten()
+                .and_then(|node| node.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                let _ = host.set_attribute("data-draft-name", &input.value());
+            }
             row.remove();
         }
         if let Ok(Some(action)) = host.query_selector("#tonk-register-action") {
@@ -1495,6 +1514,18 @@ fn show_answer(answer: &Answer) {
         row.remove();
     }
     set_status(contained_status_for(&answer.state));
+    if let Ok(Some(live)) = host.query_selector("#tonk-register-announcement") {
+        live.set_text_content(Some(
+            if matches!(
+                answer.state.as_str(),
+                tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
+            ) {
+                "This email has a Tonk account."
+            } else {
+                ""
+            },
+        ));
+    }
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
@@ -1533,7 +1564,7 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
 pub(crate) fn status_for(state: &str) -> &'static str {
     use tonk_schema::email_state as answer;
     match state {
-        answer::CHECKING => "Checking…",
+        answer::CHECKING => "Looking for an account with this email.",
         answer::UNREGISTERED => {
             "A passkey replaces a password. Your device saves it to itself, a browser \
              profile, or a password manager — Tonk never keeps a copy."
@@ -2679,6 +2710,15 @@ fn ask_for_name(host: &Element) {
         type="text" enterkeyhint="go" autocomplete="nickname" maxlength="40" spellcheck="false" required>"#);
     if stack.append_child(&row).is_err() {
         return;
+    }
+    if let Some(value) = host.get_attribute("data-draft-name")
+        && let Some(input) = row
+            .query_selector("input")
+            .ok()
+            .flatten()
+            .and_then(|node| node.dyn_into::<web_sys::HtmlInputElement>().ok())
+    {
+        input.set_value(&value);
     }
     commit_name_on_enter(host);
     if host.has_attribute(COMMITTED_EMAIL_ATTR) {
