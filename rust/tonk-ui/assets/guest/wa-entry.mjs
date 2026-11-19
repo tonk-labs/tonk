@@ -16,7 +16,7 @@ import "../webawesome/components/input/input.js";
 import "../webawesome/components/popup/popup.js";
 import "../webawesome/components/spinner/spinner.js";
 import "../webawesome/components/tooltip/tooltip.js";
-// Added for the inspector result panel + the tree inspector (diagnose):
+// Added for the inspector result panel:
 import "../webawesome/components/tree/tree.js";
 import "../webawesome/components/tree-item/tree-item.js";
 import "../webawesome/components/tab-group/tab-group.js";

@@ -191,12 +191,12 @@ async fn it_answers_a_top_level_resolver_query() -> Result<()> {
     test.eval_inline("marker!: &one\n  tag: \"hi\"\n").await?;
 
     // The resolver selects by content address, so its `of` must be
-    // bound. A document reaches the root by joining through the
+    // bound: a node, named by its `node:` entity. A document reaches the root by joining through the
     // branch's revision; here the reference is read back directly so
     // the test pins the resolver, not the join.
     let root = test.tree_root().await?;
     let rows = test
-        .eval_inline(&format!("tree/node:\n  of: \"{root}\"\n  kind: ?kind\n"))
+        .eval_inline(&format!("tree/node:\n  of: {root}\n  kind: ?kind\n"))
         .await?
         .stdout;
 
