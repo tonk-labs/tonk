@@ -152,7 +152,7 @@
 
         // A strip: one line, the receipt in a live region. Focus moves to
         // the receipt, since what was pressed has gone.
-        function strip(card, focus) {
+        function strip(card, focus, passlink) {
           const section = el('section', 'tonk tonk-strip');
           section.setAttribute('aria-label', 'Tonk');
           if (card.role) section.append(disc(card.disc));
@@ -160,6 +160,25 @@
           receipt.setAttribute('role', 'status');
           receipt.tabIndex = -1;
           section.append(receipt);
+          if (passlink) {
+            const copy = el('button', 'tonk-link', 'copy passlink');
+            copy.type = 'button';
+            copy.addEventListener('click', async () => {
+              try {
+                await navigator.clipboard.writeText(passlink);
+                copy.textContent = 'copied';
+              } catch {
+                const field = el('input');
+                field.readOnly = true;
+                field.setAttribute('aria-label', 'Passlink to copy');
+                field.value = passlink;
+                copy.replaceWith(field);
+                field.focus();
+                field.select();
+              }
+            });
+            section.append(copy);
+          }
           root.replaceChildren(section);
           // Filled after the region is in the document, so it is announced.
           requestAnimationFrame(() => {
@@ -209,7 +228,7 @@
           }
           const text = result?.content?.find((part) => part.type === 'text')?.text;
           const next = result?.structuredContent?.card;
-          if (next?.kind === 'strip') strip(next, true);
+          if (next?.kind === 'strip') strip(next, true, result?._meta?.passlink);
           else {
             const shown = draw(
               next || {
@@ -229,6 +248,7 @@
 
         function present(params) {
           const card = params?.structuredContent?.card;
+          if (card?.kind === 'strip') return strip(card, false, params?._meta?.passlink);
           if (card) return draw(card);
           // A result with no card is one the model has to fix; its words
           // are for the model, so the person is told only what stands.

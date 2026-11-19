@@ -49,6 +49,9 @@ pub struct SpaceAccess {
     /// Whether a grant in force also reaches `/use/put/...`.
     #[serde(default)]
     pub write: bool,
+    /// The agent holds full space use, including issuing ordinary passlinks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub share: bool,
     /// The earliest expiry among the grants in force, in Unix seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<u64>,
@@ -152,6 +155,7 @@ pub async fn read_agent_access(
         match proof {
             Ok(proof) if in_window => {
                 let access = spaces.entry(subject).or_default();
+                access.share |= command.0 == ["use"] && delegation.policy().is_empty();
                 access.read |= reaches(&command.0, "get");
                 access.write |= reaches(&command.0, "put");
                 if let Some(at) = proof.duration.expiration {
@@ -251,6 +255,10 @@ pub async fn space_chains(
             command: delegation.command().clone(),
             parameters: Parameters::default(),
         };
+        // Views receive the independent content grants, never the sharing grant.
+        if delegation.command().0 == ["use"] {
+            continue;
+        }
         // The store keeps each delegation apart, so the leaf names only its
         // last hop. What reaches its issuer is proved from there, rather
         // than from the agent space, so the walk cannot set off through
