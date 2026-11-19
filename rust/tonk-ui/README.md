@@ -82,7 +82,7 @@ The crate produces two Wasm bin targets, both referenced from `index.html` by a
 - **`ui`** ([`src/bin/ui.rs`](./src/bin/ui.rs), `data-type="main"`): the page
   entry point. It installs the panic hook, registers every custom element the app
   uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-portal`,
-  `tonk-fab`, the inspector, the `<tonk-code>` JS bundle, and `<tonk-tree>`),
+  `tonk-fab`, the inspector and the `<tonk-code>` JS bundle),
   then mounts the `TonkShell` Leptos component into the document body. Under debug
   builds (`trunk serve`) it also injects the dev-only `hot-swap.js` reload client;
   release builds never load it.
@@ -213,7 +213,7 @@ The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces 
 
 The worker resolves paths through the profile library's `route!` records and
 mounts the selected model in `<tonk-site>`. The profile branch owns `/`,
-`/settings`, `/settings/link`, `/join`, `/inspector`, and `/diagnose`. Space paths
+`/settings`, `/settings/link`, `/join` and `/inspector`. Space paths
 mount the selected repository and branch, with `/space/:space/*subject`
 preserving entity URIs containing `/`. The Rust shell owns the sealed guest,
 navigation bridge, and top-document ceremonies; the schema-owned views own Hub
