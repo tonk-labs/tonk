@@ -28,13 +28,15 @@ use tonk_notation::{Load, Syntax, Url, expand, parse_at};
 use crate::TonkWorkerError;
 
 /// Where library documents live, or `None` where the library has no
-/// location: a wasm test harness is not a service worker, so it has no
-/// origin to serve from. A document parsed without a location still
-/// seeds; it just cannot include.
+/// location: a service worker that cannot name its origin. A document
+/// parsed without a location still seeds; it just cannot include. A wasm
+/// unit test is not a service worker, so it reads the compiled-in library,
+/// as a native worker does.
 pub(super) fn location() -> Option<Url> {
     #[cfg(all(
         target_arch = "wasm32",
         target_os = "unknown",
+        not(test),
         not(feature = "hosted-writer")
     ))]
     {
@@ -45,6 +47,7 @@ pub(super) fn location() -> Option<Url> {
     #[cfg(not(all(
         target_arch = "wasm32",
         target_os = "unknown",
+        not(test),
         not(feature = "hosted-writer")
     )))]
     {
@@ -90,6 +93,7 @@ impl Load for Library {
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
+    not(test),
     not(feature = "hosted-writer")
 ))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
@@ -101,6 +105,7 @@ async fn read(uri: &Url) -> Result<Vec<u8>, String> {
 #[cfg(not(all(
     target_arch = "wasm32",
     target_os = "unknown",
+    not(test),
     not(feature = "hosted-writer")
 )))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
@@ -299,6 +304,37 @@ impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
             }
         }
     }
+}
+
+/// `library` with each `key: !include/text ./path` field replaced by a
+/// block scalar of the bundled file it names, for tests that send a library
+/// document as plain notation, which has no location to include from.
+#[cfg(test)]
+pub(crate) fn inline_includes(library: &str) -> String {
+    let mut out = String::new();
+    for line in library.lines() {
+        let Some((key, path)) = line.split_once(": !include/text ") else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let indent = key.len() - key.trim_start().len() + 2;
+        let uri = tonk_library::location(path.trim().trim_start_matches("./"));
+        let text = tonk_library::Bundled
+            .get(&uri)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_else(|| panic!("{path} is bundled"));
+        out.push_str(key);
+        out.push_str(": |\n");
+        for content in text.lines() {
+            if !content.is_empty() {
+                out.push_str(&" ".repeat(indent));
+                out.push_str(content);
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 #[cfg(test)]

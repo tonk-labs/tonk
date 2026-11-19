@@ -865,11 +865,14 @@ pub(crate) mod tests {
                         r#"
                         return {
                             text: document.body.innerText,
-                            spaces: [...document.querySelectorAll(".space-card > a.srow")].map(link => ({
+                            spaces: [...document.querySelectorAll(".space-card a.hub-open")].map(link => ({
                                 href: link.getAttribute("href"),
-                                name: link.textContent.trim(),
+                                name: (link.querySelector(".hub-name")?.textContent ?? link.textContent).trim(),
                             })),
-                            createEnabled: !!document.querySelector("button.snew:not(:disabled)"),
+                            createEnabled: !!document.querySelector("[data-spaces-sheet] button[data-new-space]:not(:disabled)"),
+                            // The Hub shows once its stylesheets load; until
+                            // then its text is hidden from innerText.
+                            styled: !document.querySelector(".hub-page[data-styling]"),
                         };
                         "#,
                         vec![],
@@ -882,6 +885,7 @@ pub(crate) mod tests {
                     .as_array()
                     .is_some_and(|spaces| !spaces.is_empty())
                     && last["createEnabled"] == true
+                    && last["styled"] == true
                 {
                     return Ok(last);
                 }
@@ -1144,7 +1148,7 @@ pub(crate) mod tests {
         );
 
         driver
-            .find(By::Css(".space-card > a.srow"))
+            .find(By::Css(".space-card a.hub-open"))
             .await?
             .click()
             .await?;
