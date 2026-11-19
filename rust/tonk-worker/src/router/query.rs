@@ -302,28 +302,13 @@ async fn query_on_branch(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.contains("text/event-stream"));
 
-    // A formula query (string predicate) is resolved by the worker
-    // rather than dialog's planner — the `tree/*` introspection
-    // family. One-shot only for now.
-    let query = match wire.into_concept_query() {
-        Ok(query) => query,
-        Err(wire) => {
-            if want_stream {
-                return Err(TonkWorkerError::Router(
-                    "formula queries do not support subscriptions yet".into(),
-                ));
-            }
-            let session = branch
-                .acquire(&tonk.operator)
-                .await
-                .map_err(reactor_to_error)?;
-            let conclusions =
-                crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
-                    .await
-                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
-            return Ok(Json(conclusions).into_response());
-        }
-    };
+    // A query names a concept; a bare name is no query.
+    let query = wire.into_concept_query().map_err(|wire| {
+        TonkWorkerError::Router(format!(
+            "a query names a concept, and `{}` is a name",
+            wire.formula().unwrap_or_default()
+        ))
+    })?;
 
     if want_stream {
         // Once this worker starts retiring, refuse to open a long-lived

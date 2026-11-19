@@ -4529,7 +4529,7 @@ async fn run_seed_check(tonk: &TonkState, subject: &Did) -> Result<Option<FoundS
         .await
         .map_err(|e| format!("could not fetch {}: {e}", current.source))?;
 
-    let seed = seed_version(&library);
+    let seed = super::library::version(&library).await;
     if seed == current.seed.to_string() {
         return Ok(None);
     }
@@ -4890,7 +4890,7 @@ async fn install_seed(
     current: InstalledSeed,
     library: String,
 ) -> Result<bool, RepositoryError> {
-    let shipped = seed_version(&library);
+    let shipped = super::library::version(&library).await;
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
@@ -4994,7 +4994,7 @@ pub(super) async fn install_fresh_from(
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
     let install = install_claims_for(source, library).await?;
-    let seed = seed_version(library);
+    let seed = super::library::version(library).await;
     let reference = tonk.reactor.repository(key).branch(branch);
     // The install commits through the session's handle, not the reactor's
     // commit, so the once-per-process move of a branch an earlier release
@@ -5591,16 +5591,9 @@ pub(crate) fn seed_record_facts(
     changes.into_instructions()
 }
 
-/// The entity naming a seed version: `seed:{hash}` over the bytes actually
-/// fetched.
-///
-/// The hash IS the identity, so two devices installing the same seed derive
-/// the same entity and converge. It is taken over what was fetched rather
-/// than read from a build manifest, so it cannot disagree with the bytes
-/// that were installed.
-///
-/// The source it came from rides `xyz.tonk.seed/source` alongside, since a
-/// custom seed is a different URL at the same shape.
+/// The version a document that includes nothing is recorded under, as
+/// [`super::library::version`] gives it.
+#[cfg(test)]
 fn seed_version(source: &str) -> String {
     format!("seed:{}", blake3::hash(source.as_bytes()).to_hex())
 }
@@ -5744,6 +5737,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         }
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
+        }
+        "/library/tree-inspector.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tree-inspector.yaml").to_owned())
         }
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
@@ -7009,7 +7005,7 @@ pub(crate) async fn retract_local_profile_library(
 async fn prepare_profile_library(
     library: String,
 ) -> Result<PreparedProfileLibrary, RepositoryError> {
-    let target = seed_version(&library);
+    let target = super::library::version(&library).await;
     let assertions = library_assertions(&library, "profile library").await?;
     Ok(PreparedProfileLibrary {
         source: library,
@@ -16591,6 +16587,10 @@ mod library_quarantine_tests {
             (
                 "table",
                 include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "tree-inspector",
+                include_str!("../../../tonk-core/assets/library/tree-inspector.yaml"),
             ),
             (
                 "version-control",
