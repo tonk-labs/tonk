@@ -298,3 +298,29 @@ test('a row question focuses its safe answer and restores the opener on close', 
 test("a space's links take no list margin, so they and their note share one edge", () => {
   assert.match(library, /space-links \.hub-link \{ margin:0; \}/);
 });
+
+test('New link lists concrete space routes and directory views without placeholder URLs', () => {
+  const views = method('space-links', 'views');
+  const routes = ['/', '/Board notes', '/notebook/{*entity}', '/../other', '//elsewhere', '/%2e%2e', '/{*model}']
+    .map(path => ({ fields: { path, concept: 'tonk:directory/route' } }));
+  assert.deepEqual(views({}, routes, [{ this: 'tonk:board' }, { this: 'tonk:_' }]), [
+    { name: 'Home', path: '/' }, { name: 'Board notes', path: '/Board%20notes' },
+    { name: 'board', path: '/tonk%3Aboard' },
+  ]);
+});
+
+test('New link submits the chosen role and expiry, preserving the unbounded option', async () => {
+  const now = Date.UTC(2026, 10, 19);
+  const make = method('space-links', 'make', { Date: { now: () => now } });
+  const calls = [];
+  const self = {
+    _linkRole: 'read', _linkDays: 7, dataset: { name: 'test' }, hub: () => null,
+    act: (_button, _label, run) => run(), load: async () => {},
+    mint: async (_replacement, body) => { calls.push(body); return { copied: true }; },
+  };
+  await make(self, null);
+  self._linkRole = 'admin';
+  self._linkDays = 0;
+  await make(self, null);
+  assert.deepEqual(calls, [{ role: 'read', expiresAt: now / 1000 + 7 * 86400 }, { role: 'admin' }]);
+});
