@@ -2,7 +2,7 @@
 //! Historical metadata and legacy-claim probes; markers do not authorize access.
 
 use dialog_credentials::{Ed25519Signer, Signer};
-use dialog_ucan_core::time::timestamp::{Duration, UNIX_EPOCH};
+
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject, time::Timestamp};
 use dialog_varsig::Principal;
 use ipld_core::ipld::Ipld;
@@ -64,7 +64,7 @@ async fn connection_legacy_claim_keeps_marker_and_parent_expiry_but_is_repeatabl
     let bootstrap = Signer::from(Ed25519Signer::import(&seed).await.unwrap());
     let first = Signer::from(Ed25519Signer::generate().await.unwrap());
     let second = Signer::from(Ed25519Signer::generate().await.unwrap());
-    let deadline = Timestamp::new(UNIX_EPOCH + Duration::from_secs(1_000_000_000)).unwrap();
+    let deadline = Timestamp::try_from(i128::from(Timestamp::now().to_unix()) + 3600).unwrap();
     let grant = DelegationBuilder::new()
         .issuer(owner.clone())
         .audience(&bootstrap.did())
@@ -87,8 +87,8 @@ async fn connection_legacy_claim_keeps_marker_and_parent_expiry_but_is_repeatabl
     .await
     .unwrap();
 
-    // Claim assembles a chain, without checking current validity or binding a
-    // session remotely. The service judges expiry and standard UCAN revocation.
+    // An unexpired open invite can admit multiple recipients. Each recipient
+    // inherits the parent deadline and the service still verifies the chain.
     for audience in [first.did(), second.did()] {
         let claimed = invite.clone().claim(&audience).await.unwrap();
         assert_eq!(claimed.chain.audience(), &audience);

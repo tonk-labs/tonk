@@ -3290,13 +3290,13 @@ pub(crate) mod tests {
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
 
-        // A claimer (not the inviter) joins as a plain member.
+        // This fixture grants the space root command, which admits an admin.
         let roles = content_member_roles(&state, &key).await;
         let role = roles
             .iter()
             .find(|r| r.this == membership_entity)
             .expect("role stamped on the claimer's membership");
-        assert_eq!(role.role.0.to_string(), MemberRole::MEMBER);
+        assert_eq!(role.role.0.to_string(), MemberRole::ADMIN);
     }
 
     /// Claiming an invite names the claimer on the repo meta.
