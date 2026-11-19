@@ -157,14 +157,13 @@ pub struct AgentAuthorization {
     pub spaces: Vec<AgentSpaceChoice>,
 }
 
-/// One space an agent may reach, and how: `read`, or `write` for read
-/// and write.
+/// A space and its approved level of access.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSpaceChoice {
     /// The space's routing key.
     pub key: String,
-    /// `read` or `write`.
+    /// `read`, `write`, or `share` for full space use including passlinks.
     pub access: String,
 }
 
