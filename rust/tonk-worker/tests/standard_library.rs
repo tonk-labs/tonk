@@ -40,6 +40,8 @@ const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-e
 const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
+const TREE_INSPECTOR_LIBRARY: &str =
+    include_str!("../../tonk-core/assets/library/tree-inspector.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
 
@@ -1231,7 +1233,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
     for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
@@ -1272,7 +1274,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
     assert!(
@@ -1324,7 +1326,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
     let join_view = css_rule(route, ".join-view {");
     let fallback = join_view
@@ -1446,6 +1448,16 @@ async fn it_lowers_the_prose_editor_library() {
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
         .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tree_inspector_library() {
+    assert_component_library_lowers(
+        "tree-inspector library (tree-inspector.yaml)",
+        "tree-inspector.yaml",
+        TREE_INSPECTOR_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]

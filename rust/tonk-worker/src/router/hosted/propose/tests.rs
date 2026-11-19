@@ -46,7 +46,13 @@ fn evaluation() -> Value {
 #[dialog_common::test]
 fn it_answers_a_held_change_once() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("note!: {}".into(), json!(null), json!({}), false, 100);
+    let (id, expires) = proposals.hold(
+        "note!: {}".into(),
+        json!(null),
+        json!({}),
+        Effect::Document,
+        100,
+    );
     assert_eq!(expires, 100 + LIFETIME);
     assert_eq!(
         proposals.take(&id, 101),
@@ -54,7 +60,7 @@ fn it_answers_a_held_change_once() {
             document: "note!: {}".to_owned(),
             revision: json!(null),
             seen: json!({}),
-            command: false,
+            effect: Effect::Document,
         })
     );
     assert_eq!(proposals.take(&id, 101), Err(Gone));
@@ -63,14 +69,14 @@ fn it_answers_a_held_change_once() {
 #[dialog_common::test]
 fn it_forgets_a_change_once_it_lapses() {
     let proposals = Proposals::default();
-    let (id, expires) = proposals.hold("a".into(), json!(null), json!({}), false, 100);
+    let (id, expires) = proposals.hold("a".into(), json!(null), json!({}), Effect::Document, 100);
     assert_eq!(proposals.take(&id, expires), Err(Gone));
 }
 
 #[dialog_common::test]
 fn it_never_answers_an_id_it_did_not_mint() {
     let proposals = Proposals::default();
-    let (id, _) = proposals.hold("a".into(), json!(null), json!({}), false, 100);
+    let (id, _) = proposals.hold("a".into(), json!(null), json!({}), Effect::Document, 100);
     assert_eq!(proposals.take("guessed", 101), Err(Gone));
     // Another writer (another session) holds nothing under this id.
     assert_eq!(Proposals::default().take(&id, 101), Err(Gone));
@@ -81,12 +87,24 @@ fn it_never_answers_an_id_it_did_not_mint() {
 fn it_holds_at_most_a_few_dropping_the_oldest() {
     let proposals = Proposals::default();
     let first = proposals
-        .hold("first".into(), json!(null), json!({}), false, 100)
+        .hold(
+            "first".into(),
+            json!(null),
+            json!({}),
+            Effect::Document,
+            100,
+        )
         .0;
     let mut last = String::new();
     for _ in 0..MOST {
         last = proposals
-            .hold("later".into(), json!(null), json!({}), false, 100)
+            .hold(
+                "later".into(),
+                json!(null),
+                json!({}),
+                Effect::Document,
+                100,
+            )
             .0;
     }
     assert_eq!(proposals.take(&first, 101), Err(Gone));

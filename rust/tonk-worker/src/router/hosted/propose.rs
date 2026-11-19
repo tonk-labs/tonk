@@ -43,6 +43,13 @@ pub const APPLY_ROUTE: &str = "/api/proposals/apply";
 /// The writer's route that drops a held change (`POST`, `{"id"}`).
 pub const DISMISS_ROUTE: &str = "/api/proposals/dismiss";
 
+/// The agent space writer's route that holds leaving a space (`POST`,
+/// `{"space"}`), answering the held proposal's id.
+pub const LEAVE_ROUTE: &str = "/api/proposals/leave";
+
+/// The model's tool that asks the person to let the agent leave a space.
+pub const LEAVE: &str = "tonk_leave_space";
+
 /// How long a change is held, in seconds.
 pub const LIFETIME: u64 = 30 * 60;
 
@@ -66,9 +73,23 @@ struct Held {
     revision: Value,
     /// What the preview showed the person: its matches before and after.
     seen: Value,
-    /// Whether it is a key command, applied as a plain write.
-    command: bool,
+    effect: Effect,
     expires: u64,
+}
+
+/// What a held proposal does once the person applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    /// Write the document onto the revision it was previewed at.
+    Document,
+    /// Write a [key command](KEY_COMMANDS), alone in its document, as a
+    /// plain write: a revision-checked one refuses commands, and the
+    /// person confirmed the command and the inputs the document spells
+    /// out, so nothing else can come along with it.
+    Command,
+    /// Leave the space the document names: drop every grant the agent
+    /// space holds for it.
+    Leave,
 }
 
 /// A held change, taken to be answered.
@@ -80,11 +101,8 @@ pub struct Taken {
     pub revision: Value,
     /// What its preview showed: [`seen`] of the preview's evaluation.
     pub seen: Value,
-    /// Whether it is a [key command](KEY_COMMANDS), alone in its
-    /// document: applied as a plain write, since a revision-checked one
-    /// refuses commands. The person confirmed the command and the inputs
-    /// the document spells out, so nothing else can come along with it.
-    pub command: bool,
+    /// What applying it does.
+    pub effect: Effect,
 }
 
 /// What a preview `evaluation` shows the person: its matches before and
@@ -102,14 +120,14 @@ pub struct Gone;
 
 impl Proposals {
     /// Hold `document`, previewed at `revision` and showing `seen`, until
-    /// `now + LIFETIME`; `command` when it is a key command alone. Answers
-    /// its id and when it lapses.
+    /// `now + LIFETIME`, to be applied as `effect` says. Answers its id and
+    /// when it lapses.
     pub fn hold(
         &self,
         document: String,
         revision: Value,
         seen: Value,
-        command: bool,
+        effect: Effect,
         now: u64,
     ) -> (String, u64) {
         let id = B64.encode(rand::random::<[u8; 16]>());
@@ -124,7 +142,7 @@ impl Proposals {
             document,
             revision,
             seen,
-            command,
+            effect,
             expires,
         });
         (id, expires)
@@ -146,7 +164,7 @@ impl Proposals {
             document: held.document,
             revision: held.revision,
             seen: held.seen,
-            command: held.command,
+            effect: held.effect,
         })
     }
 }
@@ -277,6 +295,11 @@ pub fn tools() -> Vec<Value> {
                 "pattern": "^did:key:[A-Za-z0-9]+$",
             },
             "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+            // The space a held leave is for, so its answer can name it.
+            "leave": {
+                "type": "string",
+                "pattern": "^did:key:[A-Za-z0-9]+$",
+            },
         },
         "required": ["space", "id"],
         "additionalProperties": false,
@@ -286,6 +309,33 @@ pub fn tools() -> Vec<Value> {
         "openai/visibility": "private",
     });
     vec![
+        json!({
+            "name": LEAVE,
+            "title": "Leave a Tonk space",
+            "description": "Ask the person to let you leave one of the spaces granted to you. \
+                Shows a card in the chat; nothing changes until they confirm there, and the \
+                card tells you when they do. Leaving drops your access to the space; what you \
+                added stays in it. Your own space cannot be left.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "space": {
+                        "type": "string",
+                        "pattern": "^did:key:[A-Za-z0-9]+$",
+                        "description": "The space's exact subject, from tonk_list_spaces.",
+                    },
+                },
+                "required": ["space"],
+                "additionalProperties": false,
+            },
+            // It holds the request and shows the card; it changes nothing.
+            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "_meta": {
+                "ui": { "resourceUri": super::card::CARD_URI },
+                "openai/outputTemplate": super::card::CARD_URI,
+                "openai/widgetAccessible": true,
+            },
+        }),
         json!({
             "name": APPLY,
             "title": "Apply a confirmed change",
@@ -594,6 +644,48 @@ pub fn ask(context: &Context, id: &str, evaluation: &Value) -> Card {
     };
     card.answer(decline, Look::Ring, DISMISS, arguments.clone())
         .answer(act, Look::Main, APPLY, arguments)
+}
+
+/// The ask to leave the space `context` names, held as `id` by the agent
+/// space `agent`'s writer.
+pub fn leave_ask(context: &Context, id: &str, agent: &str) -> Card {
+    let space = context.place.label();
+    let arguments = json!({ "space": agent, "id": id, "leave": context.place.did });
+    Card::ask(
+        context.place.clone(),
+        context.role,
+        format!("leave {space}"),
+        context.agent.clone(),
+    )
+    .entry("this agent", format!("loses access to {space}"))
+    .entry("what it added", "stays in the space")
+    .answer("stay", Look::Ring, DISMISS, arguments.clone())
+    .answer("leave", Look::Main, APPLY, arguments)
+}
+
+/// The receipt for leaving the space `context` names: no disc and no
+/// role, since the agent is no longer in it.
+pub fn left(context: &Context) -> Card {
+    Card::strip(
+        Some(context.place.clone()),
+        None,
+        format!("left {}", context.place.label()),
+        context.agent.clone(),
+    )
+    .by_agent()
+}
+
+/// The receipt for staying in the space `context` names.
+pub fn stayed(context: &Context) -> Card {
+    Card::strip(
+        Some(context.place.clone()),
+        context.role,
+        format!(
+            "nothing changed, and this agent stays in {}",
+            context.place.label()
+        ),
+        context.agent.clone(),
+    )
 }
 
 /// The receipt for a write whose answer is `evaluation`; `moved` says
