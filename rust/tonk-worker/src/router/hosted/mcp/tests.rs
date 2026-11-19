@@ -1242,6 +1242,7 @@ concept!: &mcp-note
         )
         .await;
         let writers = NativeWriters {
+            pending: Default::default(),
             remote: remote.clone(),
             open: Default::default(),
             mounts: Default::default(),
