@@ -254,6 +254,23 @@ pub(crate) fn parse_attribute_fields(
                 }
                 .into());
             }
+            // The layer a write of the attribute lands in (dialog's
+            // `in`): an entity such as `"session:"`, the stack's own
+            // layer, which is never committed and goes with the session.
+            // Without it a write lands in the branch.
+            "in" => {
+                let value_str = stringify_simple_value(field)?;
+                if value_str.parse::<Entity>().is_err() {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "`in:` names a layer by its entity, such as \"session:\"; \
+                             {value_str:?} is not one"
+                        ),
+                    }
+                    .into());
+                }
+                shape.insert("in".into(), serde_json::Value::String(value_str));
+            }
             "description" => {
                 let value_str = require_string_description(field)?;
                 shape.insert("description".into(), serde_json::Value::String(value_str));

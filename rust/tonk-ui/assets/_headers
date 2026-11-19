@@ -98,3 +98,10 @@
 # Fonts are versioned by their own filenames and effectively never change.
 /fonts/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Tonk's cards in agent apps (MCP Apps) load these from their own sandbox
+# origin, which the resource policy names; a font loaded across origins
+# needs CORS. Versioned by filename, like /fonts/.
+/in-agent/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=31536000, immutable

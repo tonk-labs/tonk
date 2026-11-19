@@ -779,22 +779,22 @@ less.
 ### Resolvers
 
 Resolvers read the *store's own structure* — the search tree behind
-the facts — instead of the facts themselves. They select by content
-address, so each one needs its subject bound (`of:`) before it can
-run; a join is what binds it.
+the facts — instead of the facts themselves. A node is named by its
+handle, a `node:<base58(hash)>` entity, and every resolver takes the
+handle it reads as `of:`, which must be bound before it can run; a join
+is what binds it. A branch names its root by one
+(`dialog.branch/tree`), and `tree/span` yields each child's.
 
 | Name | Yields |
 | --- | --- |
-| `tree/node` | a node's kind, size, entry/span count |
-| `tree/span` | one row per span of an index node |
-| `tree/key` | one row per entry key of a segment |
-| `tree/entry` | an entry's stored claim metadata |
-| `tree/value` | a spilled value's bytes |
-| `tree/blob` | a blob-index entry |
-| `tree/manifest` | the format manifest a node embeds |
+| `tree/node` | what a node is (kind, size, count, scale, buffered ops) and the format fields it was written under |
+| `tree/span` | one row per span of an index node: the span, the child `node:`, its separator and upper bound |
+| `tree/entry` | one row per entry of a segment: its key, rank, state and claim, and a spilled value or a blob as an `asset:` |
+| `tree/block` | a node's block, as stored |
+| `tree/value` | a spilled value's bytes, by the `asset:` `tree/entry` yields as `spill` |
 
 Because they are ordinary premises, they compose — a span's child
-reference feeds the next node lookup:
+handle feeds the next node lookup:
 
 ```yaml tonk=illustrative-rule-fragment
 - assert: tree/span
@@ -804,13 +804,14 @@ reference feeds the next node lookup:
 ```
 
 Operands you leave out are simply not bound, exactly as with a
-formula's outputs; only the required input (`of:`) must be given.
+formula's outputs; only the required input (`of:`) must be given. A
+string or bytes as `of:` match nothing: it is an entity.
 
 A resolver also heads a query on its own, not just a rule premise:
 
 ```yaml tonk=parse
 tree/node:
-  of: "8QsR69j39jU7acb4H9VfsSpR2SrHJ6f2PPKHoosnsAPr"
+  of: node:8QsR69j39jU7acb4H9VfsSpR2SrHJ6f2PPKHoosnsAPr
   kind: ?kind
 ```
 

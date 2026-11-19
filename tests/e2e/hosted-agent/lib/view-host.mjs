@@ -8,9 +8,15 @@
 // (`ui/initialize`, then the tool result, then the view's own
 // `tools/call`s, which go to the MCP server through `client`).
 //
+// It also answers what a card asks of the agent app: `ui/open-link`
+// (recorded, never followed), `ui/request-display-mode` (granted when the
+// mode is in `availableDisplayModes`, then told back as a host context
+// change, as the hosts do), and the host's theme in its context.
+//
 // What it cannot stand in for: the real hosts' policies beyond the
-// declared domains, ChatGPT's `window.openai`, and whether a host honours
-// `frameDomains` for a custom connector at all.
+// declared domains, ChatGPT's `window.openai`, whether a host honours
+// `frameDomains` for a custom connector at all, and how a host lays out
+// full screen or docked.
 
 import { createServer } from 'node:http';
 import { chromium } from 'playwright';
@@ -25,6 +31,13 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
 <script>
   const app = document.getElementById('app');
   let shown;
+  // What the card asked the agent app for, in order.
+  window.asked = [];
+  const changed = (patch) => {
+    Object.assign(shown.context, patch);
+    send({ method: 'ui/notifications/host-context-changed', params: patch });
+  };
+  window.changeContext = changed;
   const send = (message) => app.contentWindow.postMessage({ jsonrpc: '2.0', ...message }, '*');
   addEventListener('message', async (event) => {
     const m = event.data;
@@ -34,13 +47,28 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
       reply({
         protocolVersion: '2026-01-26',
         hostInfo: { name: 'tonk-e2e-host', version: '0' },
-        hostCapabilities: { sandbox: { csp: shown.csp } },
-        hostContext: { theme: 'light', displayMode: 'inline' },
+        hostCapabilities: { sandbox: { csp: shown.csp }, openLinks: {} },
+        hostContext: shown.context,
       });
+    } else if (m.method === 'ui/open-link') {
+      window.asked.push({ method: m.method, url: m.params?.url });
+      reply({});
+    } else if (m.method === 'ui/request-display-mode') {
+      const mode = m.params?.mode;
+      window.asked.push({ method: m.method, mode });
+      const granted = (shown.context.availableDisplayModes ?? []).includes(mode)
+        ? mode
+        : shown.context.displayMode;
+      reply({ mode: granted });
+      if (granted !== shown.context.displayMode) {
+        // As the hosts do: a full-screen card takes the viewport.
+        app.style.height = granted === 'inline' ? (window.sized ?? 0) + 'px' : '100%';
+        changed({ displayMode: granted });
+      }
     } else if (m.method === 'ui/notifications/size-changed') {
       // As the hosts do: the view's frame takes the height it reports.
       window.sized = m.params?.height;
-      app.style.height = window.sized + 'px';
+      if (shown.context.displayMode === 'inline') app.style.height = window.sized + 'px';
     } else if (m.method === 'ui/notifications/initialized') {
       send({ method: 'ui/notifications/tool-result', params: shown.result });
     } else if (m.method === 'tools/call') {
@@ -50,6 +78,7 @@ const SANDBOX = `<!doctype html><meta charset="utf-8"><title>sandbox</title>
         send({ id: m.id, error: { code: -32603, message: String(error.message ?? error) } });
       }
     } else if (m.id !== undefined) {
+      window.asked.push({ method: m.method, params: m.params });
       reply({});
     }
   });
@@ -93,7 +122,14 @@ export async function showView({
   frames,
   shared = true,
   headed = false,
+  context = {},
 }) {
+  const hostContext = {
+    theme: 'light',
+    displayMode: 'inline',
+    availableDisplayModes: ['inline', 'fullscreen'],
+    ...context,
+  };
   const [content] = resource.contents;
   const csp = { ...(content._meta?.ui?.csp ?? {}) };
   if (!frames) delete csp.frameDomains;
@@ -110,7 +146,12 @@ export async function showView({
     response.end(CHAT(`http://localhost:${server.address().port}/sandbox`));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const browser = await chromium.launch({ headless: !headed });
+  // TONK_E2E_CHANNEL=chrome runs an installed Chrome rather than
+  // Playwright's own download.
+  const browser = await chromium.launch({
+    headless: !headed,
+    channel: process.env.TONK_E2E_CHANNEL || undefined,
+  });
   const page = await browser.newPage();
   if (!shared) await page.addInitScript(() => delete window.SharedWorker);
   const calls = [];
@@ -140,6 +181,7 @@ export async function showView({
     sandbox.evaluate((view) => window.show(view), {
       html: content.text,
       csp,
+      context: { ...hostContext },
       result: { content: result.content, structuredContent: result.structuredContent },
     });
   await show();
@@ -152,6 +194,12 @@ export async function showView({
     again: show,
     /** The lines the view logged that contain `text`. */
     logged: (text) => log.filter((line) => line.includes(text)),
+    /** What the card asked the agent app for: open-link, display modes. */
+    asked: () => sandbox.evaluate(() => window.asked),
+    /** Change the host context, as a host does when its theme changes. */
+    changeContext: (patch) => sandbox.evaluate((p) => window.changeContext(p), patch),
+    /** The view's own document: the relay, where Tonk's line is. */
+    relay: () => page.frames().find((frame) => frame.parentFrame()?.url().endsWith('/sandbox')),
     /** The height the view last reported to the host, if it did. */
     height: () =>
       page

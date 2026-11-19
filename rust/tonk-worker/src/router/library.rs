@@ -13,7 +13,7 @@
 //! sits in that one directory, so relative references resolve alike
 //! whichever file they were written in.
 //!
-//! Natively there is no origin, and the library documents are compiled
+//! Natively and in the hosted writer there is no browser origin, and the library documents are compiled
 //! in, so they live at [`tonk_library::ROOT`] and what they include is
 //! served from the copies `tonk-library` bundles. Reading the source
 //! tree instead would work on a developer's machine and nowhere else:
@@ -30,18 +30,28 @@ use crate::TonkWorkerError;
 /// Where library documents live, or `None` where the library has no
 /// location: a service worker that cannot name its origin. A document
 /// parsed without a location still seeds; it just cannot include. A wasm
-/// unit test is not a service worker, so it reads the compiled-in library,
-/// as a native worker does.
+/// unit test and the hosted writer are not service workers, so they read
+/// the compiled-in library, as a native worker does.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(test),
+        not(feature = "hosted-writer")
+    ))]
     {
         // The directory the service worker serves the library from.
         let origin = super::repository::worker_origin()?;
         Url::parse(&format!("{origin}/library/")).ok()
     }
-    // Natively, and in wasm unit tests, which are not a service worker:
-    // the compiled-in library.
-    #[cfg(any(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
+    // Natively, in wasm unit tests and in the hosted writer, none of which
+    // is a service worker: the compiled-in library.
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(test),
+        not(feature = "hosted-writer")
+    )))]
     {
         Url::parse(tonk_library::ROOT).ok()
     }
@@ -56,6 +66,13 @@ pub(super) struct Library {
 impl Library {
     fn new(root: Url) -> Self {
         Self { root }
+    }
+
+    /// The served asset path used in existing browser seed versions, even
+    /// when this copy was loaded from the bundled library.
+    fn version_path(&self, uri: &Url) -> Option<String> {
+        let relative = uri.path().strip_prefix(self.root.path())?;
+        Some(format!("/library/{relative}"))
     }
 
     fn contains(&self, uri: &Url) -> bool {
@@ -75,14 +92,24 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(test)))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(test),
+    not(feature = "hosted-writer")
+))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
 }
 
-#[cfg(any(not(all(target_arch = "wasm32", target_os = "unknown")), test))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(test),
+    not(feature = "hosted-writer")
+)))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }
@@ -119,6 +146,76 @@ pub(super) async fn parse(text: &str) -> Result<Syntax, TonkWorkerError> {
     Ok(syntax)
 }
 
+/// The version a library document is recorded under when installed:
+/// `seed:` and blake3 of its text and, when it includes files, of each
+/// file it includes, path and bytes, so a change to an included file
+/// moves the version as a change to the document does and a space
+/// upgrades to it. A document that includes nothing, or one with no
+/// location to include from, keeps the version of its text alone, which
+/// is what every release recorded before included files counted.
+///
+/// The hash is the identity, so two devices installing the same seed derive
+/// the same entity and converge. It is taken over what was fetched rather
+/// than read from a build manifest, so it cannot disagree with the bytes
+/// that were installed. The source it came from rides
+/// `xyz.tonk.seed/source` alongside, since a custom seed is a different URL
+/// at the same shape.
+pub(super) async fn version(text: &str) -> String {
+    let alone = || format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+    let Some(root) = location() else {
+        return alone();
+    };
+    let parsed = parse_at(root.clone(), text);
+    let Some(mut syntax) = parsed.syntax else {
+        return alone();
+    };
+    let recording = Recording {
+        library: Library::new(root),
+        read: std::sync::Mutex::new(Vec::new()),
+    };
+    // A file that fails to load is left out here and refused by the
+    // install, which reads the same files.
+    let _ = expand(&mut syntax, &recording).await;
+    let mut read = recording
+        .read
+        .into_inner()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if read.is_empty() {
+        return alone();
+    }
+    read.sort();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(text.as_bytes());
+    for (path, bytes) in &read {
+        hasher.update(&(path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    format!("seed:{}", hasher.finalize().to_hex())
+}
+
+/// A [`Library`] loader that keeps what it read, path and bytes.
+struct Recording {
+    library: Library,
+    read: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl Load for Recording {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        let bytes = self.library.load(uri).await?;
+        let path = self
+            .library
+            .version_path(uri)
+            .ok_or_else(|| format!("included file {uri} has no library-relative path"))?;
+        self.read
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((path, bytes.clone()));
+        Ok(bytes)
+    }
+}
+
 fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
     if let Some(first) = parsed.diagnostics.first() {
         return Err(TonkWorkerError::Internal(format!(
@@ -139,13 +236,14 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// profile branch). Only these, and the [`LANGUAGES`]: a component names a
 /// library file by its name, so the list is what keeps an install to the
 /// library.
-pub(super) const COMPONENTS: [&str; 7] = [
+pub(super) const COMPONENTS: [&str; 8] = [
     "code-editor",
     "issue",
     "meta",
     "notebook",
     "prose-editor",
     "table",
+    "tree-inspector",
     "version-control",
 ];
 
@@ -252,6 +350,33 @@ mod tests {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())
     }
 
+    /// A document that includes nothing keeps the version of its text, the
+    /// one every space recorded before included files counted, so it is
+    /// not reinstalled. One that includes files is versioned over them
+    /// too, so an edit to an included file alone reaches the spaces that
+    /// installed it.
+    #[dialog_common::test]
+    async fn it_versions_a_document_over_what_it_includes() {
+        let alone = |text: &str| format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+        let plain = "concept!: &a\n  description: A.\n";
+        assert_eq!(version(plain).await, alone(plain));
+
+        let component = include_str!("../../../tonk-core/assets/library/tree-inspector.yaml");
+        if location().is_some() {
+            assert_ne!(
+                version(component).await,
+                alone(component),
+                "the included methods are part of its version"
+            );
+        } else {
+            // A wasm test harness is no service worker and has no library
+            // location, so nothing can be included and the text alone is
+            // the version; the native run covers the included files.
+            assert_eq!(version(component).await, alone(component));
+        }
+        assert_eq!(version(component).await, version(component).await);
+    }
+
     #[dialog_common::test]
     fn it_names_languages_as_components_by_their_path() {
         assert_eq!(
@@ -276,6 +401,18 @@ mod tests {
                 component_url(&format!("tonk:library/{name}")),
                 None,
                 "{name}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    fn included_files_keep_the_served_version_path_on_every_host() {
+        for root in ["https://tonk.test/library/", "tonk-library:///"] {
+            let root = Url::parse(root).unwrap();
+            let included = root.join("./table/connected.js").unwrap();
+            assert_eq!(
+                Library::new(root).version_path(&included).as_deref(),
+                Some("/library/table/connected.js")
             );
         }
     }

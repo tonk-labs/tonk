@@ -800,7 +800,10 @@ pub async fn run_commands(state: &AppState, origin: CommandOrigin, effect: Optio
                             state.clone(),
                             origin.repo.clone(),
                             origin.branch.clone(),
-                        )
+                        )?;
+                        // dialog's own: whether the replica holds a node,
+                        // and bringing one local, asked by command.
+                        dialog_repository::holdings::provide(stack, tonk.operator.clone())
                     }) {
                         log!("commands: registering the providers on {origin:?} failed: {error}");
                     }
@@ -930,6 +933,42 @@ async fn invoke_on(
         .await
         .map_err(|error| crate::TonkWorkerError::Internal(error.to_string()))?;
     Ok(report.effect())
+}
+
+/// The trigger attributes of the key commands: those that change who may
+/// use a space or what it is called (`tonk/invite`, `member/expel`,
+/// `tonk/rename-repository`), in their current and legacy shapes. A write
+/// that dispatches a claim of any of them runs a key command, however the
+/// document spelled it.
+pub fn key_command_attributes() -> Vec<String> {
+    use crate::reactor::{Decode as _, Migrated};
+    use tonk_schema::command::{ExpelMember, RenameRepository, legacy};
+    let mut attributes = super::repository::InviteRequest::trigger_attributes();
+    attributes.extend(
+        Migrated::<ExpelMember, legacy::ExpelMember>::new()
+            .trigger_attributes()
+            .iter()
+            .cloned(),
+    );
+    attributes.extend(
+        Migrated::<RenameRepository, legacy::RenameRepository>::new()
+            .trigger_attributes()
+            .iter()
+            .cloned(),
+    );
+    // A space renames itself through `core.yaml`'s rule over the space's
+    // own `tonk/rename-repository`, whose attributes are not the
+    // handler's.
+    attributes.extend(
+        [
+            "xyz.tonk.rename-repository/subject",
+            "xyz.tonk.rename-repository/name",
+        ]
+        .map(str::to_owned),
+    );
+    attributes.sort();
+    attributes.dedup();
+    attributes
 }
 
 /// Invoke `commands` as the branch at `origin` would land them — through
@@ -1446,7 +1485,8 @@ pub(crate) mod tests {
                             state.clone(),
                             origin.repo.clone(),
                             origin.branch.clone(),
-                        )
+                        )?;
+                        dialog_repository::holdings::provide(stack, tonk.operator.clone())
                     })
                     .expect("the vocabulary registers");
                 tonk.operator.clone()
@@ -1993,6 +2033,30 @@ pub(crate) mod tests {
                     "an unusable seed ({seed}) must not create a space"
                 );
             }
+        }
+    }
+
+    /// Every attribute of the key commands as `core.yaml` declares them is
+    /// a key command attribute, so a space's own spelling of one is
+    /// refused unconfirmed as the handler's is.
+    #[dialog_common::test]
+    fn the_key_command_attributes_cover_the_core_library() {
+        let key = super::key_command_attributes();
+        let core = include_str!("../../../tonk-core/assets/library/core.yaml");
+        for attribute in [
+            "xyz.tonk.command.invite/time",
+            "xyz.tonk.command.expel-member/member",
+            "xyz.tonk.rename-repository/subject",
+            "xyz.tonk.rename-repository/name",
+        ] {
+            assert!(
+                core.contains(&format!("the: {attribute}")),
+                "core.yaml no longer declares {attribute}"
+            );
+            assert!(
+                key.contains(&attribute.to_owned()),
+                "{attribute} is not a key attribute"
+            );
         }
     }
 }

@@ -1183,7 +1183,7 @@ fn lift_resolver_premise(
             )
         })?;
 
-    Ok(Proposition::Resolver(resolver_value))
+    Ok(Proposition::from(resolver_value))
 }
 
 #[cfg(test)]

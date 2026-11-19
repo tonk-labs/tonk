@@ -227,6 +227,7 @@ async fn retained(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Issued {
     Here,
+    OwnedSpace,
     Link,
 }
 
@@ -251,6 +252,17 @@ pub(super) async fn grants(
             let chain = delegation.0;
             let issued = if issuers.contains(chain.issuer()) {
                 Issued::Here
+            } else if chain.subject() == Some(chain.issuer())
+                && dialog_repository::secrets::held_principal(
+                    tonk.profile.state(),
+                    chain.issuer(),
+                    &tonk.profile,
+                )
+                .await
+                .map_err(failure)?
+                .is_some_and(|key| issuers.contains(&key.to))
+            {
+                Issued::OwnedSpace
             } else if held == Held::AgentSpace {
                 Issued::Link
             } else {

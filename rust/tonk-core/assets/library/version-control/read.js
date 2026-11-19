@@ -39,10 +39,14 @@
     if (revision && name && !revision.heads.includes(name)) revision.heads.push(name);
   }
 
+  // A comment written before revisions were named `revision:` names its
+  // revision `did:key:z6Mk<hash>`, the same hash under its older name.
+  const current = (name) =>
+    typeof name === 'string' && name.startsWith('did:key:z6Mk') ? `revision:${name.slice(12)}` : name;
   const seen = new Set();
   for (const row of rows('.vc-comment-row')) {
     const id = row.dataset.comment;
-    const revision = revisions.get(row.dataset.revision);
+    const revision = revisions.get(current(row.dataset.revision));
     if (!revision || !isEntity(id) || seen.has(id)) continue;
     seen.add(id);
     revision.comments.push({
