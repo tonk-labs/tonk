@@ -1037,62 +1037,70 @@ async fn perform_join(
         }
     }
 
-    // The claim below commits into the content branch directly, not
-    // through the reactor: a branch an earlier release wrote (a renewal,
-    // or a head the pull just adopted) is moved to this release's format
-    // first, once per process, as every reactor commit is. A failure is
-    // logged; the commit reports the refusal.
-    if let Err(error) = tonk
-        .reactor
-        .repository(prepared.subject.repo_key())
-        .branch(DEFAULT_BRANCH)
-        .migrate_once(&tonk.operator)
-        .await
-    {
-        log!(
-            "join: migrating '{}' failed: {error}",
-            prepared.subject.repo_key()
-        );
-    }
-
-    // Every claim, including a renewal, lands its roster/provenance/name
-    // facts as an ordinary commit; the next sync tick pushes them. Nothing
-    // holds other writers of this branch off meanwhile (a space's seeding
-    // commits into it in the background), so a commit that loses the
-    // head's race is computed again on the head that won.
-    enum ClaimTry {
-        Read(JoinFailure),
-        Commit(dialog_repository::CommitError),
-    }
-    impl From<dialog_repository::CommitError> for ClaimTry {
-        fn from(error: dialog_repository::CommitError) -> Self {
-            Self::Commit(error)
-        }
-    }
-    let (claimed, claiming) = (&branch, &prepared);
-    claimed
-        .transact(|transaction| async move {
-            let (changes, _already_claimed) = claim_changes(
-                tonk,
-                claimed,
-                &tonk.operator,
-                &claiming.invitation,
-                &claiming.invitation_execution,
-                &claiming.member,
-                &claiming.subject,
-            )
+    let reach = effective_command(prepared.chain.proofs().map(|hop| hop.command()))
+        .map(ToString::to_string);
+    // A read-only join mounts the remote and records it in the account below.
+    // A roster commit would leave an unpushable local head on the content branch.
+    if matches!(reach.as_deref(), Some("/" | "/use")) {
+        // The claim below commits into the content branch directly, not
+        // through the reactor: a branch an earlier release wrote (a renewal,
+        // or a head the pull just adopted) is moved to this release's format
+        // first, once per process, as every reactor commit is. A failure is
+        // logged; the commit reports the refusal.
+        if let Err(error) = tonk
+            .reactor
+            .repository(prepared.subject.repo_key())
+            .branch(DEFAULT_BRANCH)
+            .migrate_once(&tonk.operator)
             .await
-            .map_err(ClaimTry::Read)?;
-            Ok::<_, ClaimTry>(transaction.assert(changes))
-        })
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| match error {
-            ClaimTry::Read(failure) => failure,
-            ClaimTry::Commit(error) => {
-                JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+        {
+            log!(
+                "join: migrating '{}' failed: {error}",
+                prepared.subject.repo_key()
+            );
+        }
+
+        // Every claim, including a renewal, lands its roster/provenance/name
+        // facts as an ordinary commit; the next sync tick pushes them. Nothing
+        // holds other writers of this branch off meanwhile (a space's seeding
+        // commits into it in the background), so a commit that loses the
+        // head's race is computed again on the head that won.
+        enum ClaimTry {
+            Read(JoinFailure),
+            Commit(dialog_repository::CommitError),
+        }
+        impl From<dialog_repository::CommitError> for ClaimTry {
+            fn from(error: dialog_repository::CommitError) -> Self {
+                Self::Commit(error)
             }
-        })?;
+        }
+        let admin = reach.as_deref() == Some("/");
+        let (claimed, claiming) = (&branch, &prepared);
+        claimed
+            .transact(|transaction| async move {
+                let (changes, _already_claimed) = claim_changes(
+                    tonk,
+                    claimed,
+                    &tonk.operator,
+                    &claiming.invitation,
+                    &claiming.invitation_execution,
+                    &claiming.member,
+                    &claiming.subject,
+                    admin,
+                )
+                .await
+                .map_err(ClaimTry::Read)?;
+                Ok::<_, ClaimTry>(transaction.assert(changes))
+            })
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| match error {
+                ClaimTry::Read(failure) => failure,
+                ClaimTry::Commit(error) => {
+                    JoinFailure::claim_failed(format!("failed to commit the claim: {error}"))
+                }
+            })?;
+    }
 
     // The reactor may hold a handle from an earlier attempt at this key;
     // the pull and commit moved the head underneath it. Leaving a stale
@@ -1646,6 +1654,7 @@ async fn claim_changes<Env: BranchEnv>(
     invitation_execution: &InvitationExecution,
     member: &Did,
     subject: &Did,
+    admin: bool,
 ) -> Result<(Changes, bool), JoinFailure> {
     let membership = Membership::new(member.clone(), subject.clone());
 
@@ -1729,7 +1738,12 @@ async fn claim_changes<Env: BranchEnv>(
         MemberName::new(membership.this().clone(), display_name).assert(&mut changes);
     }
     if !already_roled {
-        MemberRole::member(membership.this().clone()).assert(&mut changes);
+        let role = if admin {
+            MemberRole::admin(membership.this().clone())
+        } else {
+            MemberRole::member(membership.this().clone())
+        };
+        role.assert(&mut changes);
     }
     if !already_stamped && !self_invite {
         InvitedVia::new(membership.this().clone(), invitation.this().clone()).assert(&mut changes);

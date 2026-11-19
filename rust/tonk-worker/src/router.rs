@@ -438,7 +438,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // body shape.
         .route(
             "/api/repository/{repo}/invite",
-            post(create_invite::create_invite),
+            post(create_invite::create_invite).get(create_invite::share_role),
         )
         .route(
             "/api/repository/{repo}/invites/{target_cid}/revoke",

@@ -615,6 +615,15 @@ impl Invite {
         audience: &Did,
         expiration: Option<Timestamp>,
     ) -> Result<ClaimedInvite> {
+        let parent_deadline = self.chain.expiration();
+        anyhow::ensure!(
+            parent_deadline.is_none_or(|limit| limit > Timestamp::now()),
+            "this passlink expired"
+        );
+        let expiration = match (parent_deadline, expiration) {
+            (Some(parent), Some(requested)) => Some(parent.min(requested)),
+            (parent, requested) => parent.or(requested),
+        };
         let signer = self.signer().await?;
         let remote_url = self.remote_url.clone();
         let revocation_url = self.revocation_url.clone();
@@ -1147,6 +1156,56 @@ mod tests {
         assert_eq!(claimed.chain.proof_cids().len(), 3);
         assert_eq!(*claimed.chain.audience(), redeemer);
         assert_eq!(*claimed.subject(), subject);
+    }
+
+    #[dialog_common::test]
+    async fn bounded_read_passlink_keeps_its_deadline_and_read_scope_on_redemption() {
+        let ephemeral = signer(&EPHEMERAL_SEED).await.did();
+        let recipient = signer(&AUDIENCE_SEED).await.did();
+        let issuer = signer(&ISSUER_SEED).await;
+        let subject = issuer.did();
+        let now = Timestamp::now().to_unix();
+        for seconds in [now - 1, now + 60] {
+            let deadline = Timestamp::try_from(i128::from(seconds)).unwrap();
+            let leaf = DelegationBuilder::new()
+                .issuer(dialog_credentials::Signer::from(issuer.clone()))
+                .audience(&ephemeral)
+                .subject(UcanSubject::Specific(subject.clone()))
+                .command(vec!["use".into(), "get".into()])
+                .expiration(deadline)
+                .try_build()
+                .await
+                .unwrap();
+            let invite = Invite::new(
+                DelegationChain::new(leaf),
+                InviteAudience::Open {
+                    seed: EPHEMERAL_SEED,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            if seconds < now {
+                assert!(invite.claim(&recipient).await.is_err());
+            } else {
+                for claimed in [
+                    invite.clone().claim(&recipient).await.unwrap(),
+                    invite.visit(&recipient).await.unwrap(),
+                ] {
+                    assert_eq!(claimed.chain.expiration(), Some(deadline));
+                    assert_eq!(
+                        claimed.chain.proofs().last().unwrap().expiration(),
+                        Some(deadline)
+                    );
+                    assert!(
+                        claimed
+                            .chain
+                            .proofs()
+                            .any(|hop| hop.command().to_string() == "/use/get")
+                    );
+                }
+            }
+        }
     }
 
     #[dialog_common::test]

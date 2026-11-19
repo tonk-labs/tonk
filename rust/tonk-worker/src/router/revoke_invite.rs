@@ -153,7 +153,7 @@ async fn proved_invitations(
         // minted before chains were retained (nothing was ever written, so it
         // disappears without having been revoked). Neither is actionable from
         // here, but they are worth telling apart in a log.
-        let Ok(path) = prove_path(branch, tonk, subject, &audience).await else {
+        let Ok(path) = prove_path_at(branch, tonk, subject, &audience, "/use/get").await else {
             log!(
                 "invitation {} has no provable path to {audience}; \
                  it was revoked, or minted before its chain was retained",
@@ -492,7 +492,7 @@ pub async fn list(
     let mut rows = proved_invitations(session.handle(), &tonk, &subject)
         .await?
         .into_iter()
-        .map(|(invitation, _, target)| {
+        .map(|(invitation, path, target)| {
             let execution = executions
                 .iter()
                 .find(|execution| execution.this == invitation.this);
@@ -505,6 +505,12 @@ pub async fn list(
                 .then(|| invitation.audience.0.to_string().parse().ok())
                 .flatten();
             InvitationSummary {
+                role: match path.ability().as_str() {
+                    "/" => tonk_worker_api::PasslinkRole::Admin,
+                    "/use/get" => tonk_worker_api::PasslinkRole::Read,
+                    _ => tonk_worker_api::PasslinkRole::Write,
+                },
+                expires_at: path.expiration().map(|expiry| expiry.to_unix()),
                 target_cid: target.to_string(),
                 kind,
                 recipient_root,
@@ -546,6 +552,8 @@ mod order_tests {
 
     fn row(target: &str, minted_at: Option<u64>) -> InvitationSummary {
         InvitationSummary {
+            role: tonk_worker_api::PasslinkRole::Write,
+            expires_at: None,
             target_cid: target.into(),
             kind: InvitationKind::Open,
             recipient_root: None,
