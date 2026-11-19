@@ -5615,7 +5615,7 @@ const SEED_NONE: &str = "seed:none";
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 ))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     String::from_utf8(fetch_library_bytes(url).await?)
@@ -5629,7 +5629,7 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 ))]
 pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
@@ -5713,7 +5713,7 @@ async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
 #[cfg(not(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 )))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     embedded_standard_library(url)
@@ -5723,7 +5723,7 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
     not(all(
         target_arch = "wasm32",
         target_os = "unknown",
-        not(feature = "volatile-storage")
+        not(feature = "hosted-writer")
     )),
     test
 ))]
@@ -5770,7 +5770,7 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 #[cfg(not(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 )))]
 fn embedded_language(url: &str) -> Option<String> {
     let path = url
@@ -5785,7 +5785,7 @@ fn embedded_language(url: &str) -> Option<String> {
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 ))]
 fn embedded_language(_url: &str) -> Option<String> {
     None

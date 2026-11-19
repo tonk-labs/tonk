@@ -35,7 +35,7 @@ pub(super) fn location() -> Option<Url> {
     #[cfg(all(
         target_arch = "wasm32",
         target_os = "unknown",
-        not(feature = "volatile-storage")
+        not(feature = "hosted-writer")
     ))]
     {
         // The directory the service worker serves the library from.
@@ -45,7 +45,7 @@ pub(super) fn location() -> Option<Url> {
     #[cfg(not(all(
         target_arch = "wasm32",
         target_os = "unknown",
-        not(feature = "volatile-storage")
+        not(feature = "hosted-writer")
     )))]
     {
         Url::parse(tonk_library::ROOT).ok()
@@ -90,7 +90,7 @@ impl Load for Library {
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 ))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
@@ -101,7 +101,7 @@ async fn read(uri: &Url) -> Result<Vec<u8>, String> {
 #[cfg(not(all(
     target_arch = "wasm32",
     target_os = "unknown",
-    not(feature = "volatile-storage")
+    not(feature = "hosted-writer")
 )))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await

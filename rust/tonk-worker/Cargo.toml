@@ -31,7 +31,10 @@ helpers = ["dep:tower"]
 # Keep every space in memory instead of IndexedDB/OPFS on wasm, so the
 # worker runs where those do not exist (a Cloudflare Worker). No effect on
 # native builds. Exposes `hosted`.
-volatile-storage = ["dep:tonk-library"]
+volatile-storage = []
+# A server-side writer has no browser asset directory and must publish all
+# command effects before releasing its write lock and answering the MCP call.
+hosted-writer = ["volatile-storage", "dep:tonk-library"]
 
 [dependencies]
 anyhow = { workspace = true }
