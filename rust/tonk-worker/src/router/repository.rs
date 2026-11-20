@@ -6462,7 +6462,7 @@ where
         tonk,
         display_name,
         &repository.did(),
-        Replica::blank_status(),
+        ReplicaListing::Publish(Replica::blank_status()),
     )
     .await?;
     record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
@@ -6541,6 +6541,30 @@ pub(crate) async fn record_space_mount(
     configuration: &RepositoryConfiguration,
     display_name: Option<&str>,
 ) {
+    if let Err(error) = write_space_mount(tonk, subject, configuration, display_name, None).await {
+        log!("record space mount for '{subject}': {error}");
+    }
+}
+
+/// First import of a created space publishes its listing and configuration together.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn record_created_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+) -> Result<(), RepositoryError> {
+    let listing = tonk_schema::Space::new(subject, Replica::initialized_status());
+    write_space_mount(tonk, subject, configuration, display_name, Some(listing)).await
+}
+
+async fn write_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+    listing: Option<tonk_schema::Space>,
+) -> Result<(), RepositoryError> {
     use tonk_schema::domain::remote::Address as RemoteAddress;
 
     let anchor_entity = subject.this();
@@ -6550,6 +6574,9 @@ pub(crate) async fn record_space_mount(
         .profile_repository()
         .branch(&tonk.active_branch)
         .transaction();
+    if let Some(listing) = listing {
+        transaction = transaction.assert(listing);
+    }
     if let Some(name) = display_name {
         transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
     }
@@ -6594,9 +6621,12 @@ pub(crate) async fn record_space_mount(
                 transaction.assert(tonk_schema::SpaceHomeAddress::new(subject, ucan.endpoint()));
         }
     }
-    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
-        log!("record space mount for '{subject}': {error}");
-    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("record space mount: {error}")))?;
+    Ok(())
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile
@@ -6613,7 +6643,22 @@ pub(crate) async fn record_initialized_replica_in_profile(
         tonk,
         subject.repo_key(),
         subject,
-        Replica::initialized_status(),
+        ReplicaListing::Publish(Replica::initialized_status()),
+    )
+    .await
+}
+
+/// Adoption only records this device's replica. The listing may have been
+/// deleted on another device while the content pull was in flight.
+pub(crate) async fn record_adopted_replica_in_profile(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    record_replica_visibility(
+        tonk,
+        subject.repo_key(),
+        subject,
+        ReplicaListing::AlreadyListed,
     )
     .await
 }
@@ -6707,6 +6752,11 @@ where
     Ok(())
 }
 
+enum ReplicaListing {
+    Publish(tonk_schema::domain::replica::Status),
+    AlreadyListed,
+}
+
 /// Assert a [`Replica`] concept for a newly created repository in
 /// the profile repository's meta branch.
 ///
@@ -6718,13 +6768,21 @@ async fn record_replica_visibility(
     tonk: &TonkState,
     display_name: &str,
     subject: &Did,
-    status: tonk_schema::domain::replica::Status,
+    listing: ReplicaListing,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone());
-    // The account-level directory entry rides the same commit: the
-    // replica row is this device's mount, the `Space` entry is the one
-    // row per space every device's Hub lists.
-    let directory = tonk_schema::Space::new(subject, status.clone());
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction();
+    let status = match listing {
+        ReplicaListing::Publish(status) => {
+            transaction = transaction.assert(tonk_schema::Space::new(subject, status.clone()));
+            status
+        }
+        ReplicaListing::AlreadyListed => Replica::initialized_status(),
+    };
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
@@ -6735,14 +6793,9 @@ async fn record_replica_visibility(
     // which reads through the reactor — never sees this replica. Going
     // through the reactor advances the cached handle and re-polls its
     // subscriptions, so the new space appears in the Hub immediately.
-    let revision = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .transaction()
+    let revision = transaction
         .assert(replica)
         .assert(status)
-        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
