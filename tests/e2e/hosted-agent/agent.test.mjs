@@ -12,6 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -670,6 +671,61 @@ test('the hosted agent connects, is approved, and reads and writes spaces', asyn
         },
       );
     }
+
+    await step('full space home supports navigation and honors task write access', async () => {
+      const garden = await readFile(new URL('./fixtures/garden.yaml', import.meta.url), 'utf8');
+      const client = await connect();
+      const tool = (await client.listTools()).tools.find((tool) => tool.name === 'tonk_open_space');
+      const resource = await client.readResource({ uri: tool._meta.ui.resourceUri });
+      await boot(person.page, origin);
+      for (const [space, edit] of [[spaces.writable, true], [spaces.readable, false]]) {
+        // The owner seeds both disposable spaces, including the one shared read-only.
+        await person.page.evaluate(async ([space, document]) => {
+          const branch = '/api/repository/' + encodeURIComponent(space) + '/branch/main';
+          const response = await fetch(branch + '/evaluate?transact=true', {
+            method: 'POST', headers: { 'content-type': 'application/yaml' }, body: document,
+          });
+          if (!response.ok) throw Error(await response.text());
+          const pushed = await fetch(branch + '/sync/push', { method: 'POST' });
+          if (!pushed.ok) throw Error(await pushed.text());
+        }, [space, garden]);
+        const result = await call(client, 'tonk_open_space', { space, path: '/', size: 'full' });
+        assert.equal(result.structuredContent.show, 'live');
+        assert.equal(result.structuredContent.edit, edit);
+        const view = await showView({ client, result, resource, frames: false });
+        const taskExists = async () => {
+          const answer = await call(client, 'tonk_query', {
+            space, document: 'garden-task:\n  this: id:test-seedlings\n  title: ?title',
+          });
+          return answer.structuredContent.page.rows > 0;
+        };
+        try {
+          await view.shows(['Planting day', 'Water seedlings']);
+          const guest = view.relay().frameLocator('iframe');
+          await guest.getByRole('link', { name: 'Task details' }).click();
+          await guest.getByRole('heading', { name: 'Planting day' }).waitFor({ state: 'detached' });
+          await guest.getByRole('button', { name: 'Finish task' }).click();
+          if (edit) {
+            await guest.getByText('Water seedlings').waitFor({ state: 'detached' });
+            const deadline = Date.now() + LIVE;
+            while (await taskExists()) {
+              assert.ok(Date.now() < deadline, 'completed task did not sync');
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+          } else {
+            await view.relay().getByText('This space is read-only for this connection.', { exact: true }).waitFor();
+            assert.equal(await taskExists(), true);
+          }
+          await view.again();
+          await view.shows(['Planting day', 'Turn compost']);
+          const reopened = view.relay().frameLocator('iframe');
+          await reopened.getByText('Water seedlings').waitFor({ state: edit ? 'detached' : 'visible' });
+          assert.equal(await taskExists(), !edit);
+        } finally {
+          await view.close();
+        }
+      }
+    });
 
     // What a person who made their spaces earlier meets: a browser with
     // no account on it, so the approval page signs them in first and has
