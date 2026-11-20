@@ -46,14 +46,14 @@ const PEER = {
 // A guest with a bridge: it opens the bridge, then reports a size.
 const SPEAKS = [{ hello: true }, { wait: 300 }, { type: 'tonk-view-size', height: 180 }];
 
-async function shown({ peer = PEER, guest = SPEAKS, access = granted, extra, context, runtimeFails } = {}) {
+async function shown({ peer = PEER, guest = SPEAKS, access = granted, extra, context, runtimeFails, frames = false } = {}) {
   const provider = await standIn({ peer, guest, runtimeFails });
   const client = standInClient(access);
   const view = await showView({
     client,
     result: result({ remote: `${provider.origin}/ucan/`, ...extra }),
     resource: await relayResource(provider.origin),
-    frames: false,
+    frames,
     shared: false,
     context,
   });
@@ -338,6 +338,39 @@ test('docked, the card fills its frame and does not offer Tonk', async () => {
     const frame = await card.relay();
     await until(frame, () => document.querySelector('#card').classList.contains('tonk--fill'));
     assert.equal(await frame.evaluate(() => document.querySelector('#out').hidden), true);
+  } finally {
+    await card.close();
+  }
+});
+
+test('space links resolve against the current guest route', async () => {
+  const card = await shown({ guest: SPEAKS, extra: { path: '/notes/one' } });
+  try {
+    const guest = await guestOf(card);
+    await until(guest, () => window.heard.some((m) => m.type === 'ready'));
+    const { context, links } = await guest.evaluate(() => ({
+      context: window.heard.find((m) => m.type === 'ready').context,
+      links: ['/', '/operations', 'two'].map((href) => {
+        const anchor = document.createElement('a');
+        anchor.href = href;
+        return anchor.href;
+      }),
+    }));
+    const base = new URL(context.path, context.origin);
+    assert.deepEqual(links, ['/', '/operations', 'two'].map((href) => new URL(href, base).href));
+  } finally {
+    await card.close();
+  }
+});
+
+test('an unanswered provider frame stays hidden until the fallback guest loads', async () => {
+  const card = await shown({ frames: true });
+  try {
+    const relay = await card.relay();
+    await until(relay, () => document.querySelector('iframe').src.endsWith('/view-frame'));
+    assert.equal(await relay.locator('iframe').isVisible(), false);
+    await until(relay, () => !document.querySelector('.tonk-well').hasAttribute('aria-busy'));
+    assert.equal(await relay.locator('iframe').isVisible(), true);
   } finally {
     await card.close();
   }
