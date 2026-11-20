@@ -521,7 +521,7 @@ async fn shown(writers: &impl Writers, verified: &Verified, arguments: Value) ->
 }
 
 #[dialog_common::test]
-async fn it_hands_the_whole_space_off_to_tonk_and_shows_only_views_inline() {
+async fn it_opens_the_home_in_chat_when_full_is_requested() {
     let agent = Ed25519Signer::generate().await.unwrap();
     let space = Ed25519Signer::generate().await.unwrap();
     let subject = space.did().to_string();
@@ -534,10 +534,20 @@ async fn it_hands_the_whole_space_off_to_tonk_and_shows_only_views_inline() {
         format!("https://tonk.example/space/{subject}")
     );
     let said = whole["content"][0]["text"].as_str().unwrap();
-    assert!(said.contains("not shown in the chat"), "{said}");
+    assert!(said.contains("path / and size full"), "{said}");
     assert!(said.contains(&format!(
         "Open in Tonk: https://tonk.example/space/{subject}"
     )));
+    let full = shown(
+        &writer,
+        &verified,
+        json!({ "space": subject, "path": "/", "size": "full" }),
+    )
+    .await;
+    assert_eq!(full["structuredContent"]["show"], "live");
+    assert_eq!(full["structuredContent"]["path"], "/");
+    assert_eq!(full["structuredContent"]["edit"], false);
+    assert_eq!(full["structuredContent"]["view"], Value::Null);
     let page = shown(
         &writer,
         &verified,
@@ -1249,7 +1259,7 @@ fn the_hosted_guide_tells_the_agent_how_views_are_shown() {
         );
     }
     assert!(
-        guide.contains("not shown in the chat"),
+        guide.contains("pass `path: \"/\"` and `size: \"full\"`"),
         "the whole-space rule"
     );
     assert!(guide.contains("Your text carries the answer"));

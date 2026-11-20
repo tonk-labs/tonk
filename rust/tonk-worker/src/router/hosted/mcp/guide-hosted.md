@@ -104,9 +104,9 @@ its route instead.
 
 How a view is shown in the chat:
 
-- Show one view, not the whole space. The whole space (path `/` with no
-  `view`) is not shown in the chat: the person gets a card that opens it in
-  Tonk. Outline the space and pass the part they need as `view`.
+- To open the space home in chat, pass `path: "/"` and `size: "full"` and omit
+  `view`. By default the home opens in Tonk. For a particular list or record,
+  pass its outline route as `view`.
 - Pick a `size`. `card` (the default) is a short summary: 4 to 5 rows and at
   most 2 actions. `carousel` is 3 to 8 like items side by side, 1 action each.
   `strip` is one line with a link, when there is nothing to look at. `full`
