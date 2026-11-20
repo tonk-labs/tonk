@@ -963,7 +963,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-pinned', 'data-opened']",
     ] {
         assert!(
             collection.contains(contract),
@@ -2191,7 +2191,7 @@ fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
     for absent in [
         "concept!: &space/role",
         "data-role-case",
-        "class=\"hub-meta\"",
+        "class=\"hub-role\"",
     ] {
         assert!(
             !PROFILE_LIBRARY.contains(absent),

@@ -37,6 +37,14 @@ concept!: &space
       the: xyz.tonk.space/subject
       as: entity
   maybe:
+    pinned:
+      description: Whether this space is pinned in the profile's hub.
+      the: xyz.tonk.hub/pinned
+      as: boolean
+    opened:
+      description: When this profile last opened the space, in Unix milliseconds.
+      the: xyz.tonk.hub/opened
+      as: float:64
     owner:
       description: >
         The providing account, when it is the account registered on this
@@ -754,10 +762,20 @@ view!:
          quieter, but still openable — visiting replicates it */
       .hub-row[data-presence="case:seeding"] .hub-name,
       .hub-row[data-presence="case:remote"] .hub-name { color:var(--tonk-text-soft); }
+      hub-preferences { margin-left:auto; }
+      .hub-line:has(hub-preferences) { flex-wrap:wrap; }
+      .tonk-hub .hub-line select[data-space-sort] { margin:0; width:auto; max-width:100%; min-height:36px;
+        padding:0 4px; background:transparent; border:0; color:var(--tonk-text-soft);
+        font:500 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+      [data-spaces-sheet]:is([data-empty],:not([data-list="ready"])) hub-preferences { display:none; }
+      .hub-row [data-space-group] { margin:0; padding:10px 16px 2px; color:var(--tonk-text-soft);
+        font:600 var(--tonk-size-hint)/var(--tonk-leading-label) var(--tonk-font-label); }
+      .hub-row:has(> [data-space-group]:not([hidden])) { border-top:0; }
+      .hub-row [data-space-opened]:empty { display:none; }
       space-actions > :is(space-create, space-remove) { display:contents; }
       space-actions hub-row-task:not([hidden]) { display:block; flex:1 1 100%; }
       space-actions hub-row-task[hidden],
-      space-actions:has(hub-row-task:not([hidden])) :is([data-space-copy-link],[data-space-rename-open],[data-space-duplicate-open],[data-space-remove-open]) { display:none; }
+      space-actions:has(hub-row-task:not([hidden])) :is([data-space-pin],[data-space-copy-link],[data-space-rename-open],[data-space-duplicate-open],[data-space-remove-open]) { display:none; }
       space-actions hub-row-task { text-align:right; }
       space-actions hub-row-task :is(form,[role=alert]) { text-align:left; }
       space-actions hub-row-task .space-create-field { display:grid; gap:6px; }
@@ -979,13 +997,14 @@ view!:
                space. Each per-space consumer carries its OWN subject; the
                routing helpers read an element's own attribute and never walk
                ancestors. -->
-          <div class="hub-row space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
+          <div class="hub-row space-card" html:data-pinned={pinned} html:data-opened={opened} data-presence={presence} data-space-subject={subject} data-id={this}>
+            <h3 data-space-group hidden></h3>
             <div class="hub-row-line">
               <!-- The sync disc, then the name. The disc arrives as a case;
                    `hub-collection` says it in hub.css's words (`data-sync`).
                    The meta slot (people, role) is left out until the
                    profile branch records them. -->
-              <a class="hub-open" href="/space/{subject}"><span class="hub-disc" role="img" data-sync-case={sync}></span><span class="hub-name" title="{name}">{name}</span></a>
+              <a class="hub-open" href="/space/{subject}"><span class="hub-disc" role="img" data-sync-case={sync}></span><span class="hub-name" title="{name}">{name}</span><time class="hub-meta" data-space-opened></time></a>
               <!-- The chevron: a button of its own, the height of the row,
                    that unfolds the space's details in place. Pressing the
                    row itself opens the space. -->
@@ -1000,6 +1019,7 @@ view!:
             <div class="hub-fold"><div class="hub-fold-in"><div class="hub-body" id="body-{subject}" inert>
               <space-links data-space={subject} data-name={name}></space-links>
               <space-actions class="hub-own">
+                  <button class="hub-btn" type="button" data-space-pin>pin space</button>
                   <button class="hub-btn" type="button" data-space-copy-link data-space={subject}><span data-copy-label="idle">copy link</span><span data-copy-label="copied">copied</span><span data-copy-label="failed">couldn't copy</span></button>
                   <button class="hub-btn" type="button" data-space-rename-open>rename</button>
                   <button class="hub-btn" type="button" data-space-duplicate-open>duplicate</button>
@@ -2454,6 +2474,71 @@ view!:
 # list pass only adjusts adjacent repeated heavy rules; it never reads or
 # mounts a space. Re-running it over the same ordered subjects gives the same
 # CSS variables, including after a fact-driven rerender.
+# A space visit and the hub controls both belong to the enclosing profile.
+element!: &hub-preferences
+  description: Records visits and saves the hub's preferences on profile main.
+  method:
+    save: |
+      async (self, subject, name, type, value) => {
+        await window.tonk.ready;
+        await window.tonk.transact({ claims: [{ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            value: { the: 'xyz.tonk.hub/' + name, as: type, cardinality: 'one' },
+          } } }, parameters: { this: subject, value },
+        } }] }, { with: 'main@profile:tonk' });
+      }
+    connected: |
+      async (self) => {
+        if (self.hasAttribute('data-visit')) {
+          // A direct link counts too. Wait until the repository resolves so a
+          // missing space or a failed join doesn't become a recent visit.
+          const display = self.nextElementSibling;
+          const visit = () => {
+            if (display?.dataset.state !== 'ready' || !self.isConnected) return;
+            const subject = self.dataset.visit;
+            if (!subject || display.getAttribute('entity') !== subject) return;
+            if (window.__tonkVisitedSpace === subject) return;
+            window.__tonkVisitedSpace = subject;
+            self.save(subject, 'opened', 'Float', Date.now()).catch(error => {
+              if (window.__tonkVisitedSpace === subject) delete window.__tonkVisitedSpace;
+              console.warn('Could not save the space visit', error);
+            });
+          };
+          if (display) {
+            self._observer = new MutationObserver(visit);
+            self._observer.observe(display, { attributes:true, attributeFilter:['data-state', 'entity'] });
+            self._observer.observe(self, { attributes:true, attributeFilter:['data-visit'] });
+            visit();
+          }
+          return;
+        }
+        delete window.__tonkVisitedSpace;
+        const select = self.querySelector('[data-space-sort]');
+        if (!select) return;
+        const sheet = self.closest('[data-spaces-sheet]');
+        const arrange = () => sheet.querySelector('hub-collection')?.arrange?.();
+        const error = () => sheet.querySelector('[data-hub-live]').textContent = 'Couldn’t save the sort order.';
+        select.onchange = async () => {
+          self._changed = true;
+          arrange();
+          select.disabled = true;
+          try { await self.save('tonk:hub', 'sort', 'Text', select.value); }
+          catch (_) { error(); }
+          finally { select.disabled = false; }
+        };
+        try {
+          await window.tonk.ready;
+          const found = await window.tonk.query({ predicate: { with: {
+            sort: { the:'xyz.tonk.hub/sort', as:'Text', cardinality:'one' },
+          } }, terms: { this:'tonk:hub', sort:{ '?':{ name:'sort' } } } }, { with:'main@profile:tonk' });
+          if (!self.isConnected || self._changed) return;
+          select.value = (found.rows ?? found)[0]?.fields?.sort === 'recent' ? 'recent' : 'name';
+          arrange();
+        } catch (error) { console.warn('Could not read the hub sort order', error); }
+      }
+    disconnected: |
+      (self) => self._observer?.disconnect()
+
 element!: &hub-collection
   description: A space-card collection with cached blurred home previews and decorative fallbacks.
   method:
@@ -2594,11 +2679,53 @@ element!: &hub-collection
           if (open !== row.hasAttribute('data-open')) self.fold(row, open);
         }
       }
+    arrange: |
+      (self) => {
+        const recent = self.closest('[data-spaces-sheet]')?.querySelector('[data-space-sort]')?.value === 'recent';
+        const rows = [...self.querySelectorAll(':scope > .space-card')];
+        const pinned = row => row.hasAttribute('data-pinned');
+        const opened = row => Number(row.dataset.opened) || 0;
+        const label = row => row.querySelector('.hub-name').textContent;
+        self._names ??= new Intl.Collator(undefined, { sensitivity:'base', numeric:true });
+        const sorted = rows.slice().sort((a,b) => pinned(b) - pinned(a) ||
+          (recent && opened(b) - opened(a)) || self._names.compare(label(a), label(b)) ||
+          a.dataset.spaceSubject.localeCompare(b.dataset.spaceSubject));
+        const visible = sorted.filter(row => getComputedStyle(row).display !== 'none');
+        const firstPin = visible.find(pinned);
+        const firstOther = visible.find(row => !pinned(row));
+        let next = null;
+        for (const row of sorted.reverse()) {
+          if (next && row.nextElementSibling !== next) {
+            if (self.moveBefore) self.moveBefore(row, next);
+            else {
+              const focus = row.contains(document.activeElement) && document.activeElement;
+              self.insertBefore(row, next);
+              focus?.focus?.({ preventScroll:true });
+            }
+          }
+          next = row;
+          const group = row.querySelector('[data-space-group]');
+          const heading = firstPin && (row === firstPin ? 'pinned' : row === firstOther ? 'other spaces' : '');
+          group.hidden = !heading;
+          if (heading && group.textContent !== heading) group.textContent = heading;
+          const button = row.querySelector('[data-space-pin]');
+          const verb = pinned(row) ? 'unpin space' : 'pin space';
+          if (button.textContent !== verb) button.textContent = verb;
+          const time = row.querySelector('[data-space-opened]');
+          const timestamp = opened(row);
+          const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+          const age = !recent ? '' : !timestamp ? 'never opened' : !minutes ? 'just now' :
+            minutes < 60 ? minutes + ' min ago' : minutes < 1440 ? Math.floor(minutes/60) + ' h ago' :
+            Math.floor(minutes/1440) + ' d ago';
+          if (time.textContent !== age) time.textContent = age;
+        }
+      }
     # How many spaces the sheet lists, in Tonk's line: the rows that show,
     # since an agent's own space leaves the list (`hub-discover`).
     count: |
       (self) => {
         const sheet = self.closest('[data-spaces-sheet]');
+        self.arrange();
         const slot = sheet?.querySelector('[data-space-count]');
         // Only a list that answered has a count; loading says so, and a
         // list that didn't load says no number (`hub-discover` list).
@@ -2618,7 +2745,19 @@ element!: &hub-collection
         self.details();
         if (!self.__unfolding) {
           self.__unfolding = true;
-          self.addEventListener('click', (event) => {
+          self.addEventListener('click', async (event) => {
+            const pin = event.target.closest('[data-space-pin]');
+            if (pin) {
+              const row = pin.closest('.space-card');
+              const sheet = self.closest('[data-spaces-sheet]');
+              if (pin.hasAttribute('aria-busy')) return;
+              pin.setAttribute('aria-busy', 'true');
+              try {
+                await sheet.querySelector('hub-preferences').save(row.dataset.spaceSubject, 'pinned', 'Boolean', !row.hasAttribute('data-pinned'));
+              } catch (_) { sheet.querySelector('[data-hub-live]').textContent = 'Couldn’t save the pin.'; }
+              finally { pin.removeAttribute('aria-busy'); }
+              return;
+            }
             const toggle = event.target?.closest?.('.hub-toggle');
             if (!toggle || !self.contains(toggle)) return;
             const row = toggle.closest('.hub-row');
@@ -2637,7 +2776,7 @@ element!: &hub-collection
         self._observer?.disconnect();
         const observer = new MutationObserver(() => { self.deal(); self.previews(); self.count(); self.words(); self.details(); });
         observer.observe(self, { childList: true, subtree: true, attributes: true,
-          attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case'] });
+          characterData: true, attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-pinned', 'data-opened'] });
         self._observer = observer;
       }
     disconnected: |
@@ -3545,6 +3684,9 @@ view!:
                 <!-- After a change, the receipt takes the name's place: what
                      changed and by whom (`hub-discover` receipt). -->
                 <div class="hub-line-l"><h2 class="hub-line-name" tabindex="-1" data-spaces-line>spaces <span class="hub-count" data-space-count></span></h2><span class="hub-receipt" tabindex="-1" data-hub-receipt hidden></span> <button class="hub-btn" type="button" data-hub-undo data-wait="undoing" hidden>undo</button></div>
+                <hub-preferences><select class="hub-btn" aria-label="sort spaces" data-space-sort>
+                  <option value="name">alphabetical</option><option value="recent">recently opened</option>
+                </select></hub-preferences>
                 <button class="hub-btn hub-btn--main" type="button" data-new-space data-space-create-open>new space</button>
               </div>
               <form class="hub-new" data-space-create-form novalidate hidden>
@@ -4395,6 +4537,7 @@ view!:
       <tonk-fab with="{profile-branch}@profile:tonk" space={space-repo}>
         <command-palette slot="command" space={space-repo} branch={space-branch} profile="{profile-branch}@profile:tonk"></command-palette>
       </tonk-fab>
+      <hub-preferences hidden data-visit={space-repo}></hub-preferences>
       <tonk-display with="{space-branch}@{space-repo}" entity={space-repo} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it

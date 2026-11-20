@@ -4326,6 +4326,53 @@ pub(crate) mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_pins_and_sorts_spaces_in_the_hub(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        let zebra = create_space(&driver, "Zebra").await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        create_space(&driver, "Atlas").await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let first = "hub-collection > .space-card:first-of-type .hub-name";
+        wait_for_text(&driver, first, "Atlas").await?;
+        let card = format!(".space-card[data-space-subject$='{zebra}']");
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        click(&driver, &format!("{card} [data-space-pin]")).await?;
+        wait_for_text(&driver, first, "Zebra").await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, first, "Zebra").await?;
+        click(&driver, &format!("{card} .hub-toggle")).await?;
+        wait_for_text(&driver, &format!("{card} [data-space-pin]"), "unpin space").await?;
+        click(&driver, &format!("{card} [data-space-pin]")).await?;
+        wait_for_text(&driver, first, "Atlas").await?;
+
+        // Open directly so visit tracking cannot rely on clicking a hub row.
+        goto(
+            &driver,
+            env.tonk_web.join(&format!("space/{zebra}"))?.as_str(),
+        )
+        .await?;
+        enter_space_view(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let sort = wait_for_displayed(&driver, "[data-space-sort]").await?;
+        thirtyfour::components::SelectElement::new(&sort)
+            .await?
+            .select_by_value("recent")
+            .await
+            .context("select recently opened in the hub")?;
+        wait_for_displayed(&driver, "[data-space-sort]:enabled").await?;
+        wait_for_text(&driver, first, "Zebra").await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, first, "Zebra").await?;
+        wait_for_text(&driver, &format!("{card} [data-space-opened]"), "just now").await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_renames_a_space_from_the_hub(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
