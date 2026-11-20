@@ -17,3 +17,17 @@ The reference is the generated Gooey prototype at `a7a9c88`. It includes the cha
 | Settings and design explorations | The account sheet includes profile details, passkeys, connections and destructive confirmations. Cross-tab account switching and changing a connection's per-space role remain open in Gooey. The blank-space template gallery and sample space data are prototype explorations. |
 
 The comparison should distinguish a deployed route, an isolated browser test, and a state inspected only in source. The stylesheet match establishes common design values. Individual screenshots and interaction checks establish what actually rendered.
+
+## Task pages, November 20
+
+Compared the connect sheet with the supplied screenshot and the Gooey task-page reference at `a7a9c88`. The previous coverage entry established the page shell and worker phases. It missed the legacy controls inside the consent sheet.
+
+| Existing flow | What the comparison covers |
+| --- | --- |
+| Connect an app | Both steps use the task header counter. The first uses the account ledger, checked agent choices and bot tag. The second uses space rows and native role choices. Local-only spaces explain why they cannot be selected. Tonk also supports full access with sharing. |
+| Approve, cancel or reconnect | The passkey summary reflects the selected grants. Cancellation returns to the choices with feedback. Reconnecting can retain existing access. OAuth owns the return to the app. |
+| Device and terminal tasks | The account and device appear in the ledger. Completion, refusal and expiry use the task message component. A whole-account connection, attaching one local space and signing in through a different Tonk each retain their own scope and wording. |
+| Registration, recovery and email invitations | The primary action keeps its filled styling when later actions are hidden. Recovery sign-in uses the task phrase field and a count against the twelve words supported by the worker. Email invitations retain their checking, incomplete, signed-out, unconfirmed, ready, wrong-account and gone states. |
+| Activation, passlinks and walls | Activation retains its terms and resend action. A confirmed expired passlink and a turned-off passlink show different headings. Private, signed-out and missing-page walls retain their existing entry conditions. |
+
+Chrome layout fixtures covered 30 states at 1,024 and 320 CSS pixels. The sheets measured 480 and 288 pixels wide respectively, with 48-pixel headers. The compiled connect page was also exercised with a synthetic request, including switching agents and selecting a grant. Those checks cover rendering and the approval payload. They do not exercise a third-party OAuth callback.

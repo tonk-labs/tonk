@@ -1616,13 +1616,17 @@ view!:
            remains in the console/worker status; rendering it here would
            reveal whether the space still exists. The failure names neither
            the space nor who shared it, so the title is the task and the
-           sentence asks whoever shared it. Nothing records an expiry, so
-           #link-expired has no failure to answer. Bind the wall to the
+           sentence asks whoever shared it. A confirmed expiry has its own wall. Bind the wall to the
            failure row: static chrome renders even on an empty frame while
            the join is pending or the entity query is still resolving. -->
-      <section class="fabb-task tonk-task join-closed" data-id={this} aria-labelledby="edge-closed-title">
+      <section class="fabb-task tonk-task join-closed" data-id={this} data-kind={kind} aria-labelledby="edge-closed-title">
         <header class="fabb-task-head"><h1 class="fabb-task-title" id="edge-closed-title" tabindex="-1">join a space</h1></header>
-        <tonk-message kind="error" heading="this passlink was turned off" tabindex="-1">Whoever shared it turned it off, so it can’t be used to join. Ask them for a new one.</tonk-message>
+        <style>
+          .join-closed[data-kind="expired"] [data-link-closed],
+          .join-closed:not([data-kind="expired"]) [data-link-expired] { display:none; }
+        </style>
+        <tonk-message kind="error" heading="this passlink expired" data-link-expired>Ask whoever shared it for a new one.</tonk-message>
+        <tonk-message kind="error" heading="this passlink was turned off" data-link-closed tabindex="-1">Whoever shared it turned it off, so it can’t be used to join. Ask them for a new one.</tonk-message>
         <div class="fabb-actions"><a href="/">your spaces</a></div>
       </section>
 
@@ -3769,14 +3773,13 @@ view!:
                   account-settings .pane.fabb-page [data-waiting] { pointer-events:none; }
                   /* the hub's lowercase and tracking stay out of a task page */
                   account-settings .fabb-page { text-transform:none; letter-spacing:normal; }
-                  account-settings [data-link-account-cell]:has([data-account-name]) [data-link-account-email] { display:none; }
+                  account-settings :is([data-link-account-cell], [data-agent-account-cell]):has([data-account-name]) [data-link-account-email] { display:none; }
                 </style>
                 <div class="pane fabb-page" data-pane="link" hidden data-link-approval>
                   <header class="fabb-top"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></header>
                   <section class="fabb-task" data-link-step="ask" aria-labelledby="link-title">
                     <header class="fabb-task-head"><h1 class="fabb-task-title" id="link-title" data-link-heading tabindex="-1">connect a device</h1></header>
                     <div class="fabb-request">
-                      <p>A device asks to use your Tonk account.</p>
                       <dl class="fabb-ledger">
                         <dt>device</dt><dd data-link-name></dd>
                         <!-- The account's name, as the hub's bar shows it; its
@@ -3859,29 +3862,40 @@ view!:
                 <div class="pane fabb-page" data-pane="agent" hidden data-agent-approval data-agent-step="agent">
                   <header class="fabb-top"><svg class="fabb-logo" viewBox="0 0 202 54" fill="currentColor" role="img" aria-label="Tonk"><path d="M61.4097 26.2461C61.4097 18.671 67.4444 12.5295 74.8889 12.5295C82.3321 12.5295 88.3669 18.671 88.3669 26.2461C88.3669 33.8225 82.3321 39.964 74.8889 39.964C67.4444 39.964 61.4097 33.8225 61.4097 26.2461ZM130.925 0C124.313 0 118.752 1.74144 114.845 5.27674C112.849 7.08238 111.33 9.28375 110.316 11.8062C110.19 9.83541 109.614 7.085 107.631 4.80894C105.309 2.14503 101.749 0.414067 97.0759 0.50055C95.7813 0.528067 94.7524 1.59992 94.7785 2.89585C94.8047 4.17605 95.8494 5.19681 97.1231 5.19681C97.1388 5.19681 97.1558 5.19681 97.1715 5.19681C100.388 5.1326 102.706 6.32108 104.075 7.87252C106.074 10.1381 105.617 13.5882 105.606 13.6708C105.412 14.947 106.285 16.1421 107.56 16.3425C107.683 16.3622 108.675 16.488 109.147 16.0254C108.933 17.3056 108.819 18.6396 108.819 20.0285C108.819 29.3752 105.425 38.6157 100.012 44.0038C95.7001 48.2952 90.4351 50.3721 83.5522 51.1845C93.6894 47.6164 100.961 37.9343 100.961 26.5422C100.961 12.1193 89.3094 0.428481 74.9347 0.428481C60.5614 0.428481 48.9096 12.1193 48.9096 26.5422C48.9096 40.9651 60.5614 52.6573 74.9347 52.6573C75.4243 52.6573 75.9087 52.6403 76.3904 52.614C87.2345 52.483 94.8296 50.5804 100.72 44.7166C106.327 39.1359 109.823 29.649 109.823 20.0285C109.823 8.21583 117.909 0.877927 130.925 0.877927C152.316 0.877927 153.196 12.0748 153.214 13.617C150.903 14.1661 145.751 16.5994 145.751 21.1764V52.3926H153.364C154.142 52.3926 154.225 51.9052 154.225 51.6274V13.6734C154.225 12.2595 153.566 0 130.925 0Z"/><path d="M17.5255 1.03747L14.2306 1.0414C8.87533 1.05188 5.55428 3.49042 3.70984 5.42841C1.35094 7.90495 0 11.3262 0 14.8118C0 21.3818 4.4429 28.4524 15.0566 28.4524V23.0865C7.61079 23.0865 5.36054 18.6288 5.36054 14.8118C5.36054 11.3616 7.42883 6.30241 14.338 6.30241L17.5255 6.3011V47.1116C14.6914 47.1116 13.1232 44.2773 13.1232 41.8047L8.62399 41.8074C8.62399 48.4442 14.3288 52.3202 17.4823 52.3936H23.4895C29.2572 52.3936 33.6228 46.7185 33.6228 32.4581V12.1059H36.0917V23.0865H47.0471V1.03747H17.5255Z"/><path d="M195.242 32.633L188.118 32.5806C190.005 31.59 191.522 30.4172 192.686 29.3126C198.678 23.6297 201.716 14.1166 201.716 1.04073H198.03C198.03 13.0644 195.379 21.6759 190.152 26.6356C187.771 28.8933 183.605 31.5035 177.24 31.2362V1.04073H161.239V35.8053C161.239 43.3083 156.125 44.4889 156.125 44.4889V52.3955H177.24V36.9755C177.24 35.8145 179.356 35.8184 179.356 36.9755C179.356 38.9567 179.351 42.1959 179.351 44.2793C179.351 50.4117 184.599 53.5355 190.909 53.5355C196.451 53.5355 201.763 50.0985 201.915 44.2793C202.014 40.4662 202.94 32.633 195.242 32.633Z"/></svg></header>
                   <section class="fabb-task" aria-labelledby="agent-title">
-                    <header class="fabb-task-head"><h1 class="fabb-task-title" id="agent-title" data-agent-title tabindex="-1">connect an app</h1></header>
+                    <header class="fabb-task-head"><span class="fabb-task-step" data-agent-counter>1 of 2</span><h1 class="fabb-task-title" id="agent-title" data-agent-title tabindex="-1">connect an app</h1></header>
                     <div class="fabb-request" data-agent-panel="agent">
-                      <div class="agent-row"><span class="k">app</span><span class="v" data-agent-client>…</span></div>
-                      <div class="agent-row"><span class="k">returns to</span><span class="v" data-agent-host>…</span></div>
+                      <p data-agent-request-intro>An app wants to use Tonk as you, through an agent of its own.</p>
+                      <dl class="fabb-ledger">
+                        <dt>app</dt><dd data-agent-client>…</dd>
+                        <dt>returns to</dt><dd data-agent-host>…</dd>
+                        <dt>your account</dt><dd data-agent-account-cell>
+                          <tonk-display model="state:account-link" view="label"><span slot="empty"></span></tonk-display>
+                          <tonk-display model="tonk:account/registered" view="link-email" data-link-account-email>
+                            <span slot="loading">loading account…</span>
+                            <span slot="no-entity">account email unavailable</span>
+                          </tonk-display>
+                        </dd>
+                      </dl>
                       <p class="fabb-note" data-agent-warning hidden></p>
-                      <div class="agent-label" data-agent-choice hidden>which agent</div>
-                      <div class="agent-options" data-agent-options role="radiogroup" aria-label="which agent" hidden></div>
+                      <fieldset class="fabb-group" data-agent-options hidden>
+                        <legend>which agent</legend>
+                      </fieldset>
                       <label class="fabb-field" data-agent-name-field><span class="k">agent name</span>
                         <input type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
                       <p class="fabb-note" data-agent-intro>The agent can read and write in its own space.</p>
-                      <div class="fabb-actions"><button type="button" data-agent-deny>don’t allow</button><button type="button" data-agent-next disabled>choose spaces</button></div>
                     </div>
+                    <div class="fabb-actions" data-agent-panel="agent"><button type="button" data-agent-deny>don’t allow</button><button type="button" data-agent-next disabled>choose spaces</button></div>
                     <div class="fabb-request" data-agent-panel="spaces" hidden>
-                      <div class="agent-spaces" data-agent-spaces role="group" aria-label="what it can reach"><p class="fabb-note">loading your spaces…</p></div>
-                      <p class="fabb-note">You approve each new space in chat.</p>
-                      <p class="fabb-note">Access lasts 90 days. You can remove it any time under your agents.</p>
-                      <div class="fabb-actions"><button type="button" data-agent-back>back</button><button type="button" data-agent-approve>approve with passkey</button></div>
+                      <ul class="fabb-reach" data-agent-spaces aria-label="your spaces"><li>loading your spaces…</li></ul>
+                      <p class="fabb-note">The agent also has a space of its own, where it can always read and write. Access lasts 90 days.</p>
+                      <tonk-message kind="error" heading="passkey cancelled" data-agent-cancelled hidden>You can try again or go back.</tonk-message>
                     </div>
+                    <div class="fabb-actions" data-agent-panel="spaces" hidden><button type="button" data-agent-back>back</button><button type="button" data-agent-approve>connect agent</button></div>
                     <div class="fabb-request" data-agent-panel="passkey" hidden>
-                      <div data-agent-summary></div>
+                      <dl class="fabb-ledger" data-agent-summary></dl>
                       <p class="fabb-note"><strong>Use your passkey to approve.</strong> Your browser will ask for it now.</p>
-                      <div class="fabb-actions"><button type="button" data-agent-deny>cancel</button></div>
                     </div>
+                    <div class="fabb-actions" data-agent-panel="passkey" hidden><button type="button" data-agent-deny>cancel</button></div>
                     <div class="fabb-request" data-agent-panel="working" hidden>
                       <ol class="fabb-steps" aria-label="connection progress">
                         <li data-agent-phase="passkey">checking your passkey</li>
@@ -3892,14 +3906,9 @@ view!:
                       </ol>
                       <p class="fabb-note" data-agent-wait role="status">Keep this page open. It usually takes 10 to 30 seconds.</p>
                     </div>
-                    <div class="fabb-request" data-agent-panel="done" hidden>
-                      <div data-agent-summary></div>
-                      <p class="fabb-note" data-agent-returning>Returning you to the app…</p>
-                    </div>
-                    <div class="fabb-request" data-agent-panel="error" hidden>
-                      <p class="fabb-note" data-agent-error role="alert"></p>
-                      <div class="fabb-actions"><button type="button" data-agent-close>close</button></div>
-                    </div>
+                    <tonk-message kind="success" data-agent-panel="done" hidden data-agent-returning>Taking you back to the app.</tonk-message>
+                    <tonk-message kind="error" data-agent-panel="error" hidden data-agent-error role="alert"></tonk-message>
+                    <div class="fabb-actions" data-agent-panel="error" hidden><button type="button" data-agent-close>close</button></div>
                   </section>
                 </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
@@ -7369,6 +7378,9 @@ element!: &account-settings
         if (pane.dataset.agentStep !== step) pane.dataset.agentStep = step;
         for (const panel of pane.querySelectorAll('[data-agent-panel]')) panel.hidden = panel.dataset.agentPanel !== step;
         const client = self._agentClient ?? 'an app';
+        const counter = pane.querySelector('[data-agent-counter]');
+        counter.hidden = !['agent', 'spaces'].includes(step);
+        counter.textContent = step === 'spaces' ? '2 of 2' : '1 of 2';
         const title = {
           agent: `connect ${client}`,
           spaces: `what ${client} can reach`,
@@ -7426,7 +7438,8 @@ element!: &account-settings
     # A refusal the page can still recover from shows on the step it came
     # from; one that ends the request shows as its own step.
     agent-error: |
-      (self, text) => {
+      (self, text, heading = 'not connected') => {
+        self.querySelector('[data-agent-error]').setAttribute('heading', heading);
         self.text('[data-agent-error]', text);
         if (text) self.agentStep('error');
       }
@@ -7450,9 +7463,10 @@ element!: &account-settings
           const host = described?.redirect_host || described?.redirect_uri || '';
           self._agentClient = client;
           self.agentStep('agent');
+          self.text('[data-agent-request-intro]', `${client} wants to use Tonk as you, through an agent of its own.`);
           self.text('[data-agent-client]', client);
           self.text('[data-agent-host]', host);
-          self.text('[data-agent-returning]', `Returning you to ${client}…`);
+          self.text('[data-agent-returning]', `The agent is connected. Taking you back to ${client}.`);
           const name = self.querySelector('[data-agent-name]');
           if (name && !name.value) name.value = client;
           const loopback = host === 'localhost' || host === '[::1]' || /^127\./.test(host);
@@ -7461,14 +7475,16 @@ element!: &account-settings
             warning.textContent = loopback ? `${host} is this computer. Approve only if you just started ${client} here yourself.` : '';
             warning.hidden = !loopback;
           }
-          self.agentChoices(described?.agents ?? [], client);
+          self.agentChoices(described?.agents ?? []);
           const next = self.querySelector('[data-agent-next]');
           if (next) next.disabled = false;
           self.agentSpaces(described?.spaces);
         }, (error) => {
-          self.agentError(error.status === 404 || error.status === 410
-            ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
-            : `This request can't be answered: ${self.agentReason(error)}`);
+          if (error.status === 404 || error.status === 410) {
+            self.agentError('Nothing was granted. Start connecting again from your app.', 'this request expired');
+          } else {
+            self.agentError(`This request can't be answered: ${self.agentReason(error)}`);
+          }
         });
         return true;
       }
@@ -7476,49 +7492,52 @@ element!: &account-settings
     # the same provider's apps, so Claude and ChatGPT never share one. The
     # first is chosen; a new agent is always on offer too.
     agent-choices: |
-      (self, agents, client) => {
-        const label = self.querySelector('[data-agent-choice]');
+      (self, agents) => {
         const options = self.querySelector('[data-agent-options]');
-        if (!label || !options) return;
-        options.replaceChildren();
-        const choices = [...agents.map((agent) => ({ key: agent.key, text: agent.name || 'Unnamed agent' })), { key: '', text: `a new agent for ${client}` }];
+        options.querySelectorAll('label').forEach(label => label.remove());
+        const choices = [...agents.map(agent => ({ key: agent.key, text: agent.name || 'Unnamed agent' })), { key: '', text: 'a new agent' }];
         for (const [index, choice] of choices.entries()) {
-          const option = document.createElement('button');
-          option.type = 'button';
-          option.className = 'agent-opt';
-          option.setAttribute('role', 'radio');
-          option.setAttribute('aria-checked', String(index === 0));
-          option.dataset.agentKey = choice.key;
-          const disc = document.createElement('span');
-          disc.className = 'agent-disc';
-          disc.setAttribute('aria-hidden', 'true');
-          option.append(disc, document.createTextNode(choice.text));
-          options.append(option);
+          const label = document.createElement('label');
+          label.className = 'fabb-choice';
+          const radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = 'connect-agent';
+          radio.dataset.agentKey = choice.key;
+          radio.checked = index === 0;
+          const name = document.createElement('span');
+          name.textContent = choice.text;
+          if (choice.key) {
+            const tag = document.createElement('span');
+            tag.className = 'fabb-bot';
+            tag.textContent = 'bot';
+            name.append(tag);
+          }
+          label.append(radio, name);
+          options.append(label);
         }
-        label.hidden = options.hidden = agents.length === 0;
-        self.agentPick(options.firstElementChild);
+        options.hidden = agents.length === 0;
+        self.agentPick();
       }
     agent-pick: |
-      (self, option) => {
-        if (!option) return;
-        for (const other of self.querySelectorAll('.agent-opt')) other.setAttribute('aria-checked', String(other === option));
-        const fresh = option.dataset.agentKey === '';
+      (self) => {
+        const fresh = !self.agentChosen();
         const field = self.querySelector('[data-agent-name-field]');
         if (field) field.hidden = !fresh;
         self.text('[data-agent-intro]', fresh
           ? 'The agent can read and write in its own space.'
-          : `Connecting ${self._agentClient ?? 'the app'} again keeps what its agent can already reach. ChatGPT and Claude never share an agent.`);
+          : 'Connecting again keeps what this agent can already reach.');
       }
     agent-chosen: |
       (self) => {
         const options = self.querySelector('[data-agent-options]');
         if (!options || options.hidden) return '';
-        return options.querySelector('[aria-checked="true"]')?.dataset.agentKey ?? '';
+        return options.querySelector('input:checked')?.dataset.agentKey ?? '';
       }
     agent-next: |
       (self) => {
         const field = self.querySelector('[data-agent-name]');
         if (!self.agentChosen() && !(field?.value ?? '').trim()) { field?.focus(); return; }
+        self.agentCount();
         self.agentStep('spaces');
       }
     # One row per space in the account's directory, a three-way choice per
@@ -7541,51 +7560,62 @@ element!: &account-settings
           return;
         }
         rows.sort((a, b) => a.label.localeCompare(b.label));
-        const chosen = new Map([...list.querySelectorAll('.agent-space')].map((row) => [row.dataset.key, row.querySelector('[aria-checked="true"]')?.dataset.access]));
+        const chosen = new Map([...list.querySelectorAll('[data-key]')].map((row) => [row.dataset.key, row.querySelector('input:checked')?.dataset.access]));
         list.replaceChildren();
         if (!rows.length) {
-          const empty = document.createElement('p');
-          empty.className = 'agent-exp';
+          const empty = document.createElement('li');
+          empty.className = 'fabb-note';
           empty.textContent = 'You have no spaces to share yet. The agent still gets its own.';
           list.append(empty);
         }
         for (const row of rows) {
-          const line = document.createElement('div');
-          line.className = 'agent-space';
+          const line = document.createElement('li');
           line.dataset.key = row.key;
           line.dataset.testid = `space-access-${row.key}`;
-          if (!row.synced) line.classList.add('off');
+          const disc = document.createElement('span');
+          disc.className = 'fabb-disc';
+          disc.setAttribute('role', 'img');
+          disc.setAttribute('aria-label', row.synced ? 'synced' : 'local only');
           const name = document.createElement('span');
-          name.className = 'agent-space-name';
+          name.className = 'fabb-reach-name';
           name.textContent = row.label;
-          const group = document.createElement('div');
-          group.className = 'agent-seg';
-          group.setAttribute('role', 'radiogroup');
-          group.setAttribute('aria-label', row.label);
-          const current = chosen.get(row.key) ?? 'none';
-          for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'read & write'], ['share', 'full access & sharing']]) {
-            const option = document.createElement('button');
-            option.type = 'button';
-            option.setAttribute('role', 'radio');
-            option.setAttribute('aria-checked', String(access === current));
-            option.dataset.access = access;
-            option.textContent = text;
-            option.disabled = !row.synced;
-            group.append(option);
-          }
-          line.append(name, group);
-          if (!row.synced) {
-            const why = document.createElement('small');
-            why.className = 'agent-space-why';
-            why.textContent = 'Not synced. Sync it to share it with an agent.';
-            line.append(why);
+          line.append(disc, name);
+          if (row.synced) {
+            const group = document.createElement('div');
+            group.className = 'fabb-roles';
+            group.setAttribute('role', 'radiogroup');
+            group.setAttribute('aria-label', row.label);
+            const current = chosen.get(row.key) ?? 'none';
+            for (const [access, text] of [['none', 'none'], ['read', 'read'], ['write', 'write'], ['share', 'full access & sharing']]) {
+              const label = document.createElement('label');
+              const radio = document.createElement('input');
+              radio.type = 'radio';
+              radio.name = `space-access-${row.key}`;
+              radio.dataset.access = access;
+              radio.checked = access === current;
+              label.append(radio, text);
+              group.append(label);
+            }
+            line.append(group);
+          } else {
+            disc.dataset.state = 'hollow';
+            const state = document.createElement('span');
+            state.className = 'fabb-reach-state';
+            state.textContent = 'local only';
+            const why = document.createElement('p');
+            why.className = 'fabb-reach-why';
+            why.textContent = 'Sync it in the Tonk app to share it with an agent.';
+            line.append(state, why);
           }
           list.append(line);
         }
+        self.agentCount();
       }
-    agent-access: |
-      (self, option) => {
-        for (const other of option.parentElement.children) other.setAttribute('aria-checked', String(other === option));
+    agent-count: |
+      (self) => {
+        const count = self.querySelectorAll('[data-agent-spaces] input:checked:not([data-access="none"])').length;
+        const zero = self.agentChosen() ? 'reconnect agent' : 'connect to its own space';
+        self.text('[data-agent-approve]', count ? `connect to ${count} ${count === 1 ? 'space' : 'spaces'}` : zero);
       }
     agent-approve: |
       (self) => {
@@ -7593,28 +7623,22 @@ element!: &account-settings
         if (!request) return;
         const name = (self.querySelector('[data-agent-name]')?.value ?? '').trim();
         const agent = self.agentChosen();
-        const spaces = [...self.querySelectorAll('.agent-space')]
-          .map((row) => ({ key: row.dataset.key, access: row.querySelector('[aria-checked="true"]:not(:disabled)')?.dataset.access }))
+        const spaces = [...self.querySelectorAll('[data-agent-spaces] [data-key]')]
+          .map((row) => ({ key: row.dataset.key, access: row.querySelector('input:checked')?.dataset.access }))
           .filter((space) => ['read', 'write', 'share'].includes(space.access));
-        const summaries = self.querySelectorAll('[data-agent-summary]');
-        for (const summary of summaries) {
-          summary.replaceChildren();
-          const rows = spaces.length ? spaces : [{ none: true }];
-          for (const space of rows) {
-            const row = document.createElement('div');
-            row.className = 'agent-row';
-            const k = document.createElement('span');
-            k.className = 'k';
-            const v = document.createElement('span');
-            v.className = 'v';
-            if (space.none) { k.textContent = 'can reach'; v.textContent = 'its own space'; }
-            else {
-              k.textContent = self.querySelector(`.agent-space[data-key="${CSS.escape(space.key)}"] .agent-space-name`)?.textContent ?? space.key;
-              v.textContent = space.access === 'share' ? 'full space access, including making passlinks' : space.access === 'write' ? 'read & write' : 'read';
-            }
-            row.append(k, v);
-            summary.append(row);
+        self.querySelector('[data-agent-cancelled]').hidden = true;
+        const summary = self.querySelector('[data-agent-summary]');
+        summary.replaceChildren();
+        const rows = spaces.length ? spaces : [{ none: true }];
+        for (const space of rows) {
+          const k = document.createElement('dt');
+          const v = document.createElement('dd');
+          if (space.none) { k.textContent = 'can reach'; v.textContent = agent ? 'its existing spaces' : 'its own space'; }
+          else {
+            k.textContent = self.querySelector(`[data-agent-spaces] [data-key="${CSS.escape(space.key)}"] .fabb-reach-name`)?.textContent ?? space.key;
+            v.textContent = space.access === 'share' ? 'full space access, including making passlinks' : space.access === 'write' ? 'read & write' : 'read';
           }
+          summary.append(k, v);
         }
         self.agentStep('passkey');
         self._agentAsked = request;
@@ -7630,7 +7654,7 @@ element!: &account-settings
       (self) => {
         const request = self.agentRequest();
         if (!request) return;
-        for (const button of self.querySelectorAll('[data-agent-approval] button')) button.disabled = true;
+        for (const button of self.querySelectorAll('[data-agent-panel]:not([hidden]) button')) button.disabled = true;
         self.api('/api/agent/deny', { request }).then((response) => {
           window.tonk?.navigate?.(response.redirect);
         }).catch((error) => self.agentError(self.agentReason(error)));
@@ -7656,10 +7680,14 @@ element!: &account-settings
         // Done waits here: the worker answers the top page's passkey
         // handoff with the app's callback, and this page goes with it.
         else if (state === 'done') self.agentStep('done');
-        else if (state === 'refused') self.agentStep('spaces');
-        else if (state === 'failed') self.agentError(/expired|another browser/i.test(detail)
-          ? 'This connection request expired. Nothing was granted. Start connecting again from your app.'
-          : `Connecting the agent did not finish: ${detail}`);
+        else if (state === 'refused') {
+          self.agentStep('spaces');
+          self.querySelector('[data-agent-cancelled]').hidden = false;
+        }
+        else if (state === 'failed') {
+          if (/expired|another browser/i.test(detail)) self.agentError('Nothing was granted. Start connecting again from your app.', 'this request expired');
+          else self.agentError(`Connecting the agent did not finish: ${detail}`);
+        }
       }
     # Opening the account sheet puts focus on your name, once per opening,
     # except on a touch screen, where a keyboard would cover the sheet.
@@ -8285,10 +8313,6 @@ element!: &account-settings
             self.agentStep('agent');
           } else if (hit('[data-agent-close]')) {
             window.tonk?.navigate?.('/');
-          } else if (hit('.agent-opt')) {
-            self.agentPick(event.target.closest('.agent-opt'));
-          } else if (hit('.agent-seg [role="radio"]')) {
-            self.agentAccess(event.target.closest('[role="radio"]'));
           }
         });
         // The name saves when you leave the field: its own form, sent.
@@ -8296,6 +8320,8 @@ element!: &account-settings
           if (event.target.matches?.('[data-settings-name]')) event.target.dataset.was ??= event.target.value.trim();
         });
         self.addEventListener('change', (event) => {
+          if (event.target.matches?.('[data-agent-key]')) self.agentPick();
+          if (event.target.matches?.('[data-agent-spaces] input')) self.agentCount();
           if (event.target.matches?.('[data-settings-name]')) event.target.form?.requestSubmit();
         });
         // The name's error clears as it is typed.

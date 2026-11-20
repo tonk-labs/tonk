@@ -2120,17 +2120,21 @@ pub(crate) mod tests {
             .execute(
                 "const field = document.querySelector('#tonk-register-phrase');
                  const rect = field.getBoundingClientRect();
-                 return { width: rect.width, height: rect.height };",
+                 const style = getComputedStyle(field);
+                 const content = field.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+                 return { width: rect.width, lines: content / parseFloat(style.lineHeight) };",
                 Vec::new(),
             )
             .await?;
         let size = size.json();
         assert!(
-            size["height"].as_f64().unwrap_or(0.0) >= 120.0
+            size["lines"].as_f64().unwrap_or(0.0) >= 4.0
                 && size["width"].as_f64().unwrap_or(0.0) >= 300.0,
             "the phrase field has room for twelve words: {size}"
         );
+        wait_for_text_containing(&second, "#tonk-register-word-count", "0 of 12").await?;
         field.send_keys(words.join(" ")).await?;
+        wait_for_text_containing(&second, "#tonk-register-word-count", "12 of 12").await?;
         click(&second, "#tonk-register-phrase-login").await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
