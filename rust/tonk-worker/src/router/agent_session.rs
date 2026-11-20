@@ -834,8 +834,8 @@ pub(super) async fn open_held(
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-/// Mark the agent space as one, name it `name`, and note which
-/// provider's apps it is for.
+/// Mark the agent space as one, in its own space and in the account
+/// directory, name it `name`, and note which provider's apps it is for.
 ///
 /// The name lands here, with the approval's push, so the agent's cards
 /// name it at once: the library seed that also writes it runs after the
