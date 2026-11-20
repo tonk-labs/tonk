@@ -406,6 +406,17 @@ describe("exact fetch routing", () => {
     assert.equal(await (await landing.response()).text(), "TOOL INSTRUCTIONS");
   });
 
+  test("lets a controlled iframe load the provider's view-frame document", async () => {
+    const { self } = withGlobals();
+    self.clients.get = async () => ({ frameType: "nested" });
+    await loadWith({ wasmHash: "dev" });
+    const request = fetchEvent({
+      method: "GET", mode: "navigate", url: "https://tonk.test/view-frame",
+    }, "controlled-frame");
+    self.onfetch(request.event);
+    assert.equal(request.response(), undefined, "browser should fetch the frame from the provider");
+  });
+
   test("development tool landing uses the server without a stamped manifest", async () => {
     const { self } = withGlobals({
       fetchImpl: async () => new Response("DEV TOOL INSTRUCTIONS"),
