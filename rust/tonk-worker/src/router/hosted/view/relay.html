@@ -1113,6 +1113,7 @@
               timer = setTimeout(() => settle(false), 60000);
             },
           };
+          frame.style.visibility = 'hidden';
           frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin');
           frame.removeAttribute('srcdoc');
           frame.src = origin + '/view-frame';
@@ -1146,6 +1147,9 @@
       }
 
       // ---- The space's page -------------------------------------------
+      const guestOrigin = 'https://tonk.foundation';
+      const guestPath = () => '/space/' + route.subject + route.path;
+      const guestUrl = () => new URL(guestPath(), guestOrigin);
       async function navigate(path) {
         if (!path.startsWith('/') || path.startsWith('//'))
           throw Error('Choose a route in this space.');
@@ -1166,7 +1170,12 @@
         if (!guestPage.ok) throw Error('Could not load the Tonk view.');
         frame.removeAttribute('src');
         heard = false;
-        frame.srcdoc = await guestPage.text();
+        // A srcdoc inherits its embedding document's base URL. Give links
+        // the same coordinate system the guest receives in its ready message.
+        const baseTag = document.createElement('base');
+        baseTag.href = guestUrl().href;
+        const html = await guestPage.text();
+        frame.srcdoc = html.replace(/^(\s*<!doctype html>)?/i, (doctype) => doctype + baseTag.outerHTML);
       }
       async function guest(message, current) {
         if (message.type === 'title') {
@@ -1181,15 +1190,12 @@
           return;
         }
         if (message.type === 'navigate') {
-          const u = new URL(
-              message.href,
-              'https://tonk.foundation/space/' + route.subject + route.path,
-            ),
+          const u = new URL(message.href, guestUrl()),
             prefix = '/space/' + route.subject;
           // A link out of the space opens in the person's browser.
-          if (u.origin !== 'https://tonk.foundation' && /^https?:$/.test(u.protocol))
+          if (u.origin !== guestOrigin && /^https?:$/.test(u.protocol))
             return openLink(u.href);
-          if (u.origin !== 'https://tonk.foundation' || u.search)
+          if (u.origin !== guestOrigin || u.search)
             throw Error('Navigation outside this space is unavailable.');
           route = { ...route, view: undefined };
           return navigate(
@@ -1200,11 +1206,8 @@
         // a click on an external link or a new-tab click: through the agent
         // app. A link within the space opens the space in Tonk.
         if (message.type === 'open') {
-          const u = new URL(
-            String(message.href ?? ''),
-            'https://tonk.foundation/space/' + route.subject + route.path,
-          );
-          if (u.origin === 'https://tonk.foundation') return openLink(origin + u.pathname + u.search + u.hash);
+          const u = new URL(String(message.href ?? ''), guestUrl());
+          if (u.origin === guestOrigin) return openLink(origin + u.pathname + u.search + u.hash);
           if (/^https?:$/.test(u.protocol)) return openLink(u.href);
           throw Error('Only web links open from a view.');
         }
@@ -1454,6 +1457,7 @@
         }
         if (event.source !== frame.contentWindow || !pack || !route) return;
         if (m?.type === 'tonk-view-size') {
+          frame.style.visibility = '';
           reached('');
           return resize(m.height);
         }
@@ -1476,8 +1480,8 @@
             v: 1,
             type: 'ready',
             context: {
-              origin: 'https://tonk.foundation',
-              path: '/space/' + route.subject + route.path,
+              origin: guestOrigin,
+              path: guestPath(),
               repo: route.subject,
               branch: 'main',
               with: 'main@' + route.subject,
@@ -1551,6 +1555,7 @@
               expand.click();
             if (hostFrames(result)) reached('framing the provider\'s page');
             if (hostFrames(result) && (await tryFrame())) {
+              frame.style.visibility = '';
               note('framed');
               reached("waiting for the provider's page");
               return offer();

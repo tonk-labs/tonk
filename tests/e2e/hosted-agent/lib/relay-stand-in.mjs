@@ -40,7 +40,7 @@ export async function relayResource(origin) {
     contents: [
       {
         text: html,
-        _meta: { ui: { csp: { connectDomains: domains, resourceDomains: [origin] } } },
+        _meta: { ui: { csp: { connectDomains: domains, resourceDomains: [origin], frameDomains: [origin] } } },
       },
     ],
   };

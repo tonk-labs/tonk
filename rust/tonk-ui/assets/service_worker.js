@@ -1694,6 +1694,9 @@ function retireIfSuperseded(event) {
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // The provider serves the MCP frame document. Passing it to the app
+    // router would turn a controlled iframe load into a space-page 404.
+    if (event.request.mode === "navigate" && path === "/view-frame") return;
     if (event.request.mode === "navigate") extendOfflineGeneration(event);
     // A waiting successor means this worker is retiring. Checked on the
     // fetch path because a worker pinned by its own open streams never
