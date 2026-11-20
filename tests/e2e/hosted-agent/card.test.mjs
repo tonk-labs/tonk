@@ -233,7 +233,7 @@ test('an answer the space refuses becomes the tell it sends', async () => {
         role: 'write',
         disc: 'filled',
         label: 'not applied',
-        say: 'This was already answered, or waited too long. Nothing changed. Ask me again.',
+        say: 'This request expired or was already answered. Ask your agent for a new request.',
         agent: AGENT,
         person: PERSON,
       },

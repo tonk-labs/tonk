@@ -90,7 +90,7 @@ fn link_invocation() -> Result<Vec<u8>, String> {
 /// "your email" where the mock names it; the service's own words go to the
 /// console.
 const NOT_CONFIRMED: &str =
-    "Tonk couldn’t confirm your email, so nothing changed. Check your connection and try again.";
+    "Tonk couldn’t confirm your email. Check your connection and try again.";
 
 /// A failure is the same step again, the reason last in the form, just
 /// above the button; focus goes to it, so it is what gets read out.
@@ -226,7 +226,7 @@ fn bind_resend(host: &HtmlElement) {
                 (
                     "error",
                     "not sent",
-                    "Tonk couldn’t send a new link, so nothing changed. Check your connection and try again.",
+                    "Tonk couldn’t send a new link. Check your connection and try again.",
                 )
             };
             if sent.is_ok() {

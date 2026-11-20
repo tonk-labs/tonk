@@ -127,7 +127,7 @@ const VIA_HTML: &str = r#"
         <input id="tonk-register-via" type="url" inputmode="url" enterkeyhint="go"
                autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="tonk.network">
       </label>
-      <div><p class="fabb-note" id="tonk-register-status" role="status">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p></div>
+      <div><p class="fabb-note" id="tonk-register-status" role="status">Use the Tonk address where you created your account. You’ll sign in there with your passkey.</p></div>
     </div>
     <div class="fabb-actions"><button type="button" id="tonk-register-dismiss">cancel</button>
       <button type="button" id="tonk-register-action" disabled>continue</button></div>
@@ -1608,14 +1608,11 @@ pub(crate) fn status_for(state: &str) -> &'static str {
     use tonk_schema::email_state as answer;
     match state {
         answer::CHECKING => "Looking for an account with this email.",
-        answer::UNREGISTERED => {
-            "A passkey replaces a password. Your device saves it to itself, a browser \
-             profile, or a password manager — Tonk never keeps a copy."
-        }
-        answer::ACTIVE => "You already have an account. Log in to finish sharing.",
-        answer::PENDING => "This address is enrolled. Log in, then confirm your email.",
+        answer::UNREGISTERED => "Your device, browser or password manager stores your passkey.",
+        answer::ACTIVE => "Sign in to finish sharing.",
+        answer::PENDING => "Sign in, then confirm your email.",
         answer::SUSPENDED => "This account is suspended, so it cannot host a copy.",
-        answer::INVALID => "That does not look like an email address.",
+        answer::INVALID => "Enter a valid email address.",
         answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
         answer::PENDING_CEREMONY => "Setting up your account…",
         _ => "",
@@ -2260,7 +2257,7 @@ fn resend_verification() {
         }
         button.set_disabled(false);
         set_status(if result.is_ok() {
-            "Another confirmation email was requested. Check your inbox, then open the confirmation link."
+            "Check your inbox for a new confirmation link."
         } else {
             "Couldn’t request another email. Check your connection and try again."
         });
@@ -2995,11 +2992,7 @@ fn toggle_phrase_login() {
             "use a passkey instead"
         }));
     }
-    set_status(if showing {
-        "Enter your email address. We’ll tell you whether to create a passkey or sign in."
-    } else {
-        "Enter the twelve words of your recovery phrase, in order."
-    });
+    set_status("");
     if !showing
         && let Some(field) = query("#tonk-register-phrase")
         && let Some(field) = field.dyn_ref::<HtmlElement>()
@@ -3088,20 +3081,15 @@ fn stage_recovery_phrase(words: &str) -> Result<(), String> {
                 .ok()
                 .and_then(|code| code.as_string());
             match code.as_deref() {
-                Some("WordCount") => {
-                    "A recovery phrase has twelve words. Check you entered all of them.".to_owned()
-                }
+                Some("WordCount") => "Enter all 12 words.".to_owned(),
                 Some("UnknownWord") => js_sys::Reflect::get(&refusal, &"message".into())
                     .ok()
                     .and_then(|message| message.as_string())
                     .map(|message| {
                         format!("{}. Check its spelling.", message.trim_end_matches('.'))
                     })
-                    .unwrap_or_else(|| {
-                        "One of the words is not a recovery phrase word.".to_owned()
-                    }),
-                _ => "These words are not a recovery phrase. Check each word and their order."
-                    .to_owned(),
+                    .unwrap_or_else(|| "Check the spelling of each word.".to_owned()),
+                _ => "Check the spelling and order of the words.".to_owned(),
             }
         })
 }
@@ -3469,7 +3457,7 @@ pub fn describe(payload: &str) {
             let _ = host.set_attribute(RETURN_PATH, &target);
         }
         set_heading("sign in to open this space");
-        set_status("Use the account you use for this space.");
+        set_status("Sign in with the account for this space.");
     }
     if let Some(anchor) = &request.anchor
         && let Some(host) = document
@@ -3487,7 +3475,7 @@ pub fn describe(payload: &str) {
     set_status(if agent_invite {
         "open the verification email, then return here to invite your agent."
     } else {
-        "Your account is waiting on its email. Open the link we sent, then share again."
+        "Confirm your email, then share again."
     });
     set_heading(if agent_invite {
         "verify your email"

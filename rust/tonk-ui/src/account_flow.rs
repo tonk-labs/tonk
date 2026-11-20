@@ -2002,7 +2002,15 @@ pub(crate) mod tests {
 
         // Setup: acknowledge that it cannot be revoked, then ask for it.
         open_hub_settings(&first, &env).await?;
-        click(&first, "[data-recovery-ack]").await?;
+        let ack = wait_for_displayed(&first, "[data-recovery-ack]").await?;
+        let rect = ack.rect().await?;
+        assert_eq!(rect.width, rect.height, "expected a square checkbox");
+        assert!((16.0..=24.0).contains(&rect.width));
+        let setup = wait_for_displayed(&first, "[data-add-recovery-phrase]").await?;
+        assert!(!setup.is_enabled().await?);
+        click(&first, ".recovery-ack span").await?;
+        assert!(ack.is_selected().await?);
+        assert!(setup.is_enabled().await?);
         click(&first, "[data-add-recovery-phrase]").await?;
 
         // The words show in the top document, never in the guest.
@@ -2806,6 +2814,18 @@ pub(crate) mod tests {
 
         wait_for_displayed(&driver, "[data-start-sheet]").await?;
 
+        click(&driver, "[aria-controls=help-body]").await?;
+        click(&driver, "[aria-controls=help-connect]").await?;
+        let offsets = driver
+            .execute(
+                r#"const answer = document.querySelector('#help-connect p').getBoundingClientRect();
+                   return [...document.querySelectorAll('.hub-help-q h3 button span')]
+                     .map(label => Math.round(label.getBoundingClientRect().left - answer.left));"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(offsets.json(), &serde_json::json!([0, 0, 0, 0, 0, 0]));
+
         driver.set_window_rect(0, 0, 1200, 900).await?;
         let desktop = driver
             .execute(
@@ -2937,10 +2957,15 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
 
         goto(&driver, env.tonk_web.join("join")?.as_str()).await?;
-        // The page renders in the sealed guest frame.
+        // The guest can lay out its input before the top-level loading overlay clears.
+        element(&driver, "#tonk-boot")
+            .await?
+            .wait_until()
+            .not_displayed()
+            .await?;
         enter_guest(&driver).await?;
-        let input = element(&driver, "join-paste input[name=link]").await?;
-
+        let input = wait_for_displayed(&driver, "join-paste input[name=link]").await?;
+        input.click().await?;
         input.send_keys("not a link").await?;
         element(&driver, "join-paste button[type=submit]")
             .await?
@@ -2954,7 +2979,7 @@ pub(crate) mod tests {
         let link = format!(
             "https://sync.invalid.test/space/did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#{seed}"
         );
-        let input = element(&driver, "join-paste input[name=link]").await?;
+        let input = wait_for_displayed(&driver, "join-paste input[name=link]").await?;
         input.clear().await?;
         input.send_keys(&link).await?;
         element(&driver, "join-paste button[type=submit]")

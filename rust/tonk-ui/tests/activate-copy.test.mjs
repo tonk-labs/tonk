@@ -14,8 +14,8 @@ test('an activated account says so and what it means', () => {
   assert.doesNotMatch(page, /account verified|You may close this tab/);
 });
 
-test('a failed activation says nothing changed, without the service words', () => {
-  assert.match(script, /"Tonk couldn’t confirm your email, so nothing changed\. Check your connection and try again\."/);
+test('a failed activation explains how to retry', () => {
+  assert.match(script, /"Tonk couldn’t confirm your email\. Check your connection and try again\."/);
   assert.equal(script.match(/show_error\(&host, NOT_CONFIRMED\)/g)?.length, 2);
   assert.doesNotMatch(script, /could not be reached|Activation failed|user_error::diagnostic/);
 });
