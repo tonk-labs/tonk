@@ -1266,7 +1266,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(PROFILE_LIBRARY.contains("self.receipt(['changed your name to', name]);"));
     assert!(
         PROFILE_LIBRARY
-            .contains("'This is your only passkey, so it can’t be removed. Add another first.'")
+            .contains("'This is your only passkey. Add another for a second way to sign in.'")
     );
 }
 

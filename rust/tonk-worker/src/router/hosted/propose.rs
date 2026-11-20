@@ -894,7 +894,7 @@ pub fn gone(context: &Context) -> Card {
         Some(context.place.clone()),
         context.role,
         "not applied",
-        "This was already answered, or waited too long, so nothing changed. Ask me again.",
+        "This request expired or was already answered. Ask your agent for a new request.",
         context.agent.clone(),
     )
 }
