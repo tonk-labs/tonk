@@ -82,8 +82,8 @@ pub fn tools() -> Vec<Value> {
             "description": "Show one view of a space in the chat, live, as the space renders \
                 it: pass a route from tonk_outline as view, or a path within the space such as \
                 /notebook/<entity> (entity route parameters must be actual entity URIs returned \
-                by tonk_query, never titles or names). The whole space (path / with no view) is \
-                not shown in the chat; the person gets a card that opens it in Tonk. The \
+                by tonk_query, never titles or names). To open the space home in chat, pass path / \
+                and size full with no view. By default the home opens in Tonk. The \
                 person can change the space from the view wherever this connection may write \
                 it; a space it may only read is shown read-only. The result's text says what \
                 the view shows. Showing a route does not verify that it rendered.",
@@ -486,8 +486,8 @@ const SIZES: [&str; 4] = ["strip", "card", "carousel", "full"];
 /// the model reads.
 ///
 /// One view, or a page by path, shows live (`"show": "live"`) at the
-/// size asked for. The whole space (`/` with no view) is never shown in
-/// the chat: it is a hand-off into Tonk (`"handoff"`). A strip, or a
+/// size asked for. The home (`/` with no view) defaults to a hand-off
+/// into Tonk (`"handoff"`), or opens live when full screen is requested. A strip, or a
 /// space a view cannot reach from here, is one line with a link
 /// (`"strip"`). Every answer carries the link into Tonk, so a host that
 /// shows no card still offers it.
@@ -575,7 +575,7 @@ async fn open<W: Writers>(
     let view_name = node
         .and_then(|node| node["title"].as_str().or_else(|| node["name"].as_str()))
         .map(str::to_owned);
-    let show = if whole {
+    let show = if whole && size != "full" {
         "handoff"
     } else if !shown.reachable || size == "strip" {
         "strip"
@@ -592,8 +592,8 @@ async fn open<W: Writers>(
     let role = role(access);
     let mut text = match show {
         "handoff" => format!(
-            "The whole of {space_name} is not shown in the chat: the person sees a card that \
-             opens it in Tonk ({role}). To show part of it here, pass a view route from \
+            "The person sees a card that opens {space_name} in Tonk ({role}). To open its \
+             home here, request path / and size full. To show one part, pass a view route from \
              tonk_outline."
         ),
         "strip" if !shown.reachable => format!(
