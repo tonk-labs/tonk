@@ -75,8 +75,8 @@ fn view(stage: Stage) -> View {
         Stage::Incomplete => View {
             heading: "This invitation link is incomplete",
             body: &[
-                "Open the exact link from your invitation email.",
-                "If it still doesn’t work, ask the person who invited you to send a new invitation.",
+                "Open the link in your invitation email.",
+                "If it still doesn’t open, ask for a new invitation.",
             ],
             action: None,
             secondary: Secondary::Home,
@@ -85,26 +85,22 @@ fn view(stage: Stage) -> View {
         Stage::SignedOut => View {
             heading: "You’re invited to a space",
             body: &[
-                "Someone invited your email address to a shared space on Tonk.",
-                "Create an account or sign in with the email address that received this invitation. After you confirm it, come back here to join.",
+                "Use the email address that received the invitation, then return here to join.",
             ],
-            action: Some(Action::Account("Create account or sign in")),
+            action: Some(Action::Account("create account or sign in")),
             secondary: Secondary::Home,
             shows_account: false,
         },
         Stage::Unconfirmed => View {
             heading: "Confirm your email",
-            body: &[
-                "Your account is set up. Before you can join, confirm your email address.",
-                "Open the confirmation link we sent you, then come back here. This page checks again on its own.",
-            ],
+            body: &["Open the confirmation link in your email, then return here to join."],
             action: Some(Action::Recheck),
             secondary: Secondary::Resend,
             shows_account: true,
         },
         Stage::Ready => View {
             heading: "You’re invited to a space",
-            body: &["Your email is confirmed. Join the shared space with this account."],
+            body: &[],
             action: Some(Action::Join),
             secondary: Secondary::Home,
             shows_account: true,
@@ -112,10 +108,9 @@ fn view(stage: Stage) -> View {
         Stage::WrongAccount => View {
             heading: "This invitation is for a different email",
             body: &[
-                "This account’s email address didn’t receive this invitation.",
-                "Sign in with the email address the invitation was sent to, or switch accounts in settings. You can also ask for a new invitation to this address.",
+                "Switch to the account that received the invitation, or ask for a new invitation to this address.",
             ],
-            action: Some(Action::Account("Use another account")),
+            action: Some(Action::Account("use another account")),
             secondary: Secondary::Settings,
             shows_account: true,
         },
@@ -555,7 +550,7 @@ async fn claim(host: &HtmlElement, id: &str) -> Result<(), String> {
         }
         sleep(1000).await;
     }
-    Err("Joining is taking longer than expected. Select Join space to retry safely.".into())
+    Err("Joining timed out. Select Join space to try again.".into())
 }
 
 async fn resolve_profile() {
@@ -590,7 +585,7 @@ mod tests {
         assert_eq!(account_stage(true, Some(None)), Stage::SignedOut);
         assert_eq!(
             view(Stage::SignedOut).action,
-            Some(Action::Account("Create account or sign in"))
+            Some(Action::Account("create account or sign in"))
         );
     }
 

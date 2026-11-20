@@ -236,8 +236,8 @@
                 space: card.space,
                 role: card.role,
                 disc: card.disc,
-                label: 'not answered',
-                say: 'The space did not answer, so nothing changed. Ask me again.',
+                label: 'no response',
+                say: 'Check the space to see whether your change was saved.',
               },
             );
             shown.tabIndex = -1;
@@ -252,7 +252,7 @@
           if (card) return draw(card);
           // A result with no card is one the model has to fix; its words
           // are for the model, so the person is told only what stands.
-          draw({ kind: 'tell', label: 'nothing changed', say: 'Nothing changed.' });
+          draw({ kind: 'tell', label: 'no result', say: 'Ask your agent to check the result.' });
         }
 
         addEventListener('message', (event) => {

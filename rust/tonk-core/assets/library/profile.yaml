@@ -430,6 +430,8 @@ view!:
          mocks have not reached yet, on the older tokens above. */
       .hub-page { position:relative; }
       .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
+      .hub-help-q .hub-help-toggle { justify-content:flex-start; }
+      .hub-help-a code { background:transparent; padding:0; }
       /* selection is chrome too — ink, never the browser's blue */
       .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
       .hub-page :is(.contacts-collection, .settings,
@@ -642,8 +644,12 @@ view!:
       .hub-page account-settings .recovery-panel:has([data-recovery-phrase-row]) tonk-display[view="recovery-setup"] { display:none; }
       .hub-page account-settings .recovery-panel:has(tonk-display[view="recovery-setup"][data-state="empty"]):not(:has([data-recovery-phrase-row])) .recovery-inactive { display:block; }
       .hub-page account-settings .recovery-ack { display:flex; align-items:flex-start; gap:10px;
-        max-width:60ch; margin:14px 0 0; font:400 15px/1.6 var(--sans); }
-      .hub-page account-settings .recovery-ack input { margin-top:5px; flex:none; }
+        width:fit-content; max-width:100%; margin:14px 0 0; cursor:pointer;
+        font:400 15px/1.6 var(--sans); }
+      .hub-page account-settings .recovery-ack input { appearance:auto; width:18px; height:18px;
+        margin:3px 0 0; flex:none; accent-color:var(--tonk-text); cursor:pointer; }
+      .hub-page account-settings .recovery-ack input:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
+      .hub-page account-settings [data-add-recovery-phrase] { margin-block-start:8px; margin-inline-start:-10px; }
       .hub-page account-settings [data-add-recovery-phrase]:disabled { opacity:.5; cursor:default; }
       .hub-page account-settings .panel-action,
       .hub-page account-settings .switch-account { display:flex; align-items:center;
@@ -1057,7 +1063,7 @@ view!:
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <div class="space-unknown-wall">
           <h1 class="space-unknown-statement">downloading {name}</h1>
-          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+          <p class="space-unknown-narrator">Syncing this space. It will open automatically.</p>
         </div>
       </div>
 
@@ -2352,13 +2358,13 @@ view!:
           <div class="hub-sec-h"><h3 id="sec-details">your details</h3></div>
           <tonk-display model="tonk:account/name" view="editable"></tonk-display>
           <div class="hub-kv"><span class="hub-kv-l">email</span><span class="hub-kv-text" data-settings-email>{email}</span></div>
-          <p class="hub-note">Your name shows to people and agents in your spaces. It saves when you leave the field.</p>
+          <p class="hub-note">People and agents in your spaces see this name. Changes save when you leave the field.</p>
         </section>
         <section class="hub-sec" aria-labelledby="sec-passkeys">
           <div class="hub-sec-h"><h3 id="sec-passkeys">passkeys</h3><button class="hub-btn" type="button" data-add-passkey data-account="tonk:add-passkey"
             on:add-passkey=tonk:add-passkey>add a passkey</button></div>
           <div class="hub-items passkey-list"><tonk-display model="tonk:account/passkey"></tonk-display></div>
-          <p class="hub-note" data-passkeys-note>A passkey takes the place of a password. It can live on a device, in a browser profile or in a password manager.</p>
+          <p class="hub-note" data-passkeys-note>Your device, browser or password manager stores your passkey.</p>
         </section>
         <!-- One phrase per account, ever: once one exists its row shows
              and the setup is hidden. Setup renders through
@@ -2369,7 +2375,7 @@ view!:
           <div class="hub-sec-h"><h3 id="sec-recovery">recovery phrase</h3></div>
           <div class="hub-items passkey-list"><tonk-display model="recovery:phrase"></tonk-display></div>
           <tonk-display model="tonk:account/active" view="recovery-setup"></tonk-display>
-          <p class="hub-note recovery-inactive">Open the activation link we emailed you, then set up a recovery phrase here.</p>
+          <p class="hub-note recovery-inactive">Confirm your email to set up a recovery phrase.</p>
         </section>
       </div>
     # Deleting the account stands apart, under the sections: a sentence
@@ -2423,11 +2429,10 @@ view!:
     recovery-setup: |
       <recovery-phrase-gate data-recovery-setup>
         <p class="hub-note">
-          Twelve words that sign you in when you have no passkey: on a new device, or for someone
-          you hand them to. Anyone with these words can sign in as you, forever.
+          Use your recovery phrase to sign in without a passkey. Anyone with the phrase can sign in as you.
         </p>
         <label class="recovery-ack"><input type="checkbox" data-recovery-ack>
-          <span>I understand that a recovery phrase can never be revoked or replaced.</span></label>
+          <span>I understand I can’t revoke or replace this phrase.</span></label>
         <button class="hub-btn" type="button" data-add-recovery-phrase
           data-account="tonk:add-recovery-phrase" on:add-recovery-phrase=tonk:add-recovery-phrase
           disabled>set up a recovery phrase</button>
@@ -3468,12 +3473,12 @@ view!:
               <div class="hub-line"><div class="hub-line-l" id="start-line"><h1 class="hub-line-name" id="start-title" tabindex="-1">connect an agent app</h1></div></div>
               <div class="hub-start">
                 <div class="hub-start-read">
-                  <p>Paste this into Claude, ChatGPT or another agent app you use. Your agent adds Tonk, or tells you where to add it.</p>
-                  <p class="hub-prompt" data-start-prompt>Add Tonk to this app. It’s an MCP server at https://tonk.network/mcp. Add it yourself if you can, or tell me where in this app’s settings to add it. Connecting opens Tonk in my browser. Once it’s connected, tell me what you can do with it.</p>
+                  <p>Paste this prompt into Claude, ChatGPT or another agent app.</p>
+                  <p class="hub-prompt" data-start-prompt>Connect this app to the Tonk MCP server at https://tonk.network/mcp. If I need to add it in settings, show me where. Once connected, tell me what you can do with Tonk.</p>
                 </div>
                 <p class="hub-note" data-start-feedback role="status"></p>
                 <div class="hub-start-acts">
-                  <p class="hub-note">Connecting brings you back here to add an account and choose what your agent can reach.</p>
+                  <p class="hub-note">In your browser, choose an account and the spaces to share.</p>
                   <button type="button" class="hub-btn hub-btn--main hub-copy" data-start-copy aria-describedby="prompt-name"><span data-idle>copy prompt</span><span data-done aria-hidden="true">copied</span></button>
                   <span class="hub-sr" id="prompt-name">the prompt for your agent app</span>
                 </div>
@@ -3485,46 +3490,45 @@ view!:
                   <div class="hub-help-q" data-fold>
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-connect"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent can’t connect</span></button></h3>
                     <div class="hub-fold" inert id="help-connect"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>If your agent can’t add Tonk itself, add it in the app’s settings, usually under connectors. Search for “Tonk Network”, or use the address <code>https://tonk.network/mcp</code>. Then start a new chat.</p>
-                      <p>Connecting opens Tonk in your browser, where you add an account and choose what your agent can reach. If nothing opened, look for a connect or sign-in button in your agent app.</p>
+                      <p>In your app’s connector settings, search for “Tonk Network” or add <code>https://tonk.network/mcp</code>. Then start a new chat.</p>
+                      <p>If Tonk doesn’t open in your browser, select connect or sign in next to the connector.</p>
                     </div></div></div>
                   </div>
                   <div class="hub-help-q" data-fold>
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-find"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent can’t find my space</span></button></h3>
                     <div class="hub-fold" inert id="help-find"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>Your agent reaches only the spaces you’ve given it. Ask it to list them.</p>
-                      <p>To add one, send it the space’s passlink, or give it a role there under connections in your account.</p>
-                      <p>A space that’s only on your device can’t be reached until it syncs. Sync it in the Tonk app first by adding an account.</p>
-                      <p>If a passlink has expired or was removed, ask the person who shared the space for a new one.</p>
+                      <p>Ask your agent to list its spaces.</p>
+                      <p>To share a missing space, give your agent a passlink for it.</p>
+                      <p>If the space is only on your device, add an account in Tonk to sync it first.</p>
+                      <p>If the passlink has expired or was removed, ask for a new one.</p>
                     </div></div></div>
                   </div>
                   <div class="hub-help-q" data-fold>
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-write"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>my agent isn’t allowed to write</span></button></h3>
                     <div class="hub-fold" inert id="help-write"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>An agent has a role in each space it reaches, read or write, and never more than yours.</p>
-                      <p>You chose its role in each space when it connected. To give it write, change its role under connections in your account.</p>
-                      <p>Passlinks have roles baked in. If it joined with a passlink, it has the role the link gives.</p>
+                      <p>Your agent needs write access to edit a space. You can only grant access you have.</p>
+                      <p>If the agent joined with a read-only passlink, share a passlink with write access.</p>
                     </div></div></div>
                   </div>
                   <div class="hub-help-q" data-fold>
-                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-remove"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>how do I take my agent’s access away?</span></button></h3>
+                    <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-remove"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>how do I remove agent access?</span></button></h3>
                     <div class="hub-fold" inert id="help-remove"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>In your account, under connections, remove it. It loses access to every space at once.</p>
+                      <p>In account settings, open connections. Remove the connection for the agent and space.</p>
                       <p>You can also ask the agent to leave a space.</p>
                     </div></div></div>
                   </div>
                   <div class="hub-help-q" data-fold>
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-passkey"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>where is my passkey?</span></button></h3>
                     <div class="hub-fold" inert id="help-passkey"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>Passkeys are stored in different locations depending on your device settings: password managers (if you use one), operating systems (e.g. Apple’s keychain), and browsers all store passkeys. Typically, passkeys stored in browsers aren’t portable. To use your account on another device, connect it from account settings.</p>
+                      <p>Check the password manager, browser or device where you created the passkey.</p>
 
                     </div></div></div>
                   </div>
                   <div class="hub-help-q" data-fold>
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-without"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>can I use tonk without an agent?</span></button></h3>
                     <div class="hub-fold" inert id="help-without"><div class="hub-fold-in"><div class="hub-help-a">
-                      <p>Yes, in a space someone shares with you. Its passlink opens the space in your browser, and you can read or write to it, with or without an account.</p>
-                      <p>You can also <button type="button" class="hub-btn" data-start-create>make a space</button> in this browser. For building spaces by hand, see the <a href="https://github.com/tonk-labs/tonk/blob/stable/README.md">documentation</a> on how to build with Tonk.</p>
+                      <p>Yes. Open a passlink in your browser. The link determines whether you can read or edit the space.</p>
+                      <p>You can also <button type="button" class="hub-btn" data-start-create>make a space</button> in this browser. See the <a href="https://github.com/tonk-labs/tonk/blob/stable/README.md">guide to building spaces</a>.</p>
                     </div></div></div>
                   </div>
                 </div></div></div>
@@ -3600,7 +3604,7 @@ view!:
                       <div class="hub-sec-h"><h3 id="sec-conn">connections</h3></div>
                       <p class="hub-note" data-connections-status role="status" aria-live="polite" hidden></p>
                       <ul class="hub-items" data-connections-list></ul>
-                      <p class="hub-note" data-connections-note>An agent app connects from its own settings. Removing one here takes its access away at once.</p>
+                      <p class="hub-note" data-connections-note>Remove a connection to revoke its access.</p>
                     </section>
                     <section class="hub-sec" aria-labelledby="sec-device">
                       <div class="hub-sec-h"><h3 id="sec-device">this device</h3><button class="hub-btn" type="button" data-sign-out-open>sign out on this device</button></div>
@@ -3645,7 +3649,7 @@ view!:
                         <!-- BUG-246: the code the device shows, to compare,
                              goes here as <dt>code</dt><dd><span class="fabb-code">…</span></dd>. -->
                       </dl>
-                      <p class="fabb-note" data-link-explanation>Connect it only if you started it yourself, just now.</p>
+                      <p class="fabb-note" data-link-explanation>Approve only if you just requested this connection.</p>
                       <tonk-message kind="error" heading="not connected" data-link-error tabindex="-1" hidden></tonk-message>
                     </div>
                     <div class="fabb-actions">
@@ -3722,7 +3726,7 @@ view!:
                       <div class="agent-options" data-agent-options role="radiogroup" aria-label="which agent" hidden></div>
                       <label class="fabb-field" data-agent-name-field><span class="k">agent name</span>
                         <input type="text" data-agent-name maxlength="80" autocomplete="off" aria-label="Agent name"></label>
-                      <p class="fabb-note" data-agent-intro>The agent gets a space of its own, where it can always read and write.</p>
+                      <p class="fabb-note" data-agent-intro>The agent can read and write in its own space.</p>
                       <div class="fabb-actions"><button type="button" data-agent-deny>don’t allow</button><button type="button" data-agent-next disabled>choose spaces</button></div>
                     </div>
                     <div class="fabb-request" data-agent-panel="spaces" hidden>
@@ -3784,7 +3788,6 @@ view!:
             </account-settings>
           </section>
         </main>
-        <footer class="hub-foot">tonk.network</footer>
         <nav class="mobile-nav" aria-label="main navigation">
           <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
           <space-create>
@@ -3928,7 +3931,7 @@ view!:
               <form class="fabb-request" id="join-paste-form" data-join-paste-form novalidate>
                 <label class="fabb-field">share link<input id="join-paste-link" name="link" type="url" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="https://tonk.network/space/…" aria-describedby="join-paste-hint"></label>
                 <tonk-message kind="error" id="join-paste-error" data-join-paste-error hidden></tonk-message>
-                <p class="fabb-note" id="join-paste-hint">Paste a share link from any Tonk host. The space joins your account here.</p>
+                <p class="fabb-note" id="join-paste-hint">Paste a Tonk share link to join the space.</p>
               </form>
               <div class="fabb-actions"><a href="/">your spaces</a><button type="submit" form="join-paste-form">join</button></div>
             </section>
@@ -4446,7 +4449,7 @@ view!:
                   <tonk-display with="{profile-branch}@profile:tonk" model="state:account-link" view="label" hidden><span slot="empty"></span></tonk-display>
                   <div class="fabb-request">
                     <p data-signed-out-only>Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                    <p class="fabb-note">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                    <p class="fabb-note">New to this space? Ask a member to send you a link from <strong>share</strong>.</p>
                   </div>
                   <!-- sign in opens the top-page account ceremony. -->
                   <div class="fabb-actions"><a href="/">your spaces</a><space-login data-signed-out-only><button type="button">sign in</button></space-login></div>
@@ -4491,7 +4494,7 @@ view!:
                   <tonk-display with="{profile-branch}@profile:tonk" model="state:account-link" view="label" hidden><span slot="empty"></span></tonk-display>
                   <div class="fabb-request">
                     <p data-signed-out-only>Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
-                    <p class="fabb-note">New to this space? Opening it takes an invite: ask someone in it to send you a link from <strong>share</strong>.</p>
+                    <p class="fabb-note">New to this space? Ask a member to send you a link from <strong>share</strong>.</p>
                   </div>
                   <!-- sign in opens the top-page account ceremony. -->
                   <div class="fabb-actions"><a href="/">your spaces</a><space-login data-signed-out-only><button type="button">sign in</button></space-login></div>
@@ -6115,7 +6118,7 @@ element!: &space-links
           : `<div class="hub-lf-row"><span class="hub-lf-label">role</span><div class="hub-opts" role="radiogroup" aria-label="role">${roles.map(r => radio('role', r, r, '', role === r)).join('')}</div></div>
           <div class="hub-lf-row"><label class="hub-lf-label" for="${id}-exp">expires</label><select id="${id}-exp" name="expires">${dates.join('')}</select></div>`}
           ${self._shareRole === null ? '<p class="hub-lf-note">You have read access, so you can only make links to views.</p>' : ''}
-          ${self._shareRole === 'write' && !view ? '<p class="hub-lf-note">You have write access, so a passlink can give at most write.</p>' : ''}
+          ${self._shareRole === 'write' && !view ? '<p class="hub-lf-note">You can share read or write access.</p>' : ''}
           ${(view && !current || self._shareRole === undefined) ? '<p class="hub-lf-note">Link options are loading or unavailable. <button type="button" class="hub-btn" data-link-retry>try again</button></p>' : ''}
           ${view && self._manualView ? self.whole(self._manualView) : ''}
           <div class="hub-lf-acts"><button type="button" class="hub-btn" data-link-cancel>not now</button>
@@ -6844,7 +6847,7 @@ element!: &account-settings
           if (!current()) return;
           const section = self.querySelector('[data-agent-connections]');
           if (section) section.hidden = error.status === 404;
-          self.connectionsStatus('Your connections didn’t load. Close your account settings and open them again to try again.');
+          self.connectionsStatus('Connections didn’t load. Reopen account settings to try again.');
         });
       }
     # Each agent connection: its name with the `bot` tag, the app, the
@@ -6861,8 +6864,8 @@ element!: &account-settings
         // With none, the note says how one connects.
         const note = self.querySelector('[data-connections-note]');
         const text = list.children.length
-          ? 'An agent app connects from its own settings. Removing one here takes its access away at once.'
-          : 'No agent apps are connected. An agent app connects from its own settings: add Tonk in Claude or ChatGPT, then approve it with your passkey.';
+          ? 'Remove a connection to revoke its access.'
+          : 'No agent apps are connected. Add Tonk in your agent app’s settings, then approve the connection.';
         if (note && note.textContent !== text) note.textContent = text;
       }
     connection-record: |
@@ -7360,7 +7363,7 @@ element!: &account-settings
         const field = self.querySelector('[data-agent-name-field]');
         if (field) field.hidden = !fresh;
         self.text('[data-agent-intro]', fresh
-          ? 'The agent gets a space of its own, where it can always read and write.'
+          ? 'The agent can read and write in its own space.'
           : `Connecting ${self._agentClient ?? 'the app'} again keeps what its agent can already reach. ChatGPT and Claude never share an agent.`);
       }
     agent-chosen: |
@@ -7797,8 +7800,8 @@ element!: &account-settings
         const note = self.querySelector('[data-passkeys-note]');
         const count = self.querySelectorAll('.passkey-list .hub-item').length;
         const text = count === 1
-          ? 'This is your only passkey, so it can’t be removed. Add another first.'
-          : 'A passkey takes the place of a password. It can live on a device, in a browser profile or in a password manager.';
+          ? 'This is your only passkey. Add another for a second way to sign in.'
+          : 'Your device, browser or password manager stores your passkey.';
         if (note && note.textContent !== text) note.textContent = text;
       }
     # The name saves when you leave the field or press Enter. Empty, it

@@ -199,7 +199,7 @@
 .hub-ask-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 /* ── fields ─────────────────────────────────────────────────────────────── */
-.tonk-hub :is(input:not([type="radio"]), select) { width: 100%; max-width: 360px; height: var(--tonk-height-field); padding: 0 12px; border: 1px solid var(--tonk-control-edge); border-radius: var(--tonk-radius-control); background: var(--tonk-field); color: var(--tonk-text); font: 400 var(--tonk-size-field)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+.tonk-hub :is(input:not([type="radio"], [type="checkbox"]), select) { width: 100%; max-width: 360px; height: var(--tonk-height-field); padding: 0 12px; border: 1px solid var(--tonk-control-edge); border-radius: var(--tonk-radius-control); background: var(--tonk-field); color: var(--tonk-text); font: 400 var(--tonk-size-field)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
 /* a select's value is a word the person picks, so it wears the label face at
    the field's size, 14, and is as wide as its longest option.
    The minimum holds that width while the web font loads, so it never jumps */

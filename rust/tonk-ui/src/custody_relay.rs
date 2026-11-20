@@ -43,7 +43,7 @@ const CARD_ID: &str = "tonk-custody-consent";
 const CARD_HTML: &str = r#"
 <section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
   <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">use your passkey</h2></header>
-  <div class="fabb-request"><p id="tonk-custody-text" role="status">Use your passkey to unlock the key that protects your account on this device.</p></div>
+  <div class="fabb-request"><p id="tonk-custody-text" role="status">Use your passkey to unlock your account key on this device.</p></div>
   <div id="tonk-custody-actions" class="fabb-actions">
     <button id="tonk-custody-dismiss" type="button">not now</button>
     <button id="tonk-custody-continue" type="button">use passkey</button>
@@ -308,7 +308,7 @@ fn show_consent() {
                         tonk_analytics::account::Stage::Complete,
                         tonk_analytics::account::AccountOutcome::success(),
                     );
-                    set_card_text("Nothing was needed after all.")
+                    set_card_text("No account key update needed.")
                 }
                 Err(error) => {
                     tonk_common::log!("custody: encryption key not published: {error}");
@@ -485,9 +485,7 @@ fn run_recovery_phrase_card(intent: tonk_worker_api::CustodyIntent, credential_i
     let action = command_action(&intent);
     on_click(&host, "#tonk-custody-continue", move || {
         if !phrase_confirmed(&confirm_words, &asked) {
-            set_card_message(
-                "Those words do not match. Check the words you wrote down and try again.",
-            );
+            set_card_message("Those words don’t match. Check your saved phrase.");
             return;
         }
         set_card_text("Waiting for passkey…");
@@ -591,14 +589,9 @@ fn stage_phrase(words: &str) -> Result<(), String> {
                 .and_then(|code| code.as_string())
                 .as_deref()
             {
-                Some("WordCount") => {
-                    "A recovery phrase has twelve words. Check you entered all of them.".to_owned()
-                }
-                Some("UnknownWord") => {
-                    "One of the words is not a recovery phrase word. Check its spelling.".to_owned()
-                }
-                _ => "These words are not a recovery phrase. Check each word and their order."
-                    .to_owned(),
+                Some("WordCount") => "Enter all 12 words.".to_owned(),
+                Some("UnknownWord") => "Check the spelling of each word.".to_owned(),
+                _ => "Check the spelling and order of the words.".to_owned(),
             }
         })
 }
@@ -629,9 +622,9 @@ const PHRASE_ENTRY_HTML: &str = r#"
   <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
               background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
     <p id="tonk-custody-text" style="margin:0;font-weight:600">
-      Confirm this account action with your recovery phrase.</p>
+      Enter your 12-word recovery phrase to confirm.</p>
     <textarea id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false"
-      aria-label="recovery phrase" placeholder="your twelve words, in order"
+      aria-label="recovery phrase"
       style="min-height:120px;padding:10px 12px;border:0;box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
              font:600 15px/1.6 var(--mono, ui-monospace, monospace);resize:vertical"></textarea>
     <button id="tonk-phrase-use-passkey" type="button"
@@ -758,7 +751,7 @@ fn show_phrase_confirmation(asked: &[usize]) {
         checks.set_inner_html(&rows);
         let _ = checks.remove_attribute("hidden");
     }
-    set_card_message("Enter these words from your recovery phrase to show you have it.");
+    set_card_message("Enter the requested words from your recovery phrase.");
     if let Ok(Some(save)) = card.query_selector("#tonk-custody-continue") {
         let _ = save.remove_attribute("hidden");
     }
@@ -802,8 +795,8 @@ const PHRASE_CARD_HTML: &str = r#"
   <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
               background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
     <p id="tonk-custody-text" style="margin:0;font-weight:600">
-      Write these 12 words down, in order, and keep them offline. Anyone with them can sign in as
-      you, forever: a recovery phrase cannot be revoked or replaced. They are shown only once.
+      Write down these 12 words in order and keep them offline. Tonk shows them only once.
+      Anyone with the phrase can sign in as you. You can’t revoke or replace it.
     </p>
     <ol id="tonk-phrase-words" data-recovery-words
         style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 12px;margin:0;padding:0;list-style:none;
