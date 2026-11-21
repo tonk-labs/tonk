@@ -312,7 +312,7 @@ where
 }
 
 /// The full mount record for one space, or `None` when the directory
-/// holds no remotes for it.
+/// no longer lists it or holds no remotes for it.
 pub async fn mount_record<Env>(
     account: &Branch,
     subject: &Did,
@@ -398,6 +398,21 @@ where
         + 'static,
 {
     let anchor = subject.this();
+    // Remote and branch facts live on derived entities and can outlast a
+    // deletion. Only the listing on the space itself makes them mountable.
+    let listed: Vec<Space> = account
+        .query()
+        .select(Query::<Space> {
+            this: Term::from(anchor.clone()),
+            subject: Term::from(crate::domain::space::Subject(anchor.clone())),
+            status: Term::var("status"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+    if listed.is_empty() {
+        return Ok(None);
+    }
     let remote_rows: Vec<Remote> = account
         .query()
         .select(Query::<Remote> {
@@ -650,6 +665,7 @@ mod tests {
         );
         account
             .transaction()
+            .assert(Space::new(&subject, Replica::initialized_status()))
             .assert(remote)
             .assert(local.clone())
             .assert(upstream.clone())
@@ -752,6 +768,15 @@ mod tests {
             .perform(&operator)
             .await
             .unwrap();
+        let space = Space::new(&subject, Replica::initialized_status());
+        branch
+            .transaction()
+            .assert(space.clone())
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
         let record = mount_record_strict(&branch, &subject, &operator)
             .await
             .unwrap()
@@ -762,6 +787,28 @@ mod tests {
         assert_eq!(
             Some(record),
             mount_record(&branch, &subject, &operator).await.unwrap()
+        );
+
+        // Deletion retracts the listing but leaves mount facts on derived entities.
+        branch
+            .transaction()
+            .retract(space)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
+        assert!(
+            mount_record_strict(&branch, &subject, &operator)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mount_record(&branch, &subject, &operator)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 }

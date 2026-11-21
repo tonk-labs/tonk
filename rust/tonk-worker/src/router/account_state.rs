@@ -1726,18 +1726,17 @@ pub(super) async fn recover_created_spaces(
                 .await?;
             }
             let configuration = super::repository::space_config(home.as_str())?;
-            super::repository::record_space_mount(
+            super::repository::record_created_space_mount(
                 tonk,
                 &subject,
                 &configuration,
                 Some(&handoff.name),
             )
-            .await;
+            .await?;
         }
-        anyhow::ensure!(
-            super::adopt::ensure_space_mounted(tonk, subject.as_str()).await?,
-            "created space has no local mount"
-        );
+        let mounted = super::adopt::ensure_space_mounted(tonk, subject.as_str()).await?;
+        // An already-imported receipt can outlive its directory listing.
+        anyhow::ensure!(mounted || imported, "created space has no local mount");
         if tonk_account::delegations::retain_space_delegation(
             main.handle(),
             &handoff.owner_grant,

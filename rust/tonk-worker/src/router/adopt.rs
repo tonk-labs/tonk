@@ -190,7 +190,7 @@ async fn mount_and_record(
 ) -> Result<(), crate::TonkWorkerError> {
     super::join::mount_replica_with_configuration(tonk, subject, configuration).await?;
     pull_content_on_mount(tonk, subject).await;
-    super::repository::record_initialized_replica_in_profile(tonk, subject)
+    super::repository::record_adopted_replica_in_profile(tonk, subject)
         .await
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
@@ -723,7 +723,9 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        super::super::repository::record_created_space_mount(&tonk, &subject, &configuration, None)
+            .await
+            .unwrap();
 
         // Whether this attempt succeeds or fails is not the point; that
         // no marker survives it is.
@@ -1053,10 +1055,9 @@ mod tests {
             .unwrap();
         let tonk = state.read().await;
         assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        // Re-run the existing adoption path, including its storage/authority
-        // outcome, rather than returning the removed replica's old receipt.
+        // Reopening the old URL must not remount from orphaned configuration.
         let before = tonk.admission.observations.counts();
-        let _lookup = ensure_space_mounted(&tonk, &key).await;
+        assert!(!ensure_space_mounted(&tonk, &key).await.unwrap());
         assert!(tonk.admission.observations.counts().0 > before.0);
         assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
         let other = crate::router::tests::test_state().await;
@@ -1234,7 +1235,9 @@ mod tests {
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        super::super::repository::record_created_space_mount(&tonk, &subject, &configuration, None)
+            .await
+            .unwrap();
         let (entered, release) = pause_next(&tonk, key);
         let leader = async {
             assert!(ensure_space_mounted(&tonk, key).await.unwrap());
@@ -1361,13 +1364,14 @@ mod tests {
             !ensure_space_mounted(&tonk, subject.as_str()).await.unwrap(),
             "an absent record must not become a negative cache entry",
         );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
@@ -1424,13 +1428,14 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
@@ -1488,13 +1493,14 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
