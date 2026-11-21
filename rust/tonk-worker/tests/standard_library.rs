@@ -963,7 +963,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-pinned', 'data-opened']",
     ] {
         assert!(
             collection.contains(contract),
@@ -1341,6 +1341,31 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
 }
 
 #[dialog_common::test]
+fn agent_consent_uses_the_task_sheet_for_both_steps() {
+    let sheet = PROFILE_LIBRARY
+        .split_once("data-pane=\"agent\" hidden data-agent-approval")
+        .expect("agent approval pane")
+        .1
+        .split_once("</section>")
+        .expect("end of the task sheet")
+        .0;
+    for part in [
+        "class=\"fabb-task-step\" data-agent-counter",
+        "<dl class=\"fabb-ledger\">",
+        "<dt>your account</dt>",
+        "<fieldset class=\"fabb-group\" data-agent-options",
+        "<ul class=\"fabb-reach\" data-agent-spaces",
+        "class=\"fabb-actions\" data-agent-panel=\"agent\"",
+        "class=\"fabb-actions\" data-agent-panel=\"spaces\"",
+    ] {
+        assert!(
+            sheet.contains(part),
+            "missing consent sheet component {part}"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_renders_join_refusals_as_neutral_edge_walls() {
     let failure = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/failure")
@@ -1360,10 +1385,11 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         );
     }
     // The mock's #link-off: a revoked link reads as turned off, not
-    // expired (nothing records an expiry).
+    // expired. The worker can also report a confirmed expiry.
     assert!(failure.contains("heading=\"this passlink was turned off\""));
     assert!(failure.contains("so it can’t be used to join. Ask them for a new one."));
-    assert!(!failure.contains("link expired"));
+    assert!(failure.contains("heading=\"this passlink expired\""));
+    assert!(failure.contains("data-kind={kind}"));
     // A wall is never a dead end for someone signed in (PAGES.md).
     assert!(failure.contains("<a href=\"/\">your spaces</a>"));
     assert!(!failure.contains("edge-field edge-field--settled"));
@@ -2191,7 +2217,7 @@ fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
     for absent in [
         "concept!: &space/role",
         "data-role-case",
-        "class=\"hub-meta\"",
+        "class=\"hub-role\"",
     ] {
         assert!(
             !PROFILE_LIBRARY.contains(absent),
@@ -2428,7 +2454,7 @@ fn it_draws_a_devices_request_as_the_connect_a_device_task() {
         "<dd data-link-account-cell>\n                          <tonk-display model=\"state:account-link\" view=\"label\">"
     ));
     assert!(PROFILE_LIBRARY.contains(
-        "account-settings [data-link-account-cell]:has([data-account-name]) [data-link-account-email] { display:none; }"
+        "account-settings :is([data-link-account-cell], [data-agent-account-cell]):has([data-account-name]) [data-link-account-email] { display:none; }"
     ));
     // the connected step names the device it connected
     assert!(pane.contains(

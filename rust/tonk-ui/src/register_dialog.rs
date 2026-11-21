@@ -454,6 +454,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, "#tonk-register-phrase-login", submit_phrase_login);
     watch_address(&host);
+    watch_phrase_count(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -976,6 +977,27 @@ fn registration_focusables(host: &Element) -> Vec<HtmlElement> {
         }
     }
     focusables
+}
+
+fn watch_phrase_count(host: &Element) {
+    let Ok(Some(field)) = host.query_selector("#tonk-register-phrase") else {
+        return;
+    };
+    let Ok(Some(count)) = host.query_selector("#tonk-register-word-count") else {
+        return;
+    };
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target() else { return };
+        let words = js_sys::Reflect::get(&target, &"value".into())
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        let total = words.split_whitespace().count();
+        count.set_text_content(Some(&format!("{total} of 12")));
+        let _ = count.toggle_attribute_with_force("data-full", total == 12);
+    });
+    let _ = field.add_event_listener_with_callback("input", listener.as_ref().unchecked_ref());
+    listener.forget();
 }
 
 /// Ask about the address as it is typed, so the dialog can offer
@@ -2970,6 +2992,20 @@ fn toggle_phrase_login() {
             };
         }
     };
+    if let Some(title) = query("#tonk-register-head") {
+        if showing {
+            if let Some(previous) = title.get_attribute("data-previous-heading") {
+                title.set_text_content(Some(&previous));
+                let _ = title.remove_attribute("data-previous-heading");
+            }
+        } else {
+            let _ = title.set_attribute(
+                "data-previous-heading",
+                &title.text_content().unwrap_or_default(),
+            );
+            title.set_text_content(Some("enter your recovery phrase"));
+        }
+    }
     set_hidden(Some(row), showing);
     set_hidden(query("#tonk-register-phrase-login"), showing);
     // The dialog widens for the words while the phrase is being typed.

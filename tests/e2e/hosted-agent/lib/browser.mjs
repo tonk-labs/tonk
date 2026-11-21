@@ -289,7 +289,7 @@ export async function syncedSpaces(page, names, timeout = 120_000) {
 
 /**
  * Approve the agent on the page `/authorize` sent the browser to, granting
- * `grants` (space name to "read" or "read & write"). The page then sends
+ * `grants` (space name to its access label). The page then sends
  * the browser on to the client's callback.
  *
  * Locators are by role and accessible name, agreed with the approval page.
@@ -306,7 +306,7 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
     for (const [space, access] of Object.entries(grants)) {
       await root
         .getByRole('radiogroup', { name: space })
-        .getByRole('radio', { name: access, exact: true })
+        .getByText(access, { exact: true })
         .click({ timeout: 120_000 });
     }
   } catch (error) {
@@ -322,7 +322,7 @@ export async function approve(page, { authorizationUrl, agent, grants, signIn })
   console.log(`${agent}: before approve ${JSON.stringify(opening.stop())}`);
   // Counted from the click: what approving costs, apart from the page.
   const cost = traffic(page.context());
-  await root.getByRole('button', { name: 'approve' }).click();
+  await root.getByRole('button', { name: /^(reconnect agent|connect to (its own space|\d+ spaces?))$/ }).click();
   return cost;
 }
 
