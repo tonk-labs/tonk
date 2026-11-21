@@ -1,0 +1,48 @@
+concept!: &garden-task
+  description: An outstanding garden job
+  with:
+    title: { description: The job, the: garden.task/title, as: text }
+
+command!: &finish-task
+  with:
+    subject: { description: The finished job, the: garden.finish/subject, as: entity }
+
+rule!:
+  retract!: garden-task
+  when:
+    - assert: finish-task
+      where: { subject: ?this }
+    - assert: garden-task
+      where: { this: ?this, title: ?title }
+
+view!:
+  this: garden-task
+  show:
+    ui: |
+      <p>{title} <button on:click=finish-task>Finish task</button></p>
+
+garden-task!:
+  this: id:test-seedlings
+  title: "Water seedlings"
+
+garden-task!:
+  this: id:test-compost
+  title: "Turn compost"
+
+concept!: &garden-home
+  this: space:home
+  description: Garden home page
+  with:
+    subject: { description: The space, the: dialog.replica/subject, as: entity }
+
+view!:
+  this: space:home
+  show:
+    ui: |
+      <h1>Planting day</h1>
+      <a href="/id:test-seedlings@garden-task">Task details</a>
+      <tonk-display model="garden-task" view="ui"></tonk-display>
+
+name!:
+  this: id:tonk/space
+  entity: space:home
