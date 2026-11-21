@@ -4359,12 +4359,68 @@ pub(crate) mod tests {
         wait_for_text(&driver, first, "Atlas").await?;
 
         // Open directly so visit tracking cannot rely on clicking a hub row.
+        let visit_started = driver
+            .execute("return Date.now();", Vec::new())
+            .await?
+            .json()
+            .as_u64()
+            .context("browser did not return a visit timestamp")?;
         goto(
             &driver,
             env.tonk_web.join(&format!("space/{zebra}"))?.as_str(),
         )
         .await?;
         enter_space_view(&driver).await?;
+        // Frame attachment can precede the visit transaction. Stay on the
+        // direct route until its new timestamp is observable on profile main.
+        driver.enter_default_frame().await?;
+        let subject = if zebra.starts_with("did:") {
+            zebra.clone()
+        } else {
+            format!("did:key:{zebra}")
+        };
+        let visit = await_subscription(
+            &driver,
+            "/api/repository/profile:tonk/branch/main/query",
+            serde_json::json!({
+                "predicate": {"with": {
+                    "opened": {"the": "xyz.tonk.hub/opened", "as": "Float", "cardinality": "one"}
+                }},
+                "terms": {"this": subject, "opened": {"?": {"name": "opened"}}}
+            }),
+            &format!(
+                "return (frame.conclusions || frame.asserted || []).some(row => row.fields?.opened >= {visit_started});"
+            ),
+            30_000,
+        )
+        .await;
+        if let Err(error) = visit {
+            let diagnostics = match enter_guest(&driver).await {
+                Ok(()) => driver
+                    .execute(
+                        r#"const marker = document.querySelector('hub-preferences[data-visit]');
+                           const sibling = marker?.nextElementSibling;
+                           const display = document.querySelector("tonk-display[model='tonk:repository'][view='title']");
+                           return {
+                             marker: Boolean(marker),
+                             upgraded: typeof marker?.save === 'function',
+                             siblingTag: sibling?.localName,
+                             siblingState: sibling?.dataset.state,
+                             titleState: display?.dataset.state,
+                             entityMatches: Boolean(marker?.dataset.visit && display?.getAttribute('entity') === marker.dataset.visit),
+                             attempted: Boolean(marker?.dataset.visit && window.__tonkVisitedSpace === marker.dataset.visit),
+                           };"#,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|result| result.json().to_string())
+                    .unwrap_or_else(|_| "unavailable".into()),
+                Err(_) => "guest frame unavailable".into(),
+            };
+            return Err(error.context(format!(
+                "waiting for a new Zebra direct visit on profile main; guest: {diagnostics}"
+            )));
+        }
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         let sort = wait_for_displayed(&driver, "[data-space-sort]").await?;
