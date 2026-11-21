@@ -139,7 +139,7 @@ mod when_reporting_where_i_am {
             name: "demo".to_string(),
             site: "/spaces/demo".to_string(),
             selected_via: "env".to_string(),
-            branch: "main",
+            branch: "main".into(),
             cwd_selects_space: false,
         };
         assert_eq!(
