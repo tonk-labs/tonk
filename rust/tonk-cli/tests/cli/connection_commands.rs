@@ -337,7 +337,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         tonk_cli::connections::import_at(&producer_root, &prepared, producer_store.clone()).await?;
     let producer =
         tonk_cli::connections::open_bound(&producer_root, &binding, producer_store).await?;
-    let entity: dialog_artifacts::Entity = "id:test:before-cli".parse()?;
+    let entity: dialog_corpus::Entity = "id:test:before-cli".parse()?;
     producer
         .branch()
         .await?

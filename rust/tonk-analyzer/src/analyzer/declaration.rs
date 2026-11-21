@@ -3,7 +3,7 @@
 //! build the `Application`s that the orchestrator caches by
 //! source-expression index.
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
     concept::query::ConceptQuery,
@@ -253,6 +253,23 @@ pub(crate) fn parse_attribute_fields(
                     reason: "`select:` is now spelled `pick:`".into(),
                 }
                 .into());
+            }
+            // The layer a write of the attribute lands in (dialog's
+            // `in`): an entity such as `"session:"`, the stack's own
+            // layer, which is never committed and goes with the session.
+            // Without it a write lands in the branch.
+            "in" => {
+                let value_str = stringify_simple_value(field)?;
+                if value_str.parse::<Entity>().is_err() {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "`in:` names a layer by its entity, such as \"session:\"; \
+                             {value_str:?} is not one"
+                        ),
+                    }
+                    .into());
+                }
+                shape.insert("in".into(), serde_json::Value::String(value_str));
             }
             "description" => {
                 let value_str = require_string_description(field)?;
@@ -607,7 +624,7 @@ fn stub_attr() -> serde_json::Value {
 fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, AnalyzeError> {
     match &field.value {
         FieldValue::Uri(uri) => {
-            let entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+            let entity = uri.parse().map_err(|e: dialog_corpus::IdentityError| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::InvalidSubjectUri {
                         subject: uri.clone(),

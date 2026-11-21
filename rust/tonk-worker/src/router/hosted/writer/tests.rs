@@ -1263,6 +1263,241 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
+    #[dialog_common::test]
+    async fn chat_created_space_survives_agent_revocation() {
+        use crate::router::{
+            agents::withdraw,
+            hosted::creation::{CreateRequest, PendingCreations},
+            http::post_cbor,
+        };
+        use dialog_credentials::{
+            Signer,
+            secret::{Context, SealedSecret},
+        };
+        use tonk_identity::created_space::{self, Handoff};
+        let fixture = Fixture::start().await;
+        let owner = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .activate_customer(&owner, "owner@example.test")
+            .await
+            .unwrap();
+        let hosted = session(&fixture.space, "creation", &fixture.remote).await;
+        let writer = fixture.writer_for(&hosted).await;
+        let permission = created_space::permission(
+            &owner,
+            &fixture.space.did(),
+            &fixture.remote,
+            dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+        )
+        .await
+        .unwrap();
+        let mut cards = PendingCreations::default();
+        let ask = writer
+            .create_space(
+                &fixture.remote,
+                cards
+                    .decide(
+                        CreateRequest::Propose {
+                            name: "Research".into(),
+                        },
+                        1,
+                    )
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = ask["structuredContent"]["card"]["answers"][1]["arguments"]["id"]
+            .as_str()
+            .unwrap();
+        let confirm = || CreateRequest::Answer {
+            id: id.into(),
+            approve: true,
+            permission: hex::encode(permission.to_bytes().unwrap()),
+        };
+        let created = writer
+            .create_space(&fixture.remote, cards.decide(confirm(), 2).unwrap())
+            .await
+            .unwrap();
+        assert!(cards.decide(confirm(), 3).is_err());
+        let space: Did = created["structuredContent"]["space"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let reader = SpaceWriter::open(&scratch_root(), &hosted, &space, &fixture.remote)
+            .await
+            .unwrap();
+        let (status, body) = evaluate(&reader, SCHEMA.into()).await;
+        assert!(status.is_success(), "{status}: {body}");
+        let device = Ed25519Signer::generate().await.unwrap();
+        let link = tonk_identity::delegation::mint_device_delegation(owner.clone(), &device.did())
+            .await
+            .unwrap();
+        let list = tonk_identity::request::build_device_invocation(
+            device,
+            &link,
+            created_space::LIST.map(str::to_string).to_vec(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let receipts: Vec<String> =
+            serde_json::from_slice(&post_cbor(&fixture.remote, &list).await.unwrap().body).unwrap();
+        assert_eq!(receipts.len(), 1);
+        let receipt =
+            DelegationChain::try_from(hex::decode(&receipts[0]).unwrap().as_slice()).unwrap();
+        let handoff = Handoff::read(receipt, &owner.did()).await.unwrap();
+        let sealed = SealedSecret::from_bytes(&handoff.sealed).unwrap();
+        assert!(
+            fixture
+                .space
+                .secret(Context::new(created_space::SPACE_KEY))
+                .reveal(&sealed)
+                .await
+                .is_err()
+        );
+        let seed = Zeroizing::new(
+            owner
+                .secret(Context::new(created_space::SPACE_KEY))
+                .reveal(&sealed)
+                .await
+                .unwrap(),
+        );
+        let recovered = Ed25519Signer::import(<&[u8; 32]>::try_from(seed.as_slice()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(recovered.did(), space);
+        // Sign a separate device in as the owner, then import the receipt
+        // and revoke using the same account paths the browser uses.
+        use crate::router::{account, account_state, agent_session, identity, repository};
+        use tonk_schema::prelude::DidExt as _;
+        let browser = crate::router::command::tests::native::test_state().await;
+        let tonk = browser.read().await.clone();
+        let link =
+            tonk_identity::delegation::mint_device_delegation(owner.clone(), &tonk.profile.did())
+                .await
+                .unwrap();
+        let delegation_hex = hex::encode(link.to_bytes().unwrap());
+        identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "chat-create".into(),
+                delegation_hex: delegation_hex.clone(),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        account::persist_link(
+            &tonk,
+            &tonk_worker_api::AccountLinkRequest {
+                credential_id: "chat-create".into(),
+                delegation_hex,
+                root_did: owner.did().to_string(),
+                remote: fixture.remote.to_string(),
+                provider: fixture.remote.to_string(),
+                initialize_name: false,
+            },
+        )
+        .await
+        .unwrap();
+        let union = tonk_account::delegations::mint_account_union(
+            &Signer::from(owner.clone()),
+            &tonk.profile.did(),
+        )
+        .await
+        .unwrap();
+        tonk_account::peer::hand_over(&tonk.profile, &union)
+            .await
+            .unwrap();
+        let dialog_credentials::key::KeyExport::Extractable(bytes) =
+            fixture.space.export().await.unwrap();
+        let key = repository::create_space_from_seed(
+            &browser,
+            "Test agent",
+            None,
+            Zeroizing::new(bytes.as_slice().try_into().unwrap()),
+        )
+        .await
+        .unwrap();
+        agent_session::mark(&tonk, &key, &fixture.space.did(), "Test agent", None)
+            .await
+            .unwrap();
+        let ready = account_state::ReadyAccountBranch {
+            key: owner.did().repo_key().into(),
+            subject: owner.did(),
+        };
+        account_state::recover_created_spaces(&tonk, &ready)
+            .await
+            .unwrap();
+        assert_eq!(
+            agent_session::open_held(&tonk, &owner, &space)
+                .await
+                .unwrap()
+                .did(),
+            space
+        );
+        let revoked = withdraw::withdraw(&tonk, &owner, &key, &space)
+            .await
+            .unwrap();
+        assert!(revoked.unresolved.is_empty(), "{:?}", revoked.unresolved);
+        assert_eq!(revoked.revoked.len(), handoff.grants.len());
+        account_state::recover_created_spaces(&tonk, &ready)
+            .await
+            .unwrap();
+        assert!(
+            withdraw::link_grants(&tonk, &fixture.space.did(), &space)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let (status, body) = query(&reader, "concept:\n").await;
+        assert!(
+            !status.is_success() && body.to_string().contains("CREDENTIAL_REVOKED"),
+            "{status}: {body}"
+        );
+        let (status, _) = evaluate(&reader, fixture.note("refused")).await;
+        assert!(!status.is_success());
+        // Write and push as the signed-in device, then read back from
+        // an independent peer authenticated with the recovered space key.
+        use tower::ServiceExt as _;
+        let (app, _) = crate::router::api_router_from_state(browser.clone());
+        let branch = format!("/api/repository/{space}/branch/main");
+        for (suffix, document) in [
+            ("sync/pull", String::new()),
+            ("evaluate?transact=true", fixture.note("owner")),
+            ("sync/push", String::new()),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(
+                    Method::POST,
+                    &format!("{branch}/{suffix}"),
+                    document,
+                ))
+                .await
+                .unwrap();
+            let (status, body) = json(response).await;
+            assert!(status.is_success(), "{suffix}: {status}: {body}");
+        }
+        let independent = session(&recovered, "owner", &fixture.remote).await;
+        let own = SpaceWriter::open(&scratch_root(), &independent, &space, &fixture.remote)
+            .await
+            .unwrap();
+        assert!(
+            notes(&own, fixture.run)
+                .await
+                .contains(&format!("urn:writer:{}:owner", fixture.run))
+        );
+        own.close().await;
+        reader.close().await;
+        writer.close().await;
+        fixture.stop().await;
+    }
+
     /// The person removes access a share link gave their agent, with the
     /// passkey: the account opens the agent's sealed key and the agent
     /// revokes, as the grants' audience, every leaf the link issued to
@@ -1342,7 +1577,7 @@ concept!: &writer-note
         let key = repository::create_space_from_seed(&state, "Claude", None, seed)
             .await
             .unwrap();
-        mark(&*state.read().await, &key, &agent, Some("claude"))
+        mark(&*state.read().await, &key, &agent, "Claude", Some("claude"))
             .await
             .unwrap();
         fixture
@@ -1603,6 +1838,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link: link.clone(),
                     access: None,
+                    origin: None,
                 })
                 .await
                 .unwrap();
@@ -1620,6 +1856,7 @@ concept!: &writer-note
                 .join_link(&LinkRequest {
                     link,
                     access: Some(access.into()),
+                    origin: None,
                 })
                 .await
                 .unwrap();

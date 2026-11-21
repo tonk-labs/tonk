@@ -7,7 +7,7 @@
 //! [`super::Pull`] / [`super::transaction::Commit`] it does not
 //! re-poll subscriptions.
 
-use dialog_artifacts::{DialogArtifactsError, Exporter};
+use dialog_corpus::{DialogCorpusError, Exporter};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, SelectProvider};
@@ -51,7 +51,7 @@ pub enum ExportError {
     /// The branch could not be resolved / opened.
     Reactor(ReactorError),
     /// The dialog export stream failed.
-    Export(DialogArtifactsError),
+    Export(DialogCorpusError),
 }
 
 impl From<ReactorError> for ExportError {

@@ -605,11 +605,13 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
         .context("failed to open the membership branch")?;
     session
         .handle()
-        .transaction()
-        .assert(membership.clone())
-        .assert(MemberRole::founder(membership.this().clone()))
-        .commit()
-        .publish()
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction
+                    .assert(membership.clone())
+                    .assert(MemberRole::founder(membership.this().clone())),
+            ))
+        })
         .perform(&site.operator)
         .await
         .context("failed to record founder membership")?;
@@ -1516,16 +1518,19 @@ pub async fn transplant_at_with(
         .branch()
         .await
         .context("failed to reopen the main branch")?;
+    let transplant = Transplant::new(&origin, head, tree);
     session
         .handle()
-        .transaction()
-        .assert(RepositoryName {
-            this: site.repository.did().this(),
-            name: tonk_schema::domain::repo::Name(name.to_owned()),
+        .transact(|transaction| {
+            std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                transaction
+                    .assert(RepositoryName {
+                        this: site.repository.did().this(),
+                        name: tonk_schema::domain::repo::Name(name.to_owned()),
+                    })
+                    .assert(transplant.clone()),
+            ))
         })
-        .assert(Transplant::new(&origin, head, tree))
-        .commit()
-        .publish()
         .perform(&site.operator)
         .await
         .context("failed to record the transplant")?;

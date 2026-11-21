@@ -13,10 +13,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use dialog_artifacts::Entity;
-use dialog_artifacts::history::{
-    Edition, HistorySelector, Origin, Record, RevisionRecord, Version,
-};
+use dialog_corpus::Entity;
+use dialog_corpus::history::{Edition, HistorySelector, Origin, Record, RevisionRecord, Version};
 use futures_util::StreamExt as _;
 use serde::Serialize;
 

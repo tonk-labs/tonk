@@ -16,8 +16,8 @@
 //! property of how the command is asserted (the
 //! `dialog.concept/transient` marker), not of the type.
 
-use dialog_artifacts::Entity;
 use dialog_capability::Command;
+use dialog_corpus::Entity;
 use dialog_query::Concept;
 
 pub mod legacy;
@@ -80,6 +80,25 @@ pub struct AddPasskey {
     /// own, so it needs one attribute simply to be nameable; see
     /// [`crate::domain::command::current::add_passkey::Account`].
     pub account: crate::domain::command::current::add_passkey::Account,
+}
+
+/// `tonk:add-recovery-phrase`: seal the account under a recovery phrase.
+///
+/// The page has already generated the phrase, shown its words and had
+/// them confirmed; it holds them in memory only. The worker refuses an
+/// account that is not active or already has a phrase, then asks the
+/// page to assert the passkey and hand over the phrase with it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AddRecoveryPhrase {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The account to set the phrase up for.
+    pub account: crate::domain::command::current::add_recovery_phrase::Account,
+}
+
+impl Command for AddRecoveryPhrase {
+    type Input = Self;
+    type Output = ();
 }
 
 impl From<legacy::AddPasskey> for AddPasskey {
@@ -560,7 +579,7 @@ bar_command!(
 /// input, the site, and the site's selection) and one `intent` per command
 /// the input could mean, in the session overlay of the branch it came from.
 /// Rules derive values for those commands' fields onto the intents, and
-/// `intent/suggest` reads them back as readings.
+/// [`Suggest`] reads them back as readings.
 #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Interpret {
     /// The command entity (a fresh id per keystroke).
@@ -576,6 +595,40 @@ pub struct Interpret {
 }
 
 impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `intent/suggest`: what a line typed in the command palette could mean.
+/// Asked by the page through the transact path, and answered by a
+/// provider the worker registers on the branch's stack
+/// ([`Stack::provide`](dialog_repository::Stack::provide)), which reads
+/// the branch's palette vocabulary and writes one `intent/reading` per
+/// reading and an `intent/answer` into the branch's `session:` layer, all
+/// naming this command, so the tab that asked reads its own answer.
+///
+/// The caller's clock is what every ask carries; the rest is optional,
+/// as the provider reads it: the input is absent when the ask names an
+/// interpreted expression, whose recorded input stands in, and the
+/// count defaults. The other optional fields (`subject`, `site`,
+/// `expression`, `memory`; see the library's declaration) are read from
+/// the command's rows by the provider. A stack provider claims an ask
+/// whose rows satisfy this concept's required fields, so a field every
+/// ask does not carry must not be required here.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Suggest {
+    /// The command entity (a fresh id per ask), which its answer names.
+    pub this: Entity,
+    /// What was typed; empty asks for the menu; absent when the ask
+    /// names an interpreted expression.
+    pub input: Option<crate::domain::command::current::intent_suggest::Input>,
+    /// The caller's clock in milliseconds.
+    pub now: crate::domain::command::current::intent_suggest::Now,
+    /// How many readings at most; the provider's default when absent.
+    pub max: Option<crate::domain::command::current::intent_suggest::Max>,
+}
+
+impl Command for Suggest {
     type Input = Self;
     type Output = ();
 }

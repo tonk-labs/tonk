@@ -21,7 +21,7 @@
 // compile under `-D warnings`.
 #![allow(missing_docs)]
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::Attribute;
 use dialog_repository::SiteAddress;
 
@@ -349,6 +349,20 @@ pub mod recovery {
     pub struct DisplayName(pub String);
 }
 
+/// Attributes of an account's recovery phrase, keyed on the custody DID
+/// the phrase derives. A namespace of its own so a phrase never reads as
+/// a passkey: the passkey list requires `xyz.tonk.recovery` attributes a
+/// phrase does not have.
+pub mod recovery_phrase {
+    use super::Attribute;
+
+    /// When the phrase was set up, unix seconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.recovery.phrase")]
+    #[pick(last)]
+    pub struct CreatedAt(pub u64);
+}
+
 pub mod device {
     use super::{Attribute, Entity};
 
@@ -436,7 +450,7 @@ pub mod sync {
 /// tab's latest location + route. Route models pick whichever of these they
 /// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
 ///
-/// [`Entity`]: dialog_artifacts::Entity
+/// [`Entity`]: dialog_corpus::Entity
 pub mod site {
     use super::{Attribute, Entity};
 
@@ -1324,7 +1338,7 @@ pub mod command {
 
         /// `space/create-branch` — give a space a branch it does not have.
         pub mod create_branch {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space (its subject DID) to make the branch in.
@@ -1354,7 +1368,7 @@ pub mod command {
 
         /// `space/remove` — drop a space from this device.
         pub mod remove_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to remove. Called what it is: the old
@@ -1561,7 +1575,7 @@ pub mod command {
         /// `member/expel` — revoke a member's access to a space.
         /// `library/install` — add a library component to the space.
         pub mod install_component {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The component (`tonk:library/<name>`): which library file.
@@ -1576,7 +1590,7 @@ pub mod command {
         }
 
         pub mod expel_member {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The DID the member's membership is keyed on.
@@ -1620,7 +1634,7 @@ pub mod command {
 
         /// `tonk/add-passkey` — seal the account under a second passkey.
         pub mod add_passkey {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The account to add a passkey to.
@@ -1636,10 +1650,25 @@ pub mod command {
             pub struct Account(pub Entity);
         }
 
+        /// `tonk/add-recovery-phrase` — seal the account under the
+        /// recovery phrase the page staged.
+        pub mod add_recovery_phrase {
+            use dialog_corpus::Entity;
+            use dialog_query::Attribute;
+
+            /// The account to set a recovery phrase up for. As with
+            /// [`super::add_passkey::Account`], the verb carries no data
+            /// (the words never ride on a command), so this is what makes
+            /// it nameable.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.add-recovery-phrase")]
+            pub struct Account(pub Entity);
+        }
+
         /// `tonk/forget-invite` — drop a space's invite row once its
         /// link has been copied.
         pub mod forget_invite {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The copy's timestamp, so each one is a distinct transient.
@@ -1656,7 +1685,7 @@ pub mod command {
         /// `space/replicate` — pull a space the account has but this
         /// device does not.
         pub mod replicate_space {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The space to pull, as its subject DID.
@@ -1678,7 +1707,7 @@ pub mod command {
 
         /// `intent/interpret` — what was typed in the command palette.
         pub mod intent_interpret {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The palette opening it belongs to: one per opening, made by
@@ -1703,9 +1732,33 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `intent/suggest` — what a line typed in the command palette
+        /// could mean. The fields every ask carries; the optional ones
+        /// (`subject`, `site`, `expression`, `memory`) are read from the
+        /// command's rows by the provider.
+        pub mod intent_suggest {
+            use dialog_query::Attribute;
+
+            /// What was typed; empty asks what can be done without saying
+            /// more.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Input(pub String);
+
+            /// The caller's clock in milliseconds.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Now(pub f64);
+
+            /// How many readings at most.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.suggest")]
+            pub struct Max(pub u64);
+        }
+
         /// `site/select` — what the page in a tab has selected.
         pub mod site_select {
-            use dialog_artifacts::Entity;
+            use dialog_corpus::Entity;
             use dialog_query::Attribute;
 
             /// The tab's site entity (`window.tonk.context.site`).
@@ -2200,7 +2253,7 @@ pub mod credential {
 /// thing that happens to share the noun.
 pub mod invite {
     use super::Attribute;
-    use dialog_artifacts::Entity;
+    use dialog_corpus::Entity;
 
     /// Where this space's invite has got to.
     ///
@@ -2423,6 +2476,19 @@ pub mod invitation_execution {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.invitation-execution")]
     pub struct Kind(pub String);
+
+    /// When the invitation was minted, unix milliseconds.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct MintedAt(pub u64);
+
+    /// Where the invitation lists among its space's links, unix
+    /// milliseconds: the place of the link it replaced.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation-execution")]
+    #[pick(last)]
+    pub struct ListedAt(pub u64);
 }
 
 /// Attributes that live on [`Remote`] entities only.

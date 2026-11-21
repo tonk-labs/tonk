@@ -102,7 +102,7 @@
       "artifact": "app/screens/web-08-account-create.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07"],
+      "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07", "ACCT-B17"],
       "source_paths": ["rust/tonk-ui/src/register_dialog.rs", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/account_flow.rs"]
     },
     {
@@ -138,8 +138,8 @@
       "artifact": "app/screens/web-11-account-settings.png",
       "capture": "production-source fixture",
       "status": "captured",
-      "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css"]
+      "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15", "ACCT-B16"],
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/custody_relay.rs"]
     },
     {
       "id": "WEB-12",

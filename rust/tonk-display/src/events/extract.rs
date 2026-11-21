@@ -341,7 +341,7 @@ pub(super) fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
 }
 
 /// Convert a JS `Uint8Array` or array-of-numbers into a JSON array
-/// of unsigned bytes — the wire shape `dialog_artifacts::Value`
+/// of unsigned bytes — the wire shape `dialog_corpus::Value`
 /// deserializes as `Bytes` (or `Record`). Returns `None` if the
 /// shape doesn't match.
 fn js_to_bytes_array(value: &JsValue) -> Option<Value> {

@@ -16,7 +16,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dialog_capability::{Capability, Provider, Subject};
@@ -38,8 +37,8 @@ use ipld_core::serde::from_ipld;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tonk_account::customer::{
-    Activate, Add, ConsumerReceipt, Customer, CustomerStatus, Enroll, Ledger,
-    Provider as ProviderRole, Receipt, RegistrationError,
+    Activate, Add, AddCustodian, ConsumerReceipt, Custody as CustodyRole, Customer, CustomerStatus,
+    Enroll, Ledger, Provider as ProviderRole, Receipt, RegistrationError,
 };
 use tonk_account::customer::{RESEND_INTERVAL_SECONDS, Resend as ResendActivation};
 use tonk_account::subscription::{
@@ -48,7 +47,7 @@ use tonk_account::subscription::{
 
 use crate::email::{EmailSender, normalize_email};
 use crate::store::{Enrollment, SIGNUP_PLAN, Store, StoreError, SubscriptionKind};
-use crate::vault::Vault;
+use crate::vault::{Vault, VaultError};
 use dialog_ucan_core::revocation::RevocationChecker;
 use dialog_ucan_core::{Environment, VerificationContext};
 
@@ -70,6 +69,10 @@ pub const MAX_SEALED_BYTES: usize = 256;
 
 /// The command path segments of [`Add`].
 pub const PROVIDER_ADD_COMMAND: [&str; 2] = ["provider", "add"];
+
+/// `/custody/add`: provision a custody space and write its cell, as one
+/// command. See [`tonk_account::customer::AddCustodian`].
+pub const CUSTODY_ADD_COMMAND: [&str; 2] = ["custody", "add"];
 
 /// The operator commands on a subscription. Their subject is the
 /// service's own DID, so only a key the service delegated to can invoke
@@ -100,6 +103,16 @@ pub const CUSTODY_PUBLISH_COMMAND: [&str; 4] = ["use", "put", "memory", "cell"];
 const CUSTODY_SPACE: &str = "custody";
 /// See [`CUSTODY_SPACE`].
 const CUSTODY_SECRET_CELL: &str = "secret";
+
+/// The custody material a request names, by CID into its container:
+/// what enrollment and `/custody/add` both carry.
+#[derive(Clone, Copy)]
+struct CustodyClaim<'a> {
+    custody: &'a Did,
+    recovery: &'a Cid,
+    consent: &'a Cid,
+    sealed: &'a Cid,
+}
 
 /// The verified custody material an enrollment carries: exactly what
 /// was checked, and nothing else the container happened to hold.
@@ -145,6 +158,12 @@ pub enum RegistrationCommand {
     Activate,
     /// `/provider/add`
     ProviderAdd,
+    /// `/custody/add`
+    CustodyAdd,
+    /// Provision with a sealed owner receipt.
+    CreateSpace,
+    /// Recover owner receipts.
+    CreatedSpaces,
     /// `/use/put/subscription/suspend`
     Suspend,
     /// `/use/put/subscription/resume`
@@ -167,6 +186,13 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
         segments if segments == ENROLL_COMMAND => Some(RegistrationCommand::Enroll),
         segments if segments == ACTIVATE_COMMAND => Some(RegistrationCommand::Activate),
         segments if segments == PROVIDER_ADD_COMMAND => Some(RegistrationCommand::ProviderAdd),
+        segments if segments == CUSTODY_ADD_COMMAND => Some(RegistrationCommand::CustodyAdd),
+        segments if segments == tonk_identity::created_space::CREATE => {
+            Some(RegistrationCommand::CreateSpace)
+        }
+        segments if segments == tonk_identity::created_space::LIST => {
+            Some(RegistrationCommand::CreatedSpaces)
+        }
         segments if segments == SUSPEND_COMMAND => Some(RegistrationCommand::Suspend),
         segments if segments == RESUME_COMMAND => Some(RegistrationCommand::Resume),
         segments if segments == ARCHIVE_COMMAND => Some(RegistrationCommand::Archive),
@@ -184,6 +210,8 @@ pub enum Answer {
     Customer(Receipt),
     /// `/provider/add` answers the provisioned consumer.
     Subscription(ConsumerReceipt),
+    /// Account-owned receipts.
+    CreatedSpaces(Vec<String>),
     /// The operator commands answer with nothing to say: the effect is
     /// the row, and the gate is where it shows.
     Done,
@@ -256,6 +284,77 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     .await?,
                 ))
             }
+            Some(RegistrationCommand::CreatedSpaces) => {
+                let chain = self
+                    .verified_chain(
+                        &tonk_identity::created_space::LIST,
+                        Some(CEREMONY_WINDOW_SECONDS),
+                    )
+                    .await?;
+                Ok(Answer::CreatedSpaces(
+                    self.store
+                        .created_spaces(chain.subject().as_str())
+                        .await
+                        .map_err(internal)?,
+                ))
+            }
+            Some(RegistrationCommand::CreateSpace) => {
+                #[derive(serde::Deserialize)]
+                struct Deposit {
+                    handoff: String,
+                }
+                let chain = self
+                    .verified_chain(
+                        &tonk_identity::created_space::CREATE,
+                        Some(CEREMONY_WINDOW_SECONDS),
+                    )
+                    .await?;
+                let deposit: Deposit = deserialize_arguments(chain.arguments())?;
+                let invalid = || RegistrationError::Invalid {
+                    message: "invalid space handoff".into(),
+                };
+                if deposit.handoff.len() > 131072 {
+                    return Err(invalid());
+                }
+                let bytes = hex::decode(&deposit.handoff).map_err(|_| invalid())?;
+                let grant = DelegationChain::try_from(bytes.as_slice()).map_err(|_| invalid())?;
+                let handoff = tonk_identity::created_space::Handoff::read(grant, chain.subject())
+                    .await
+                    .map_err(|_| invalid())?;
+                let owner = chain.subject();
+                let authorized_agent = chain.proofs().first().and_then(|cid| chain.delegation(cid));
+                if !authorized_agent.is_some_and(|grant| {
+                    grant.issuer() == owner
+                        && grant.audience() == &handoff.agent
+                        && grant.meta().get(tonk_invite::HOME_ADDRESS)
+                            == handoff.owner_grant.meta(tonk_invite::HOME_ADDRESS)
+                        && grant.command().0 == tonk_identity::created_space::CREATE
+                }) {
+                    return Err(RegistrationError::Forbidden {
+                        message: "handoff must grant the agent authorized by the owner".into(),
+                    });
+                }
+                let consent = handoff.owner_grant.proofs().next().ok_or_else(invalid)?;
+                self.verify_consent(consent, &handoff.subject, owner)
+                    .await?;
+                if !self
+                    .store
+                    .add_created_space(
+                        handoff.subject.as_str(),
+                        owner.as_str(),
+                        self.now,
+                        &deposit.handoff,
+                    )
+                    .await
+                    .map_err(internal)?
+                {
+                    return Err(RegistrationError::ConsumerProvided);
+                }
+                Ok(Answer::Subscription(ConsumerReceipt {
+                    consumer: handoff.subject,
+                    provider: owner.clone(),
+                }))
+            }
             Some(RegistrationCommand::ProviderAdd) => {
                 let chain = self
                     .verified_chain(&PROVIDER_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
@@ -270,6 +369,23 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     self.add(
                         Subject::from(chain.subject().clone())
                             .attenuate(ProviderRole)
+                            .invoke(effect),
+                    )
+                    .await?,
+                ))
+            }
+            Some(RegistrationCommand::CustodyAdd) => {
+                let chain = self
+                    .verified_chain(&CUSTODY_ADD_COMMAND, Some(CEREMONY_WINDOW_SECONDS))
+                    .await?;
+                let effect: AddCustodian = deserialize_arguments(chain.arguments())?;
+                // Called directly for the reason enrollment is: the
+                // carried recovery and consent verify against the same
+                // revocation checker the outer chain used.
+                Ok(Answer::Subscription(
+                    self.add_custodian(
+                        Subject::from(chain.subject().clone())
+                            .attenuate(CustodyRole)
                             .invoke(effect),
                     )
                     .await?,
@@ -499,7 +615,18 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             Some(CustomerStatus::Registered) | None => {}
         }
 
-        let material = self.verify_custody(&effect, &customer).await?;
+        let material = self
+            .verify_custody(
+                CustodyClaim {
+                    custody: &effect.custody,
+                    recovery: &effect.recovery,
+                    consent: &effect.consent,
+                    sealed: &effect.sealed,
+                },
+                &customer,
+                self.activation_ttl,
+            )
+            .await?;
         let space = self.ledger(&customer).await?;
         let link = self.activation_link(&customer).await?;
         // One custody space, one account, forever. The custody DID is
@@ -751,6 +878,103 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         })
     }
 
+    /// Execute a verified `/custody/add`: write the custodian's sealed
+    /// account secret into its custody cell, then provision that custody
+    /// space under the invoking customer.
+    ///
+    /// Only an `Active` customer adds custodians. Enrollment is how a
+    /// `Registered` account gets its first one; a second one before the
+    /// email is confirmed would be a way into an account nobody has
+    /// shown they own.
+    ///
+    /// Every check lands before anything is written, and the cell lands
+    /// before the row: a failed write leaves no subscription pointing at
+    /// an empty cell. A custody space this customer already provides is
+    /// a retry of a request that finished, and answers success without
+    /// writing. A custody space another customer provides is refused.
+    pub async fn add_custodian(
+        &self,
+        capability: Capability<AddCustodian>,
+    ) -> Result<ConsumerReceipt, RegistrationError> {
+        let account = capability.subject().clone();
+        let effect = capability.into_effect();
+        match self
+            .store
+            .customer(account.as_str())
+            .await
+            .map_err(internal)?
+            .map(|customer| customer.status)
+        {
+            None => return Err(RegistrationError::UnknownCustomer),
+            Some(CustomerStatus::Registered) => return Err(RegistrationError::CustomerInactive),
+            Some(CustomerStatus::Suspended) => return Err(RegistrationError::CustomerSuspended),
+            Some(CustomerStatus::Active) => {}
+        }
+        // The write happens now, so the recovery only has to be alive
+        // for this request: `verified_chain` already refused an
+        // expired one.
+        let material = self
+            .verify_custody(
+                CustodyClaim {
+                    custody: &effect.custody,
+                    recovery: &effect.recovery,
+                    consent: &effect.consent,
+                    sealed: &effect.sealed,
+                },
+                &account,
+                0,
+            )
+            .await?;
+        let receipt = ConsumerReceipt {
+            consumer: effect.custody.clone(),
+            provider: account.clone(),
+        };
+        match self
+            .store
+            .consumer(effect.custody.as_str())
+            .await
+            .map_err(internal)?
+        {
+            Some(subscription) if subscription.provider == account.to_string() => {
+                return Ok(receipt);
+            }
+            Some(_) => return Err(RegistrationError::ConsumerProvided),
+            None => {}
+        }
+        // Create-only. A cell already there with no row beside it is a
+        // write that landed before its row failed: storage refuses the
+        // second write, so a retry would never get past this point.
+        // Only the custody key could have written it, and that key's
+        // consent to this account was just verified, so the row goes in
+        // over the cell the custodian left.
+        match self
+            .vault
+            .publish(&material.recovery, &material.sealed)
+            .await
+        {
+            Ok(()) | Err(VaultError::Exists(_)) => {}
+            Err(error) => {
+                return Err(RegistrationError::Internal {
+                    message: error.to_string(),
+                });
+            }
+        }
+        if !self
+            .store
+            .add_subscription(
+                effect.custody.as_str(),
+                account.as_str(),
+                self.now,
+                SubscriptionKind::Custody,
+            )
+            .await
+            .map_err(internal)?
+        {
+            return Err(RegistrationError::ConsumerProvided);
+        }
+        Ok(receipt)
+    }
+
     /// Validate the deposited consent: the consumer's own delegation to
     /// the invoking customer, granting `/consumer/provision` or broader,
     /// signature-valid and inside its window. The audience is what binds
@@ -854,8 +1078,9 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
     /// exactly the blocks it verified and nothing else.
     async fn verify_custody(
         &self,
-        effect: &Enroll,
+        effect: CustodyClaim<'_>,
         account: &Did,
+        outlive: u64,
     ) -> Result<CustodyMaterial, RegistrationError> {
         // Read the enrollment as a bundle rather than a chain: it carries
         // an invocation and opaque ciphertext beside its proofs, which an
@@ -873,7 +1098,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     message: format!("`{field}` names {cid}, which the container does not carry"),
                 })
         };
-        let sealed = carried(&effect.sealed, "sealed")?;
+        let sealed = carried(effect.sealed, "sealed")?;
         // A sealed account secret is 68 bytes: an 8-byte header, a
         // 12-byte nonce, and 48 bytes of ciphertext over a 32-byte
         // secret. The bound leaves room for a version bump or a wider
@@ -891,15 +1116,15 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
         // Resolved for the refusal it produces: `recovery` must name a
         // block the container carries, whether or not the bytes are
         // used beyond the resolution below.
-        carried(&effect.recovery, "recovery")?;
-        let consent_bytes = carried(&effect.consent, "consent")?;
+        carried(effect.recovery, "recovery")?;
+        let consent_bytes = carried(effect.consent, "consent")?;
 
         // The recovery invocation, with its proofs resolved from the
         // same container. `resolve_invocation` hands back a chain with
         // an empty proof store — a carried block is a bare token — so a
         // recovery issued through a delegate resolves its own chain
         // from the blocks travelling beside it.
-        let recovery = bundle.resolve_invocation(&effect.recovery).map_err(|err| {
+        let recovery = bundle.resolve_invocation(effect.recovery).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("`recovery` does not decode as an invocation: {err}"),
             }
@@ -924,7 +1149,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .map_err(|err| RegistrationError::Unauthorized {
                 message: format!("`recovery` failed to verify: {err}"),
             })?;
-        if recovery.subject() != &effect.custody {
+        if recovery.subject() != effect.custody {
             return Err(RegistrationError::Forbidden {
                 message: format!(
                     "`recovery` acts on {}, not the custody space {}",
@@ -989,7 +1214,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
                     message: "`recovery` must carry an expiration".to_string(),
                 })?;
         let expires_at = expiration.to_unix();
-        if expires_at < self.now + self.activation_ttl {
+        if expires_at < self.now + outlive {
             return Err(RegistrationError::Unauthorized {
                 message: format!(
                     "`recovery` expires_at at {expires_at}, before the activation link it would be \
@@ -1000,7 +1225,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
 
         // The consent: the same shape `/provider/add` deposits, checked
         // now so activation can provision without asking again.
-        let consent = bundle.resolve_delegation(&effect.consent).map_err(|err| {
+        let consent = bundle.resolve_delegation(effect.consent).map_err(|err| {
             RegistrationError::Invalid {
                 message: format!("`consent` does not decode as a delegation: {err}"),
             }
@@ -1011,7 +1236,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
             .ok_or_else(|| RegistrationError::Invalid {
                 message: "`consent` carries no delegation".to_string(),
             })?;
-        self.verify_consent(head, &effect.custody, account).await?;
+        self.verify_consent(head, effect.custody, account).await?;
 
         // The recovery travels onward as the CHAIN, not the bare token:
         // a delegate-issued recovery names proofs, and the vault redeems
@@ -1269,8 +1494,7 @@ impl<S: Store, E: EmailSender, R: RevocationChecker + ConditionalSync, V: Vault>
 // platform-conditional `Send` and one generic impl serves every
 // environment. `ConditionalSync` bounds cover the `&self` captures.
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[dialog_capability::provider]
 impl<S, E, R, V> Provider<Activate> for Registration<'_, S, E, R, V>
 where
     S: Store + ConditionalSync,

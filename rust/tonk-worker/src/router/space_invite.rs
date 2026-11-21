@@ -256,8 +256,7 @@ fn account_in_document(body: &[u8]) -> Option<Did> {
 /// Run the [`InviteAgent`] command for the space it names.
 ///
 /// [`InviteAgent`]: tonk_schema::command::InviteAgent
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::InviteAgent> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::InviteAgent) {
         let (Ok(agent), Ok(space)) = (
@@ -281,8 +280,7 @@ impl dialog_capability::Provider<tonk_schema::command::InviteAgent> for crate::r
 /// Run the [`InviteByEmail`] command for the space it names.
 ///
 /// [`InviteByEmail`]: tonk_schema::command::InviteByEmail
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::InviteByEmail>
     for crate::router::CommandEnv
 {

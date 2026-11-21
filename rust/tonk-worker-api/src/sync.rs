@@ -7,10 +7,10 @@
 //! `SyncState` and even classify without linking the engine.
 //! `tonk-schema` re-exports them for the native CLI and the worker.
 
-use dialog_artifacts::history::{Context, context_in};
-use dialog_artifacts::{DialogArtifactsError, Revision};
 use dialog_capability::Provider;
 use dialog_common::{ConditionalSync, Holds};
+use dialog_corpus::history::{Context, context_in};
+use dialog_corpus::{DialogCorpusError, Revision};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::blob::Load as BlobLoad;
 use dialog_repository::{Branch, Index};
@@ -90,7 +90,7 @@ impl From<Comparison> for SyncState {
 /// - the remote context includes the local's → [`Comparison::Behind`].
 ///
 /// Anything else is [`Comparison::Diverged`]. The comparison rests on each
-/// head's causal [`Context`](dialog_artifacts::history::Context) — the
+/// head's causal [`Context`](dialog_corpus::history::Context) — the
 /// per-origin watermark of everything the revision has observed. Unlike the
 /// old immediate-parent set, an included context proves the relationship
 /// across arbitrary linear distance, so a branch many commits ahead of (or
@@ -149,9 +149,15 @@ pub async fn compare_heads<Env>(
     local: Option<&Revision>,
     remote: Option<&Revision>,
     env: &Env,
-) -> Result<Comparison, DialogArtifactsError>
+) -> Result<Comparison, DialogCorpusError>
 where
-    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+    Env: Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + Holds
+        + ConditionalSync,
 {
     let (Some(ours), Some(theirs)) = (local, remote) else {
         return Ok(classify(local, None, remote, None));
@@ -184,9 +190,15 @@ pub async fn head_context<Env>(
     branch: &Branch,
     head: &Revision,
     env: &Env,
-) -> Result<Arc<Context>, DialogArtifactsError>
+) -> Result<Arc<Context>, DialogCorpusError>
 where
-    Env: Provider<ArchiveLoad> + Provider<BlobLoad> + Holds + ConditionalSync,
+    Env: Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + Holds
+        + ConditionalSync,
 {
     let contexts = branch.contexts();
     let version = head.version();
@@ -258,8 +270,8 @@ pub struct SyncStatusResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::history::{Context, Edition, Origin, Version};
-    use dialog_artifacts::{Entity, TreeReference};
+    use dialog_corpus::history::{Context, Edition, Origin, Version};
+    use dialog_corpus::{Entity, TreeReference};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;

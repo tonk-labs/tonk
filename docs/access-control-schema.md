@@ -52,6 +52,7 @@ erDiagram
         TEXT provider FK "DID (did:key): the customer who pays; required"
         TEXT kind "enum: space | customer | custody"
         INTEGER registered_at
+        TEXT creation_grant "signed ownership receipt with a space key encrypted for the customer"
         INTEGER expires_at "when the subscription expires; null never does"
         INTEGER archived_at "when the data was dropped for non-payment; the row stays for billing"
         TEXT suspend_code "set while suspended; the reason a client matches on"
@@ -207,6 +208,7 @@ customer invoking `suspend` on a space they own is refused.
 | `/use/put/subscription/resume` | clears all three | kept | kept | — |
 | `/use/put/subscription/archive` | `archived_at` | dropped | kept, for billing | on re-provisioning |
 | `/provider/add` | the row itself | — | created | — |
+| `/custody/add` | the custody cell, then the row (`kind` custody), for an `Active` customer only | written | created | — |
 | `/provider/remove` | `deleted_at`, then removes the row | dropped | removed | no |
 | `/void/customer/purge` | `deleted_at` on every row the customer provides in one write, then removes them and the customer | dropped | removed | no |
 
@@ -223,6 +225,7 @@ increment that will write it.
 ```mermaid
 stateDiagram-v2
     [*] --> Served: /provider/add
+    [*] --> Served: /custody/add
     Served --> Suspended: /use/put/subscription/suspend
     Suspended --> Served: /use/put/subscription/resume
     Suspended --> Served: suspend_until_at passes

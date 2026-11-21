@@ -96,7 +96,6 @@ const DISMISS: &str = "#tonk-register-dismiss";
 const STATUS: &str = "#tonk-register-status";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const EMAIL_ROW: &str = "#tonk-register-email-row";
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const NAME_ROW: &str = "#tonk-register-name-row";
 /// The row standing while the emailed link is out. It is the SAME row
 /// that becomes `email · verified`: activation confirms the address it
@@ -110,71 +109,30 @@ const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 
-/// `wa-*` throughout, the same vocabulary the rest of the app uses. The
-/// loader on this page auto-registers any `<wa-…>` it finds, so these
-/// upgrade without anything imported here.
-///
-/// `autocomplete="username webauthn"` is what conditional mediation
-/// binds to: the browser offers a discoverable passkey inside this
-/// input's autofill. `wa-input` forwards the attribute to the inner
-/// native input, which is where it has to land.
-///
-/// `type="email"` gives the field its native semantics and mobile keyboard;
-/// [`is_plausible`] still gates lookups while the address is incomplete.
-const DIALOG_HTML: &str = r##"
-<div class="ocol">
-  <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">
-      <span class="fabb-task-disc" aria-hidden="true"></span>
-      <span class="fabb-task-title">add an account</span>
-    </div>
-    <div class="orow mblk editing" id="tonk-register-email-row">
-      <span class="k">email</span>
-      <span class="v"><input class="ed" id="tonk-register-email" type="email"
-            inputmode="email" enterkeyhint="go" autocomplete="username webauthn"
-            aria-label="email" placeholder="you@example.com"></span>
-    </div>
-    <!-- Unfolds once the address is committed and the lookup answers:
-         "create a passkey" for an address nobody has, "log in with your
-         passkey" for one that is taken. Which of the two is the whole
-         reason the address is checked before any ceremony runs. -->
-    <button class="obtn pre" id="tonk-register-action" hidden></button>
-  </div>
-  <div class="oexp mblk">
-    <h2 id="tonk-register-wait-title" hidden>check your email</h2>
-    <p id="tonk-register-status" aria-live="polite">Enter your email address. We’ll tell you whether to create a passkey or sign in.</p>
-    <button type="button" id="tonk-register-resend" hidden>resend link</button>
-  </div>
-  <button class="ghost" id="tonk-register-dismiss">
-    <span aria-hidden="true">&#9666;</span> back to space</button>
-</div>
-"##;
+/// The browser owns the passkey prompt and conditional autofill. Both start
+/// from the email field in this top-document task.
+const DIALOG_HTML: &str = include_str!("register.html");
 
 /// The face of the cluster that signs this browser in through another
 /// Tonk: in place of an email it asks which Tonk holds the account. The
 /// passkey is there, not here, so continuing sends the browser to that
 /// Tonk to approve it, and the answer brings it back.
-const VIA_HTML: &str = r##"
-<div class="ocol">
-  <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">
-      <span class="fabb-task-disc" aria-hidden="true"></span>
-      <span class="fabb-task-title">add an account</span>
+const VIA_HTML: &str = r#"
+<div class="fabb-page">
+  <header class="fabb-top"><!-- logotype --></header>
+  <section class="fabb-task" aria-labelledby="tonk-register-head">
+    <header class="fabb-task-head"><h1 class="fabb-task-title" id="tonk-register-head">sign in through another Tonk</h1></header>
+    <div class="fabb-request">
+      <label class="fabb-field" id="tonk-register-via-row">Tonk address
+        <input id="tonk-register-via" type="url" inputmode="url" enterkeyhint="go"
+               autocomplete="url" autocapitalize="none" spellcheck="false" placeholder="tonk.network">
+      </label>
+      <div><p class="fabb-note" id="tonk-register-status" role="status">Use the Tonk address where you created your account. You’ll sign in there with your passkey.</p></div>
     </div>
-    <div class="orow mblk editing" id="tonk-register-via-row">
-      <span class="k">tonk address</span>
-      <span class="v"><input class="ed" id="tonk-register-via" type="url"
-            inputmode="url" enterkeyhint="go" autocomplete="url" spellcheck="false"
-            aria-label="tonk address" placeholder="tonk.network"></span>
-    </div>
-    <button class="obtn" id="tonk-register-action" disabled>continue</button>
-  </div>
-  <div class="oexp mblk">
-    <p id="tonk-register-status" aria-live="polite">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p>
-  </div>
-  <button class="ghost" id="tonk-register-dismiss">cancel</button>
-</div>
-"##;
+    <div class="fabb-actions"><button type="button" id="tonk-register-dismiss">cancel</button>
+      <button type="button" id="tonk-register-action" disabled>continue</button></div>
+  </section>
+</div>"#;
 
 const VIA_INPUT: &str = "#tonk-register-via";
 
@@ -393,83 +351,7 @@ pub fn open_fabb_task(
     open_with_return(Some(Box::new(restore)));
     let Some(host) = host_element() else { return };
     let _ = host.set_attribute("data-fabb-task", "");
-    prepare_compact_account_ui(&host);
     position_fabb_task(&host, presentation);
-}
-
-/// Adapt the trusted ceremony's labels to the compact account form.
-///
-/// The account mechanics stay shared with the normal registration surface;
-/// only the presentation changes here. The Hub and in-space FABB share the
-/// reference flow's field label and introductory guidance.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn prepare_compact_account_ui(host: &Element) {
-    if let Ok(Some(label)) = host.query_selector(&format!("{EMAIL_ROW} .k")) {
-        label.set_text_content(Some("email address"));
-    }
-    if let Ok(Some(input)) = host.query_selector(EMAIL_INPUT) {
-        let _ = input.set_attribute("aria-label", "email address");
-        let _ = input.remove_attribute("placeholder");
-    }
-    if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
-        dismiss.set_text_content(Some("cancel"));
-    }
-    if let Ok(Some(action)) = host.query_selector(ACTION) {
-        action.set_text_content(Some("continue"));
-        let _ = action.remove_attribute("hidden");
-        let _ = action.class_list().remove_1("pre");
-        if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
-            button.set_disabled(true);
-        }
-        if is_compact_task(host) {
-            if let Ok(Some(container)) = host.query_selector(".ocol") {
-                let _ = container.append_child(&action);
-            }
-        }
-    }
-    if host.has_attribute("data-account-task") {
-        prepare_link_task_body(host);
-    }
-    set_status(
-        "Enter your email to continue. We’ll check whether you already have a Tonk account.",
-    );
-}
-
-/// Only the records and active form scroll; the title and cancel/action rung
-/// remain reachable in short browser windows and above a mobile keyboard.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn prepare_link_task_body(host: &Element) {
-    if host
-        .query_selector(".account-task-body")
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return;
-    }
-    let Some(document) = host.owner_document() else {
-        return;
-    };
-    let Some(column) = host.query_selector(".ocol").ok().flatten() else {
-        return;
-    };
-    let Some(stack) = host.query_selector(".ostack").ok().flatten() else {
-        return;
-    };
-    let Some(head) = host.query_selector(".m-head").ok().flatten() else {
-        return;
-    };
-    let Some(explanation) = host.query_selector(".oexp").ok().flatten() else {
-        return;
-    };
-    let Ok(body) = document.create_element("div") else {
-        return;
-    };
-    body.set_class_name("account-task-body");
-    let _ = column.insert_before(&head, Some(&stack));
-    let _ = column.insert_before(&body, Some(&stack));
-    let _ = body.append_child(&stack);
-    let _ = body.append_child(&explanation);
 }
 
 /// Presentation is shared; only `data-fabb-task` owns a guest continuation.
@@ -524,7 +406,7 @@ fn position_fabb_task(host: &Element, presentation: &tonk_portal::task::Presenta
     }
     .clamp(16.0, (viewport_width - width - 16.0).max(16.0));
     let Some(column) = host
-        .query_selector(".ocol")
+        .query_selector(".fabb-task")
         .ok()
         .flatten()
         .and_then(|column| column.dyn_into::<HtmlElement>().ok())
@@ -564,13 +446,13 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     );
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if host.has_attribute("data-account-task") {
-        prepare_compact_account_ui(&host);
-    }
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, ACTION, submit);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, "#tonk-register-resend", resend_verification);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, "#tonk-register-phrase-switch", toggle_phrase_login);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, "#tonk-register-phrase-login", submit_phrase_login);
     watch_address(&host);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     commit_on_enter(&host);
@@ -609,7 +491,7 @@ fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Ele
         return None;
     };
     host.set_id(DIALOG_ID);
-    host.set_class_name("tonk-ceremony tonk-cluster");
+    host.set_class_name("register-page");
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -619,7 +501,24 @@ fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Ele
             let _ = host.set_attribute("data-account-task", "");
         }
     }
-    host.set_inner_html(html);
+    host.set_inner_html(&crate::task_page::page(html));
+    // The standalone task starts with one field. The wordmark returns to the
+    // hub. Embedded tasks keep their cancel action beside the primary action.
+    if html == DIALOG_HTML
+        && document
+            .location()
+            .and_then(|location| location.pathname().ok())
+            .as_deref()
+            == Some("/account")
+        && let Ok(Some(header)) = host.query_selector(".fabb-top")
+        && let Ok(Some(dismiss)) = host.query_selector(DISMISS)
+        && let Some(logo) = header.first_element_child()
+    {
+        dismiss.set_text_content(None);
+        let _ = dismiss.set_attribute("aria-label", "return to hub");
+        let _ = dismiss.append_child(&logo);
+        let _ = header.append_child(&dismiss);
+    }
     let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -659,7 +558,16 @@ fn open_when_upgraded(host: &Element) {
         {
             let _ = dialog.show_modal();
         }
-        focus_address(&host);
+        if host
+            .query_selector(".fabb-top button")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            focus_input(&host, "#tonk-register-head");
+        } else {
+            focus_address(&host);
+        }
     });
     let _ = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(raise.as_ref().unchecked_ref(), 0);
@@ -669,8 +577,13 @@ fn open_when_upgraded(host: &Element) {
 /// Focus the address field.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_address(host: &Element) {
+    focus_input(host, EMAIL_INPUT);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn focus_input(host: &Element, selector: &str) {
     let Some(field) = host
-        .query_selector(EMAIL_INPUT)
+        .query_selector(selector)
         .ok()
         .flatten()
         .or_else(|| host.query_selector(VIA_INPUT).ok().flatten())
@@ -710,7 +623,7 @@ fn unfold(row: &Element) {
 /// sequence of replaced screens.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn settle(row: &Element, noun: &str, value: &str) {
-    let _ = row.class_list().remove_1("editing");
+    row.set_class_name("register-record");
     row.set_inner_html("");
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -731,25 +644,9 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     let stack = host.query_selector("#tonk-register-stack").ok()??;
     let row = document.create_element("div").ok()?;
     row.set_id(id);
-    row.set_class_name("orow mblk pre");
+    row.set_class_name("register-record");
     settle(&row, noun, value);
-    // Before the action row, so the button stays at the foot of the ordinary
-    // ceremony stack. A contained FABB task moves that button into its fused
-    // footer, leaving subsequent ceremony rows in this stack.
-    if is_compact_task(host) {
-        let _ = stack.append_child(&row);
-        unfold(&row);
-        return Some(row);
-    }
-    let action = host.query_selector(ACTION).ok().flatten();
-    match action {
-        Some(action) => {
-            let _ = stack.insert_before(&row, Some(&action));
-        }
-        None => {
-            let _ = stack.append_child(&row);
-        }
-    }
+    stack.append_child(&row).ok()?;
     unfold(&row);
     Some(row)
 }
@@ -813,8 +710,17 @@ fn commit_on_enter(host: &Element) {
         // means one fires the moment a half-typed address happens to
         // look plausible — before anyone has said which of create or
         // sign in they meant.
-        if action_is_offered() {
+        if event.is_composing() || event.repeat() {
+            return;
+        }
+        if let Some(host) = host_element()
+            && host.query_selector(NAME_ROW).ok().flatten().is_some()
+        {
+            focus_input(&host, "#tonk-register-name");
+        } else if action_is_offered() {
             submit();
+        } else {
+            flush_lookup();
         }
     });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
@@ -841,7 +747,14 @@ fn commit_on_enter(host: &Element) {
             .target()
             .and_then(|target| target.dyn_into::<Element>().ok())
             .is_some_and(|element| element.matches("input").unwrap_or(false));
-        if typing || !action_is_offered() {
+        if event.default_prevented()
+            || event
+                .target()
+                .and_then(|t| t.dyn_into::<Element>().ok())
+                .is_some_and(|el| el.closest("button, a[href]").ok().flatten().is_some())
+            || typing
+            || !action_is_offered()
+        {
             return;
         }
         event.prevent_default();
@@ -1077,6 +990,7 @@ fn watch_address(host: &Element) {
         return;
     };
     let listener = Closure::<dyn FnMut()>::new(move || {
+        clear_state();
         schedule_check();
         // Answer from what is already known, without waiting for the
         // lookup to come back: an address the dialog has an answer for
@@ -1088,6 +1002,9 @@ fn watch_address(host: &Element) {
     });
     let _ = input.add_event_listener_with_callback("input", listener.as_ref().unchecked_ref());
     listener.forget();
+    let blur = Closure::<dyn FnMut()>::new(flush_lookup);
+    let _ = input.add_event_listener_with_callback("blur", blur.as_ref().unchecked_ref());
+    blur.forget();
 }
 
 /// Render the newest answer the dialog holds against what is typed now.
@@ -1110,7 +1027,7 @@ thread_local! {
 }
 
 /// How long the address has to stop changing before it is asked about.
-const IDLE_MS: i32 = 400;
+const IDLE_MS: i32 = 700;
 
 fn schedule_check() {
     let Some(window) = web_sys::window() else {
@@ -1133,8 +1050,38 @@ fn schedule_check() {
     fire.forget();
 }
 
+fn flush_lookup() {
+    if let Some(email) = address()
+        && !email.is_empty()
+        && !is_plausible(&email)
+    {
+        let timer = PENDING.with(|pending| pending.replace(0));
+        if let Some(window) = web_sys::window() {
+            window.clear_timeout_with_handle(timer);
+        }
+        set_status("Enter an email address, like name@example.com.");
+        return;
+    }
+    let timer = PENDING.with(|pending| pending.replace(0));
+    if timer != 0
+        && let Some(window) = web_sys::window()
+    {
+        window.clear_timeout_with_handle(timer);
+        check_now();
+    }
+}
+
 /// Dispatch `account/check-email` for whatever is typed now.
 fn check_now() {
+    let Some(host) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(DIALOG_ID))
+    else {
+        return;
+    };
+    if host.has_attribute(COMMITTED_EMAIL_ATTR) {
+        return;
+    }
     let Some(email) = address() else {
         clear_state();
         return;
@@ -1167,13 +1114,15 @@ fn check_now() {
             ),
             Err(error) => {
                 tonk_common::log!("register: could not ask about the address: {error}");
-                clear_state();
                 let problem = user_error::problem_from_diagnostic(
                     AccountAction::CheckEmail,
                     &error.to_string(),
                 );
                 attempt.finish(tonk_analytics::account::Stage::EmailLookup, problem.outcome);
-                set_status(&problem.message);
+                if host.is_connected() && address().as_deref() == Some(email.as_str()) {
+                    clear_state();
+                    set_status(&problem.message);
+                }
             }
         }
     });
@@ -1185,7 +1134,31 @@ fn clear_state() {
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
+        if host.has_attribute(COMMITTED_EMAIL_ATTR) {
+            return;
+        }
         let _ = host.remove_attribute("data-state");
+        if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+            let _ = note.set_attribute("hidden", "");
+        }
+        if let Ok(Some(live)) = host.query_selector("#tonk-register-announcement") {
+            live.set_text_content(None);
+        }
+        if let Ok(Some(row)) = host.query_selector(NAME_ROW) {
+            if let Some(input) = row
+                .query_selector("input")
+                .ok()
+                .flatten()
+                .and_then(|node| node.dyn_into::<web_sys::HtmlInputElement>().ok())
+            {
+                let _ = host.set_attribute("data-draft-name", &input.value());
+            }
+            row.remove();
+        }
+        if let Ok(Some(action)) = host.query_selector("#tonk-register-action") {
+            let _ = action.set_attribute("hidden", "");
+        }
+        set_status("");
     }
 }
 
@@ -1565,12 +1538,37 @@ fn show_answer(answer: &Answer) {
     if ACTION_PENDING.with(Cell::get) {
         return;
     }
-    let contained = is_compact_task(&host);
-    set_status(if contained {
-        contained_status_for(&answer.state)
+    if host.has_attribute(COMMITTED_EMAIL_ATTR) {
+        return;
+    }
+    if answer.state == tonk_schema::email_state::UNREGISTERED {
+        if host.query_selector(NAME_ROW).ok().flatten().is_none() {
+            ask_for_name(&host);
+        }
+    } else if let Ok(Some(row)) = host.query_selector(NAME_ROW) {
+        row.remove();
+    }
+    let new_account = answer.state == tonk_schema::email_state::UNREGISTERED;
+    if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+        let _ = note.toggle_attribute_with_force("hidden", !new_account);
+    }
+    set_status(if new_account {
+        ""
     } else {
-        status_for(&answer.state)
+        contained_status_for(&answer.state)
     });
+    if let Ok(Some(live)) = host.query_selector("#tonk-register-announcement") {
+        live.set_text_content(Some(if new_account {
+            "No account uses this email yet."
+        } else if matches!(
+            answer.state.as_str(),
+            tonk_schema::email_state::ACTIVE | tonk_schema::email_state::PENDING
+        ) {
+            "This email has a Tonk account."
+        } else {
+            ""
+        }));
+    }
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
@@ -1597,8 +1595,8 @@ fn show_answer(answer: &Answer) {
 pub(crate) fn action_label(state: &str) -> Option<&'static str> {
     use tonk_schema::email_state as answer;
     match state {
-        answer::UNREGISTERED => Some("create a passkey"),
-        answer::ACTIVE | answer::PENDING => Some("log in with passkey"),
+        answer::UNREGISTERED => Some("make account"),
+        answer::ACTIVE | answer::PENDING => Some("sign in with passkey"),
         // Checking, or an answer nothing can act on.
         _ => None,
     }
@@ -1609,15 +1607,12 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
 pub(crate) fn status_for(state: &str) -> &'static str {
     use tonk_schema::email_state as answer;
     match state {
-        answer::CHECKING => "Checking…",
-        answer::UNREGISTERED => {
-            "A passkey replaces a password. Your device saves it to itself, a browser \
-             profile, or a password manager — Tonk never keeps a copy."
-        }
-        answer::ACTIVE => "You already have an account. Log in to finish sharing.",
-        answer::PENDING => "This address is enrolled. Log in, then confirm your email.",
+        answer::CHECKING => "Looking for an account with this email.",
+        answer::UNREGISTERED => "Your device, browser or password manager stores your passkey.",
+        answer::ACTIVE => "Sign in to finish sharing.",
+        answer::PENDING => "Sign in, then confirm your email.",
         answer::SUSPENDED => "This account is suspended, so it cannot host a copy.",
-        answer::INVALID => "That does not look like an email address.",
+        answer::INVALID => "Enter a valid email address.",
         answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
         answer::PENDING_CEREMONY => "Setting up your account…",
         _ => "",
@@ -1628,12 +1623,8 @@ pub(crate) fn status_for(state: &str) -> &'static str {
 fn contained_status_for(state: &str) -> &'static str {
     use tonk_schema::email_state as answer;
     match state {
-        answer::UNREGISTERED => {
-            "Create a passkey on your device or in your password manager to sign in next time."
-        }
-        answer::ACTIVE | answer::PENDING => {
-            "Use your existing passkey on your device or in your password manager."
-        }
+        answer::UNREGISTERED => "No account uses this email yet.",
+        answer::ACTIVE | answer::PENDING => "",
         _ => status_for(state),
     }
 }
@@ -2003,11 +1994,8 @@ pub(crate) fn run_signup_ceremony() {
             finish_action();
             return;
         };
-        if host.query_selector(NAME_ROW).ok().flatten().is_none() {
-            let _ = host.set_attribute(COMMITTED_EMAIL_ATTR, &email);
-            settle_named_row(EMAIL_ROW, "email", &email);
-            ask_for_name(&host);
-            set_action("create a passkey", true);
+        if state != tonk_schema::email_state::UNREGISTERED {
+            finish_action();
             return;
         }
         let name = host
@@ -2021,6 +2009,7 @@ pub(crate) fn run_signup_ceremony() {
             .to_owned();
         if name.is_empty() {
             set_status("Enter a display name to continue.");
+            focus_input(&host, "#tonk-register-name");
             finish_action();
             return;
         }
@@ -2039,6 +2028,9 @@ pub(crate) fn run_signup_ceremony() {
             CEREMONY_KIND_ATTR,
             if existing { "login" } else { "signup" },
         );
+        if let Ok(Some(note)) = host.query_selector("#tonk-register-new-note") {
+            let _ = note.set_attribute("hidden", "");
+        }
     }
     settle_named_row(EMAIL_ROW, "email", &email);
     // While the platform holds the ceremony, the action row says so
@@ -2128,9 +2120,9 @@ pub(crate) fn run_signup_ceremony() {
                 // refuses every later attempt.
                 set_action(
                     if existing {
-                        "log in with passkey"
+                        "sign in with passkey"
                     } else {
-                        "create a passkey"
+                        "make account"
                     },
                     true,
                 );
@@ -2265,7 +2257,7 @@ fn resend_verification() {
         }
         button.set_disabled(false);
         set_status(if result.is_ok() {
-            "Another confirmation email was requested. Check your inbox, then open the confirmation link."
+            "Check your inbox for a new confirmation link."
         } else {
             "Couldn’t request another email. Check your connection and try again."
         });
@@ -2401,7 +2393,7 @@ fn poll_lookup_until_active(email: String) {
                     // is one tap and a fresh assertion.
                     settle_named_row(CONFIRM_ROW, "email", "verified");
                     set_status("Your email is confirmed. Log in with your passkey to continue.");
-                    set_action("log in with passkey", true);
+                    set_action("sign in with passkey", true);
                     focus_action();
                     return;
                 }
@@ -2746,58 +2738,34 @@ fn hand_over_to_the_hub(host: &Element) {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    let contained = is_compact_task(host);
-    set_status(if contained {
-        "This name appears to other people in your spaces."
-    } else {
-        ""
-    });
-
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
     let Some(stack) = host.query_selector("#tonk-register-stack").ok().flatten() else {
         return;
     };
-    let Ok(row) = document.create_element("div") else {
+    let Ok(row) = document.create_element("label") else {
         return;
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
-    row.set_class_name("orow mblk pre editing");
-    row.set_inner_html(&format!(
-        r##"<span class="k">{}</span>
-            <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" autocomplete="nickname" maxlength="40"
-                  aria-label="display name"></span>"##,
-        if contained {
-            "what should people call you?"
-        } else {
-            "display name"
-        }
-    ));
-    let action = host.query_selector(ACTION).ok().flatten();
-    let inserted = if contained {
-        // The contained task moved the action into its footer, so it is no
-        // longer a child of this stack and cannot be an insertBefore anchor.
-        stack.append_child(&row)
-    } else if let Some(action) = action {
-        stack.insert_before(&row, Some(&action))
-    } else {
-        stack.append_child(&row)
-    };
-    if inserted.is_err() {
+    row.set_class_name("fabb-field editing");
+    row.set_inner_html(r#"<span class="k">display name</span><input id="tonk-register-name"
+        type="text" enterkeyhint="go" autocomplete="nickname" maxlength="40" spellcheck="false" required>"#);
+    if stack.append_child(&row).is_err() {
         return;
     }
-    unfold(&row);
-    set_action(SAVE_NAME, true);
-    commit_name_on_enter(host);
-    if let Some(field) = host
-        .query_selector("#tonk-register-name")
-        .ok()
-        .flatten()
-        .and_then(|field| field.dyn_into::<HtmlElement>().ok())
+    if let Some(value) = host.get_attribute("data-draft-name")
+        && let Some(input) = row
+            .query_selector("input")
+            .ok()
+            .flatten()
+            .and_then(|node| node.dyn_into::<web_sys::HtmlInputElement>().ok())
     {
-        let _ = field.focus();
+        input.set_value(&value);
+    }
+    commit_name_on_enter(host);
+    if host.has_attribute(COMMITTED_EMAIL_ATTR) {
+        set_action(SAVE_NAME, true);
     }
 }
 
@@ -2982,7 +2950,151 @@ fn address() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// The line under the input, where an answer or a wait shows.
+/// Swap between signing in with a passkey and with a recovery phrase.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn toggle_phrase_login() {
+    let Some(host) = host_element() else {
+        return;
+    };
+    let query = |selector: &str| host.query_selector(selector).ok().flatten();
+    let Some(row) = query("#tonk-register-phrase-row") else {
+        return;
+    };
+    let showing = !row.has_attribute("hidden");
+    let set_hidden = |element: Option<Element>, hidden: bool| {
+        if let Some(element) = element {
+            let _ = if hidden {
+                element.set_attribute("hidden", "")
+            } else {
+                element.remove_attribute("hidden")
+            };
+        }
+    };
+    set_hidden(Some(row), showing);
+    set_hidden(query("#tonk-register-phrase-login"), showing);
+    // The dialog widens for the words while the phrase is being typed.
+    let _ = if showing {
+        host.remove_attribute("data-phrase-login")
+    } else {
+        host.set_attribute("data-phrase-login", "")
+    };
+    set_hidden(query(EMAIL_ROW), !showing);
+    set_hidden(
+        query(ACTION),
+        !showing
+            || query(ACTION)
+                .is_none_or(|action| action.text_content().unwrap_or_default().is_empty()),
+    );
+    if let Some(switch) = query("#tonk-register-phrase-switch") {
+        switch.set_text_content(Some(if showing {
+            "use a recovery phrase instead"
+        } else {
+            "use a passkey instead"
+        }));
+    }
+    set_status("");
+    if !showing
+        && let Some(field) = query("#tonk-register-phrase")
+        && let Some(field) = field.dyn_ref::<HtmlElement>()
+    {
+        let _ = field.focus();
+    }
+}
+
+/// Sign in with the typed recovery phrase.
+///
+/// The words are checked here first, so a mistyped word is said on the
+/// field before anything is fetched. Then the worker opens the account
+/// the phrase's custody cell holds and links this browser, the way a
+/// passkey sign-in does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn submit_phrase_login() {
+    if ACTION_PENDING.with(|pending| pending.replace(true)) {
+        return;
+    }
+    let words = host_element()
+        .and_then(|host| host.query_selector("#tonk-register-phrase").ok().flatten())
+        .and_then(|field| js_sys::Reflect::get(&field, &"value".into()).ok())
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    if let Err(message) = stage_recovery_phrase(&words) {
+        ACTION_PENDING.with(|pending| pending.set(false));
+        set_status(&message);
+        return;
+    }
+    set_status("Opening your account…");
+    let link = crate::ceremony::proposed_remote().map(|remote| tonk_worker_api::DeviceLink {
+        device_name: crate::device_name::current(),
+        endpoint: remote.clone(),
+        provider: remote,
+    });
+    let started = match link {
+        Ok(link) => crate::custody_relay::begin(
+            "useRecoveryPhrase",
+            tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(link),
+        ),
+        Err(error) => Err(crate::custody_relay::CeremonyError::said(error)),
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let outcome = match started {
+            Ok(mediation) => mediation.finish().await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        ACTION_PENDING.with(|pending| pending.set(false));
+        match outcome {
+            Ok(()) => {
+                announce_account_change();
+                LAST_FABB_TASK_SUCCESS.with(|success| success.set(true));
+                set_status("Signed in.");
+                close();
+            }
+            Err(error) => {
+                tonk_common::log!(
+                    "register: recovery-phrase sign-in failed: {}",
+                    error.message
+                );
+                set_status(&user_error::ceremony(AccountAction::LogIn, &error));
+            }
+        }
+    });
+}
+
+/// Hand typed words to `tonkIdentity.stageRecoveryPhrase`, which checks
+/// them and keeps the phrase for the sign-in that follows. A refusal is
+/// the sentence to show.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn stage_recovery_phrase(words: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "Recovery phrases are not available in this browser.")?;
+    let stage: js_sys::Function = js_sys::Reflect::get(&identity, &"stageRecoveryPhrase".into())
+        .ok()
+        .and_then(|value| value.dyn_into().ok())
+        .ok_or("Recovery phrases are not available in this browser.")?;
+    let input = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&input, &"words".into(), &words.into());
+    stage
+        .call1(&identity, &input)
+        .map(|_| ())
+        .map_err(|refusal| {
+            let code = js_sys::Reflect::get(&refusal, &"code".into())
+                .ok()
+                .and_then(|code| code.as_string());
+            match code.as_deref() {
+                Some("WordCount") => "Enter all 12 words.".to_owned(),
+                Some("UnknownWord") => js_sys::Reflect::get(&refusal, &"message".into())
+                    .ok()
+                    .and_then(|message| message.as_string())
+                    .map(|message| {
+                        format!("{}. Check its spelling.", message.trim_end_matches('.'))
+                    })
+                    .unwrap_or_else(|| "Check the spelling of each word.".to_owned()),
+                _ => "Check the spelling and order of the words.".to_owned(),
+            }
+        })
+}
+
+/// The line under the input, where an answer or a wait shows./// The line under the input, where an answer or a wait shows.
 fn set_status(text: &str) {
     if let Some(slot) = web_sys::window()
         .and_then(|window| window.document())
@@ -3345,7 +3457,7 @@ pub fn describe(payload: &str) {
             let _ = host.set_attribute(RETURN_PATH, &target);
         }
         set_heading("sign in to open this space");
-        set_status("Use the account you use for this space.");
+        set_status("Sign in with the account for this space.");
     }
     if let Some(anchor) = &request.anchor
         && let Some(host) = document
@@ -3355,8 +3467,6 @@ pub fn describe(payload: &str) {
         // The account action opens a trusted modal over the Hub. Keep the
         // opener rectangle for related custody prompts and later reseating.
         let _ = host.set_attribute("data-anchored", "");
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        prepare_compact_account_ui(&host);
         position_at(&host, anchor);
     }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
@@ -3365,7 +3475,7 @@ pub fn describe(payload: &str) {
     set_status(if agent_invite {
         "open the verification email, then return here to invite your agent."
     } else {
-        "Your account is waiting on its email. Open the link we sent, then share again."
+        "Confirm your email, then share again."
     });
     set_heading(if agent_invite {
         "verify your email"
@@ -3747,13 +3857,13 @@ mod tests {
         for state in [answer::ACTIVE, answer::PENDING] {
             assert_eq!(
                 action_label(state),
-                Some("log in with passkey"),
+                Some("sign in with passkey"),
                 "{state} has an account already",
             );
         }
         assert_eq!(
             action_label(answer::UNREGISTERED),
-            Some("create a passkey"),
+            Some("make account"),
             "nobody has this address",
         );
         // Nothing to offer where no ceremony would help.
@@ -4032,7 +4142,6 @@ mod space_login_tests {
             host.set_inner_html(DIALOG_HTML);
             host.set_attribute(presentation, "").unwrap();
             document.body().unwrap().append_child(&host).unwrap();
-            prepare_compact_account_ui(&host);
             let stack = host
                 .query_selector("#tonk-register-stack")
                 .unwrap()
@@ -4047,7 +4156,7 @@ mod space_login_tests {
                 .expect("display name row");
             assert_eq!(row.parent_element(), Some(stack));
             assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
-            assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
+            assert!(action.has_attribute("hidden"));
             show_verification_wait(&host);
             assert!(
                 host.query_selector("#tonk-register-resend")
@@ -4057,7 +4166,7 @@ mod space_login_tests {
             assert!(action.dyn_ref::<HtmlButtonElement>().unwrap().disabled());
             if presentation == "data-account-task" {
                 assert!(!host.has_attribute("data-fabb-task"));
-                assert!(host.query_selector(".account-task-body").unwrap().is_some());
+                assert!(host.query_selector(".fabb-request").unwrap().is_some());
             }
             host.remove();
             ACTION_PENDING.with(|pending| pending.set(false));

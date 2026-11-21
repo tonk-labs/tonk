@@ -1017,41 +1017,106 @@ self.oninstall = event => {
 // ---- Session overlay handoff ----------------------------------------
 //
 // The Rust worker's session overlay lives in memory. When a successor
-// installs, the incumbent announces a handoff; on retirement its Rust side
-// writes a snapshot (see `handoff.rs`, which owns the same cache and key); the
-// successor holds activation until that snapshot exists and restores it while
+// installs, the incumbent takes the handoff lock and announces a handoff; on
+// retirement its Rust side writes a snapshot (see `handoff.rs`, which owns the
+// same cache and key) and only then releases the lock. The successor holds
+// activation until it is granted that lock, and restores the snapshot while
 // booting, before it serves anything.
+//
+// The lock, not a clock, says when the snapshot is ready: it frees when the
+// incumbent has saved (or failed to), and the browser frees it when the
+// incumbent dies, so a successor waits exactly as long as there is a
+// predecessor that can still write. Waiting on a fixed deadline instead lost
+// the overlay whenever retirement took longer than the deadline (it first
+// takes the worker's state lock, which a writer can hold), and the successor
+// then booted without it.
 const OVERLAY_HANDOFF_CACHE = "TONK_OVERLAY_HANDOFF";
 const OVERLAY_HANDOFF_URL = "/__tonk/overlay-handoff";
 const OVERLAY_HANDOFF_PENDING_URL = "/__tonk/overlay-handoff-pending";
-// A retiring incumbent writes its snapshot within milliseconds. The bound only
-// matters when it died after announcing, and must not stall activation.
+const OVERLAY_HANDOFF_LOCK = "tonk-overlay-handoff";
+// Without Web Locks a successor can only poll for the snapshot. That bound
+// matters only when the incumbent died after announcing.
 const OVERLAY_HANDOFF_WAIT_MS = 1_000;
+// With Web Locks, the bound for an incumbent that is alive but never finishes
+// retiring. It is a liveness guard, not the signal: a live predecessor
+// normally releases the lock as soon as its snapshot is written.
+const OVERLAY_HANDOFF_STALL_MS = 30_000;
 
-/// Announce that this incumbent's overlay will follow, dropping any snapshot
-/// an earlier, never-completed handoff left behind.
-async function announceOverlayHandoff() {
-    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
-    await cache.delete(OVERLAY_HANDOFF_URL);
-    await cache.put(OVERLAY_HANDOFF_PENDING_URL, new Response(String(Date.now())));
+/// Web Locks, where this global has them. Read from `self` so the lifecycle
+/// tests' stubbed globals decide.
+function handoffLocks() {
+    return self.navigator?.locks ?? null;
+}
+
+/// Releases the handoff lock this incumbent holds, once it is held.
+let releaseOverlayHandoffLock = null;
+/// The announcement in flight, which retirement waits for before it writes:
+/// the announcement drops any earlier snapshot, so it must land first.
+let overlayAnnouncement = null;
+
+/// Hold the handoff lock and announce that this incumbent's overlay will
+/// follow, dropping any snapshot an earlier, never-completed handoff left
+/// behind. The lock is held before the announcement is visible, so a
+/// successor that sees the announcement waits for this incumbent's snapshot.
+function announceOverlayHandoff() {
+    overlayAnnouncement ??= (async () => {
+        const locks = handoffLocks();
+        if (locks && !releaseOverlayHandoffLock) {
+            await new Promise((held, failed) => {
+                locks.request(OVERLAY_HANDOFF_LOCK, () => new Promise(release => {
+                    releaseOverlayHandoffLock = release;
+                    held();
+                })).catch(failed);
+            });
+        }
+        const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+        await cache.delete(OVERLAY_HANDOFF_URL);
+        await cache.put(OVERLAY_HANDOFF_PENDING_URL, new Response(String(Date.now())));
+    })();
+    return overlayAnnouncement;
+}
+
+/// Let the successor go on: the snapshot is written, or will not be.
+async function releaseOverlayHandoff() {
+    await overlayAnnouncement?.catch(() => {});
+    overlayAnnouncement = null;
+    releaseOverlayHandoffLock?.();
+    releaseOverlayHandoffLock = null;
 }
 
 /// Withdraw an announcement whose successor failed to install.
 async function withdrawOverlayHandoff() {
+    await overlayAnnouncement?.catch(() => {});
     const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
     await cache.delete(OVERLAY_HANDOFF_PENDING_URL);
+    await releaseOverlayHandoff();
 }
 
-/// Wait, bounded, for an announced predecessor's snapshot, then consume the
+/// Wait for an announced predecessor's snapshot, then consume the
 /// announcement. Returns at once when nothing was announced.
 async function awaitOverlayHandoff() {
     // `match` with a cache name creates nothing, so a worker with no
     // predecessor leaves CacheStorage as it found it.
     const stored = url => caches.match(url, { cacheName: OVERLAY_HANDOFF_CACHE });
     if (!(await stored(OVERLAY_HANDOFF_PENDING_URL))) return;
-    const deadline = Date.now() + OVERLAY_HANDOFF_WAIT_MS;
-    while (!(await stored(OVERLAY_HANDOFF_URL)) && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 25));
+    const locks = handoffLocks();
+    if (locks) {
+        let stalled;
+        await Promise.race([
+            locks.request(OVERLAY_HANDOFF_LOCK, () => {}),
+            new Promise(resolve => {
+                stalled = setTimeout(() => {
+                    log("Overlay handoff: the predecessor never released its lock");
+                    resolve();
+                }, OVERLAY_HANDOFF_STALL_MS);
+            }),
+        ]);
+        clearTimeout(stalled);
+    } else {
+        const deadline = Date.now() + OVERLAY_HANDOFF_WAIT_MS;
+        while (!(await stored(OVERLAY_HANDOFF_URL)) && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
     }
     await (await caches.open(OVERLAY_HANDOFF_CACHE)).delete(OVERLAY_HANDOFF_PENDING_URL);
 }
@@ -1123,6 +1188,9 @@ async function retire(reason) {
     retirement = (async () => {
         log(`Retiring — ${reason}`);
         try {
+            // The announcement drops any earlier snapshot, so the one this
+            // retirement writes must follow it.
+            await overlayAnnouncement?.catch(() => {});
             const worker = await activateWorker();
             // Stop the sync loop and release long-lived streams so this
             // instance winds down. Serving can overlap briefly with successor
@@ -1139,6 +1207,10 @@ async function retire(reason) {
         } catch (err) {
             log("Failed to release streams:", err);
             return false;
+        } finally {
+            // `onupdatefound` has written the overlay snapshot by the time it
+            // resolves, or failed to: either way the successor may go on.
+            await releaseOverlayHandoff();
         }
     })();
     try {
@@ -1622,6 +1694,9 @@ function retireIfSuperseded(event) {
 
 self.onfetch = event => {
     const path = new URL(event.request.url).pathname;
+    // The provider serves the MCP frame document. Passing it to the app
+    // router would turn a controlled iframe load into a space-page 404.
+    if (event.request.mode === "navigate" && path === "/view-frame") return;
     if (event.request.mode === "navigate") extendOfflineGeneration(event);
     // A waiting successor means this worker is retiring. Checked on the
     // fetch path because a worker pinned by its own open streams never

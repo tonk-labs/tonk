@@ -135,6 +135,12 @@ impl SqliteStore {
             conn.pragma_update(None, "user_version", 8)
                 .map_err(map_err)?;
         }
+        if version < 9 {
+            conn.execute_batch(include_str!("../../migrations/0009_created_space.sql"))
+                .map_err(map_err)?;
+            conn.pragma_update(None, "user_version", 9)
+                .map_err(map_err)?;
+        }
         Ok(Self(Mutex::new(conn)))
     }
 }
@@ -408,6 +414,33 @@ impl Store for SqliteStore {
             )
             .map_err(map_err)?;
         Ok(changed > 0)
+    }
+
+    async fn add_created_space(
+        &self,
+        consumer: &str,
+        owner: &str,
+        now: u64,
+        grant: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        Ok(conn
+            .execute(
+                super::ADD_CREATED_SPACE,
+                params![consumer, owner, now as i64, grant],
+            )
+            .map_err(map_err)?
+            > 0)
+    }
+
+    async fn created_spaces(&self, owner: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.0.lock().expect("store mutex poisoned");
+        let mut statement = conn.prepare(super::CREATED_SPACES).map_err(map_err)?;
+        statement
+            .query_map([owner], |row| row.get(0))
+            .map_err(map_err)?
+            .collect::<Result<_, _>>()
+            .map_err(map_err)
     }
 
     async fn suspend_subscription(

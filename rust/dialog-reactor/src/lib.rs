@@ -1,20 +1,24 @@
-//! [`Reactor`] — a reactive layer over dialog branches.
+//! [`Reactor`] — tonk's cache of dialog branches and their stacks.
 //!
-//! See `reactor-spec.md` next to the crate's `Cargo.toml` for the
-//! full design rationale. The short version: consumers mutate
-//! branches through a chain (`reactor.repository(r).branch(b)
-//! .transaction().assert(…).commit().perform(&op).await?`); the
-//! leaf effect's `perform` re-evaluates every subscription on the
-//! branch and broadcasts the result to whoever is listening,
-//! deduplicating by hash so unchanged results don't fire spurious
-//! broadcasts.
+//! Consumers mutate branches through a chain (`reactor.repository(r)
+//! .branch(b).transaction().assert(…).commit().perform(&op).await?`),
+//! which commits through the branch's dialog stack.
 //!
-//! The reactor caches `Repository` and `Branch` handles — first
-//! reference opens, subsequent references reuse — so per-request
-//! load+open overhead is paid once per repo/branch lifetime.
-//! Subscriptions live on the [`BranchEntry`] itself, so once a
-//! branch is acquired its subscription operations skip the
-//! reactor's name-keyed lookup entirely.
+//! The reactor caches `Repository` and `Branch` handles, each branch
+//! with the stack opened over it — first reference opens, subsequent
+//! references reuse — so per-request load+open overhead is paid once
+//! per repo/branch lifetime.
+//!
+//! Subscriptions are the stack's: one evaluation per query, shared by
+//! its readers, polled when a write scheduled it and settled once per
+//! request ([`Reactor::run_scheduled_polls`]). The reactor keeps only
+//! what is tonk's: each client's connection, the wire frames it is sent,
+//! and the subscriptions a page opened on a branch that does not exist
+//! yet.
+
+// Tests commit with the one-step publish, which fails on a lost race:
+// a test's branch has no other writer to lose one to.
+#![cfg_attr(test, allow(deprecated))]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +34,7 @@ mod error;
 mod export;
 mod formula;
 mod import;
-mod intent;
+pub mod intent;
 pub use intent::{Interpretation, interpret};
 mod overlay;
 mod pull;
@@ -42,19 +46,16 @@ mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState, ProfileUpgrade, Upgraded, migrate};
-pub use command::{
-    CommandHandler, CommandRegistry, Decode, EntityFacts, Migrated, MigratedCommand, RunFuture,
-    TypedCommand,
-};
+pub use command::{Decode, Migrated, control, decode_concept, facts_entity};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
-    SelectProvider,
+    SelectProvider, SettleProvider,
 };
 pub use error::ReactorError;
 // `PendingSubscription` is declared in this module; re-exported here for
 // symmetry with the other public reactor types.
 pub use export::{Export, ExportError};
-pub use formula::{FormulaError, resolve_formula};
+pub use formula::FormulaError;
 pub use import::{Import, ImportError};
 pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
 pub use pull::Pull;
@@ -62,13 +63,13 @@ pub use push::Push;
 pub use query::QueryEffect;
 pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
-pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
+pub use subscription::{Connection, Frames, Plan, QueryHash, Subscriber};
 /// On-the-wire `Conclusion` and `Query` — re-exported from
 /// [`tonk_schema`] so consumers (browser clients, the consumer
 /// elements) can deserialize without depending on this crate.
 pub use tonk_schema::conclusion::{Conclusion, Frame, project};
 pub use tonk_schema::query::Query;
-pub use transaction::{Commit, TransactionBuilder};
+pub use transaction::{Commit, Landed, TransactionBuilder, stamp};
 
 /// A reactive layer over dialog branches. Owned by the consumer's
 /// application state (e.g. the worker's `TonkState`).
@@ -86,17 +87,6 @@ pub struct Reactor {
     /// Every repository acquired so far, by key. The profile's own is
     /// among them, under [`Self::profile_key`].
     repos: RwLock<HashMap<String, Arc<RepositoryState>>>,
-    /// Branches whose subscriptions need re-evaluation but haven't
-    /// been polled yet. A mutation that changes query results —
-    /// a durable [`Commit`] or a session-overlay write — schedules
-    /// the affected branch here (sync, no env) instead of polling
-    /// inline; the request's command dispatcher drains this with
-    /// [`run_scheduled_polls`](Self::run_scheduled_polls) once after
-    /// its providers run, so the env lives at one drain point and
-    /// several writes on a branch in one turn coalesce into a single
-    /// poll. Pointer identity (`Arc::ptr_eq`) dedups, so the same
-    /// branch scheduled twice polls once.
-    pending_polls: Mutex<Vec<Arc<BranchState>>>,
     /// Subscriptions registered against a branch that does not exist
     /// yet, keyed by `(repository, branch)`.
     ///
@@ -124,10 +114,14 @@ pub struct PendingSubscription {
     pub client: Option<String>,
     /// The consumer's nesting level — see [`Subscription::level`](crate::Subscription::level).
     pub level: u32,
-    /// Sender the adopted subscription broadcasts into — already wired
+    /// Sender the adopted connection's frames go into — already wired
     /// to the consumer's open SSE stream, which is why the hand-off is
     /// invisible to the page: it just starts receiving frames.
     pub sender: tokio::sync::mpsc::UnboundedSender<bytes::Bytes>,
+    /// The connection the waiting [`Subscriber`] holds, handed its
+    /// reader when the branch appears. Held weakly: a page that closed
+    /// its stream meanwhile is adopted as nothing.
+    pub connection: std::sync::Weak<Connection>,
 }
 
 /// One-way gate around the synchronous point where a subscriber sender is
@@ -170,12 +164,13 @@ impl Reactor {
             profile,
             subscription_lifecycle: SubscriptionLifecycle::new(),
             repos: RwLock::new(HashMap::new()),
-            pending_polls: Mutex::new(Vec::new()),
             pending_subscriptions: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Register a subscription against a branch that does not exist yet.
+    /// Register a subscription to `query` against a branch that does not
+    /// exist yet, and return its [`Subscriber`], whose first frame is
+    /// `first` (the page's notice that it waits).
     ///
     /// Passive: nothing polls, nothing retries. The entry sits until
     /// [`Self::adopt_pending`] is called with a matching `(repo, branch)`
@@ -186,8 +181,21 @@ impl Reactor {
         &self,
         repo: &str,
         branch: &str,
-        pending: PendingSubscription,
-    ) -> Result<(), ReactorError> {
+        query: dialog_query::ConceptQuery,
+        client: Option<String>,
+        level: u32,
+        first: bytes::Bytes,
+    ) -> Result<Subscriber, ReactorError> {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let _ = sender.send(first);
+        let connection = Connection::waiting(query.terms.clone());
+        let pending = PendingSubscription {
+            query,
+            client,
+            level,
+            sender,
+            connection: Arc::downgrade(&connection),
+        };
         self.subscription_lifecycle
             .register(|| {
                 self.pending_subscriptions
@@ -196,7 +204,8 @@ impl Reactor {
                     .or_default()
                     .push(pending);
             })
-            .ok_or(ReactorError::Shutdown)
+            .ok_or(ReactorError::Shutdown)?;
+        Ok(Subscriber::new(receiver, connection))
     }
 
     /// Install a subscriber on a materialized branch unless shutdown has
@@ -210,7 +219,7 @@ impl Reactor {
     ) -> Result<Subscriber, ReactorError> {
         self.subscription_lifecycle
             .register(|| session.subscribe(query, client, level))
-            .ok_or(ReactorError::Shutdown)?
+            .ok_or(ReactorError::Shutdown)
     }
 
     /// Move every waiting subscriber onto a newly materialized branch.
@@ -228,47 +237,41 @@ impl Reactor {
                 return;
             }
             for pending in pending {
-                state.adopt_subscriber(
-                    pending.query,
-                    pending.client,
-                    pending.level,
-                    pending.sender,
-                );
+                state.adopt(pending);
             }
-            // Evaluate once so adopted subscribers get a real frame now.
+            // Each adoption registered or attached to a subscription;
+            // a new one scheduled its first evaluation, which the next
+            // settle runs and delivers.
             self.schedule_poll(Arc::clone(state));
         });
     }
 
-    /// Schedule a poll of `state`'s subscriptions. Called by mutating
-    /// effects (a durable commit, a session-overlay write) so the change
-    /// propagates without the writer holding an env or polling inline.
-    /// The scheduled branch is re-evaluated when the request's dispatcher
-    /// calls [`run_scheduled_polls`](Self::run_scheduled_polls). Cheap and
-    /// sync — just an `Arc` push; dedup happens at drain time.
+    /// Schedule a poll of `state`'s subscriptions: a write the branch's
+    /// stack did not see (a refresh or a pull that moved the head on the
+    /// branch handle), so the next settle evaluates them
+    /// ([`Stack::schedule_poll`]). A write through the stack, or into the
+    /// session overlay through [`BranchState::assert_overlay`], schedules
+    /// one itself. Cheap and sync: a flag.
+    ///
+    /// [`Stack::schedule_poll`]: dialog_repository::Stack::schedule_poll
     pub fn schedule_poll(&self, state: Arc<BranchState>) {
-        self.pending_polls.lock().push(state);
+        state.stack().schedule_poll();
     }
 
-    /// Drain the scheduled-poll set: re-evaluate every distinct branch's
-    /// subscriptions once, broadcasting changed results to subscribers.
-    /// Called by the command dispatcher after its providers run, so all
-    /// the polls a turn scheduled fire together with the env in hand.
-    /// Pointer identity dedups, so a branch scheduled by both its commit
-    /// and an overlay write polls a single time.
-    pub async fn run_scheduled_polls<'a, Env: SelectProvider>(&'a self, env: &'a Env) {
-        let scheduled = {
-            let mut pending = self.pending_polls.lock();
-            std::mem::take(&mut *pending)
-        };
-        let mut unique: Vec<Arc<BranchState>> = Vec::new();
-        for state in scheduled {
-            if !unique.iter().any(|seen| Arc::ptr_eq(seen, &state)) {
-                unique.push(state);
-            }
-        }
-        for state in unique {
-            state.poll(env).await;
+    /// Settle every cached branch: poll each stack's subscriptions once
+    /// if a write scheduled it, and send every connection what it was
+    /// delivered ([`BranchState::settle`]). Called once a request's
+    /// writes and its providers are done, so the writes of a turn cost
+    /// one evaluation per subscription.
+    ///
+    /// Every branch is visited, not only the ones a poll was scheduled
+    /// on: an effect settles its stack itself ([`Effect::perform`]), and
+    /// what that delivered still has to be sent to the connections.
+    ///
+    /// [`Effect::perform`]: dialog_repository::Effect::perform
+    pub async fn run_scheduled_polls<'a, Env: SettleProvider>(&'a self, env: &'a Env) {
+        for state in self.cached_branch_states() {
+            state.settle(env).await;
         }
     }
 
@@ -293,7 +296,6 @@ impl Reactor {
             // explicitly or an absent-branch stream can keep the retiring
             // worker alive.
             self.pending_subscriptions.lock().clear();
-            self.pending_polls.lock().clear();
             let repos = {
                 let mut map = self.repos.write();
                 std::mem::take(&mut *map)
@@ -385,12 +387,11 @@ impl Reactor {
                 reason: e.to_string(),
             })?;
 
-        // The head or upstream may have moved: deliver fresh snapshots
-        // to the branch's subscriptions. Nothing else polls on their
-        // behalf — on a quiet branch no commit follows, and a live view
-        // would sit on its stale state indefinitely after its space was
-        // wired to a remote. The caller's next `run_scheduled_polls`
-        // drains this.
+        // The head or upstream may have moved, outside the stack: schedule
+        // the branch's subscriptions. Nothing else polls on their behalf —
+        // on a quiet branch no commit follows, and a live view would sit
+        // on its stale state indefinitely after its space was wired to a
+        // remote. The caller's next `run_scheduled_polls` settles this.
         self.schedule_poll(state);
         Ok(())
     }

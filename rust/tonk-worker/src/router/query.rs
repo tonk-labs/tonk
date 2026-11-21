@@ -249,7 +249,7 @@ fn upgrading_response(
                 subscribe = subscribe.client(client);
             }
             match subscribe.perform(&tonk.operator).await {
-                Ok(subscriber) => Ok(subscriber.receiver),
+                Ok(subscriber) => Ok(subscriber),
                 Err(error) if is_absence(&error) => {
                     let _ = sender.send(Bytes::from_static(PENDING_FRAME));
                     Err(())
@@ -260,6 +260,8 @@ fn upgrading_response(
                 }
             }
         };
+        // The forwarder owns the subscriber, so the page closing this
+        // stream ends the forwarding and drops it.
         let Ok(mut frames) = subscribed else {
             return;
         };
@@ -269,7 +271,7 @@ fn upgrading_response(
             }
         }
     });
-    sse_response(receiver)
+    sse_response(UnboundedReceiverStream::new(receiver))
 }
 
 /// Shared body for [`query`] and [`query_profile`]. Takes a
@@ -300,28 +302,13 @@ async fn query_on_branch(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.contains("text/event-stream"));
 
-    // A formula query (string predicate) is resolved by the worker
-    // rather than dialog's planner — the `tree/*` introspection
-    // family. One-shot only for now.
-    let query = match wire.into_concept_query() {
-        Ok(query) => query,
-        Err(wire) => {
-            if want_stream {
-                return Err(TonkWorkerError::Router(
-                    "formula queries do not support subscriptions yet".into(),
-                ));
-            }
-            let session = branch
-                .acquire(&tonk.operator)
-                .await
-                .map_err(reactor_to_error)?;
-            let conclusions =
-                crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
-                    .await
-                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
-            return Ok(Json(conclusions).into_response());
-        }
-    };
+    // A query names a concept; a bare name is no query.
+    let query = wire.into_concept_query().map_err(|wire| {
+        TonkWorkerError::Router(format!(
+            "a query names a concept, and `{}` is a name",
+            wire.formula().unwrap_or_default()
+        ))
+    })?;
 
     if want_stream {
         // Once this worker starts retiring, refuse to open a long-lived
@@ -379,30 +366,22 @@ async fn query_on_branch(
             // subscriber onto the real branch and its first rows arrive
             // on this same stream. No polling, no reconnect.
             Err(error) if is_absence(&error) => {
-                let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-                let _ = sender.send(Bytes::from_static(PENDING_FRAME));
-                if tonk
-                    .reactor
-                    .register_pending(
-                        branch.repository.name(),
-                        branch.name,
-                        dialog_reactor::PendingSubscription {
-                            query,
-                            client,
-                            level: params.level,
-                            sender,
-                        },
-                    )
-                    .is_err()
-                {
-                    return Ok(retry_later(None));
-                }
-                return Ok(sse_response(receiver));
+                return match tonk.reactor.register_pending(
+                    branch.repository.name(),
+                    branch.name,
+                    query,
+                    client,
+                    params.level,
+                    Bytes::from_static(PENDING_FRAME),
+                ) {
+                    Ok(subscriber) => Ok(sse_response(subscriber.into_stream())),
+                    Err(_) => Ok(retry_later(None)),
+                };
             }
             Err(error) => return Err(reactor_to_error(error)),
         };
 
-        Ok(sse_response(subscriber.receiver))
+        Ok(sse_response(subscriber.into_stream()))
     } else {
         let _ = migrate_while_opening(tonk, branch).await;
         // An absent repo/branch answers with the EMPTY SET, not a 404 —
@@ -454,13 +433,15 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
     }
 }
 
-/// Frame an subscriber's receiver as an SSE response.
+/// Frame a stream of frames as an SSE response.
 ///
 /// Shared by the ordinary subscribe path and the waiting-room path so a
 /// pending subscription is indistinguishable on the wire from a live
-/// one — same content type, same framing, same open stream.
-fn sse_response(receiver: tokio::sync::mpsc::UnboundedReceiver<Bytes>) -> Response {
-    let body_stream = UnboundedReceiverStream::new(receiver).map(|bytes: Bytes| {
+/// one — same content type, same framing, same open stream. The stream
+/// owns the subscriber it reads, so the response body's end, when the
+/// page closes it, drops the subscriber and its dialog reader.
+fn sse_response(frames: impl futures_util::Stream<Item = Bytes> + Send + 'static) -> Response {
+    let body_stream = frames.map(|bytes: Bytes| {
         let mut framed = Vec::with_capacity(bytes.len() + 8);
         framed.extend_from_slice(b"data: ");
         framed.extend_from_slice(&bytes);
@@ -569,7 +550,7 @@ mod tests {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
-        use dialog_artifacts::{ArtifactSelector, Entity, Pick, Value};
+        use dialog_corpus::{Entity, Pick, Selector, Value};
         use dialog_query::rule::DeductiveRuleDescriptor;
         use dialog_query::rule::statement::source_attr;
         use dialog_query::{AttributeStatement, Cardinality};
@@ -644,7 +625,7 @@ mod tests {
             async move {
                 handle
                     .claims()
-                    .select(ArtifactSelector::new().the(source_attr()).of(entity))
+                    .select(Selector::new().the(source_attr()).of(entity))
                     .perform(operator)
                     .await
                     .expect("the source selects")

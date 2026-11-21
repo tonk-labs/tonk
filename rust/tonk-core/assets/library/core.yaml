@@ -797,6 +797,35 @@ concept!: &member
       the: xyz.tonk.membership/name
       as: text
 
+# When an invitation was minted. ENTITY: the invitation (`tonk_schema::
+# Invitation`), the same entity its `xyz.tonk.invitation-execution/kind`
+# rides on. Kept apart from that record so invitations minted before mint
+# times were recorded still read; they have no row here.
+concept!: &invitation/minted
+  this: tonk:invitation/minted
+  description: When an invitation to this space was minted.
+  with:
+    minted-at:
+      description: >
+        Unix milliseconds at mint. A space's links list oldest first, so
+        its first open link (its default) stays first as newer ones are made.
+      the: xyz.tonk.invitation-execution/minted-at
+      as: natural:64
+
+# Where an invitation that replaced another lists. ENTITY: the invitation,
+# as for `tonk:invitation/minted`. A reset default passlink takes the place
+# of the one it replaced, so it stays its space's default.
+concept!: &invitation/listed
+  this: tonk:invitation/listed
+  description: Where an invitation that replaced another lists among its space's links.
+  with:
+    listed-at:
+      description: >
+        Unix milliseconds: the place (listed-at, else minted-at) of the
+        link this one replaced. A list orders by it before minted-at.
+      the: xyz.tonk.invitation-execution/listed-at
+      as: natural:64
+
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name
 # (with the DID tail beneath as a fallback id), and a role badge.
@@ -2042,7 +2071,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (`<tonk-inspector>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2144,35 +2173,6 @@ seed/route!:
 seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2710,7 +2710,7 @@ concept!: &intent/action
 # intent, each as a one-field concept on the field's own attribute with the
 # field named after the attribute (`subject` for `…/subject`), scoped to the
 # command (`intent` where `command: <the command>`). `intent/suggest`
-# reads the intents and those values back as readings.
+# reads the intents and those values back as readings, below.
 command!: &intent/interpret
   this: tonk:intent-interpret
   description: Interpret what was typed in the command palette, where it was opened.
@@ -2765,6 +2765,117 @@ concept!: &intent
       the: tonk.dialog.intent/command
       as: entity
 
+# What the line could mean, asked as a command and answered as session
+# facts. The palette asserts `intent/suggest` on each branch it asks (the
+# space's and the profile's) through the transact path, in the same commit
+# as the line's `intent/interpret`. A stack provider answers it after the
+# commit: it reads the branch's palette vocabulary (`intent/action`, the
+# roles on attributes, the `intent`s and what rules derived onto them, the
+# memory) and writes one `intent/reading` per reading, best first, and one
+# `intent/answer` saying how many, into the branch's `session:` layer. The
+# rows name the ask (the command entity the page minted), so the tab that
+# asked reads its own answer and no other's; an answer replaces the
+# previous one for the same asker (its site, else its expression). Nothing
+# is stored, and it goes with the process.
+command!: &intent/suggest
+  this: tonk:intent-suggest
+  description: Ask what a line typed in the command palette could mean.
+  with:
+    now:
+      description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
+      the: tonk.dialog.intent.suggest/now
+      as: float
+  maybe:
+    input:
+      description: What was typed; empty asks what can be done without saying more; absent when `expression` names the interpreted line, whose recorded input stands in.
+      the: tonk.dialog.intent.suggest/input
+      as: text
+    max:
+      description: How many readings at most; a default when absent.
+      the: tonk.dialog.intent.suggest/max
+      as: natural
+    subject:
+      description: The entity the page shows, what "this" means, and the default for an argument it can fill.
+      the: tonk.dialog.intent.suggest/subject
+      as: entity
+    site:
+      description: The tab's site, whose selection is tried in every reading.
+      the: tonk.dialog.intent.suggest/site
+      as: entity
+    expression:
+      description: The palette opening `intent/interpret` recorded; its intents and what rules derived onto them fill the readings.
+      the: tonk.dialog.intent.suggest/expression
+      as: entity
+    memory:
+      description: What was run from the palette, kept on another branch, as JSON with `choices` and `picks`, each a list of rows.
+      the: tonk.dialog.intent.suggest/memory
+      as: text
+
+concept!: &intent/answer
+  description: How an `intent/suggest` was answered. Session facts, one per asker, replaced by the next ask.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.answer/ask
+      as: entity
+    readings:
+      description: How many readings the answer has; none is an answer too.
+      the: tonk.dialog.intent.answer/readings
+      as: natural
+
+concept!: &intent/reading
+  description: One reading of what was typed, as `intent/suggest` answered it. Session facts, best first by rank.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.reading/ask
+      as: entity
+    rank:
+      description: Its place among the answer's readings, from 0.
+      the: tonk.dialog.intent.reading/rank
+      as: natural
+    score:
+      description: How well it reads, higher is better.
+      the: tonk.dialog.intent.reading/score
+      as: float
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent.reading/command
+      as: entity
+    text:
+      description: The reading as plain text.
+      the: tonk.dialog.intent.reading/text
+      as: text
+    display:
+      description: Its segments, as JSON.
+      the: tonk.dialog.intent.reading/display
+      as: text
+    nouns:
+      description: Role to kind of thing, as JSON.
+      the: tonk.dialog.intent.reading/nouns
+      as: text
+    listed:
+      description: Whether it is one of the values listed for an argument nothing was typed for.
+      the: tonk.dialog.intent.reading/listed
+      as: boolean
+    entities:
+      description: The entities its arguments are filled with, as JSON.
+      the: tonk.dialog.intent.reading/entities
+      as: text
+  maybe:
+    input:
+      description: The words the reading took for its verb, when it took any.
+      the: tonk.dialog.intent.reading/input
+      as: text
+    completion:
+      description: The input extended by this reading, when it extends it.
+      the: tonk.dialog.intent.reading/completion
+      as: text
+    claim:
+      description: The transact request that runs it, as JSON, once nothing is missing.
+      the: tonk.dialog.intent.reading/claim
+      as: text
+
 # A member as the account `member/expel` wants. A roster row is the
 # membership, derived from (space, account); the command takes the
 # account's DID, which is the row's `member` field. This concept's rows
@@ -2793,7 +2904,7 @@ view!:
 
 # The library's components a space can install, each beside the others
 # and beside the space's seed: code-editor, issue, meta, notebook,
-# prose-editor, table, version-control (every library file but `core.yaml`,
+# prose-editor, table, tree-inspector, version-control (every library file but `core.yaml`,
 # which every space runs, and `profile.yaml`, the profile's). The
 # <code-editor> languages are components too, `language/<id>`, listed by
 # code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
@@ -2836,6 +2947,10 @@ library/component!:
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/tree-inspector
+  name: "tree-inspector"
 
 library/component!:
   this: tonk:library/version-control

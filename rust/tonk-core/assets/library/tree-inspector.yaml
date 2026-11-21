@@ -1,0 +1,724 @@
+# tree-inspector: a branch's search tree, <tree-inspector>, as branch data.
+#
+# <tree-inspector> is defined below with `element!:`, so installing this
+# component gives a space a view of the tree its facts are stored in with
+# nothing from the host: no bundle, no host element, no stylesheet.
+#
+# What is being looked at is state in the session: an exploration of a
+# tree, named by its root node, and the nodes open in it (below). The
+# element sends commands that change it; rules here keep it in the stack's
+# `session:` layer, and derive what the page shows from dialog's tree
+# resolvers (`tree/node`, `tree/span`, `tree/entry`) and key formulas
+# (`dialog/key-part`, `dialog/separator-part`) for the open nodes only.
+# A node is named by its `node:` entity, and a branch names its root by
+# one (`dialog.branch/tree`). Opening a node this replica lacks fetches it.
+
+# The methods in `tree-inspector/` are its custom-element class.
+#
+# Attributes: `selected`, the exploration shown (its root node), `branch`,
+# the branch's name, and `base`, the console's path. It reads the concepts
+# below with concept queries, again whenever the session's explorations or
+# the branch's root change, and sends `tree-explore`, `tree-open` and
+# `tree-close` events, which the console view binds to the commands below.
+element!: &tree-inspector
+  description: An outline of the search tree a branch stores its facts in, as explored this session; a node is read when it is opened.
+  attribute:
+    selected: ""
+    branch: "main"
+    base: "/console/tree"
+  method:
+    connected: !include/text ./tree-inspector/connected.js
+    disconnected: !include/text ./tree-inspector/disconnected.js
+    attribute-changed: !include/text ./tree-inspector/attribute-changed.js
+    schedule: !include/text ./tree-inspector/schedule.js
+    send: !include/text ./tree-inspector/send.js
+    query: !include/text ./tree-inspector/query.js
+    concepts: !include/text ./tree-inspector/concepts.js
+    watch: !include/text ./tree-inspector/watch.js
+    refresh: !include/text ./tree-inspector/refresh.js
+    bytes: !include/text ./tree-inspector/bytes.js
+    read: !include/text ./tree-inspector/read.js
+    render: !include/text ./tree-inspector/render.js
+    overview: !include/text ./tree-inspector/overview.js
+    detail: !include/text ./tree-inspector/detail.js
+    act: !include/text ./tree-inspector/act.js
+    keys: !include/text ./tree-inspector/keys.js
+    key: !include/text ./tree-inspector/key.js
+    chips: !include/text ./tree-inspector/chips.js
+    columns: !include/text ./tree-inspector/columns.js
+    entries: !include/text ./tree-inspector/entries.js
+    size: !include/text ./tree-inspector/size.js
+    sheet: !include/text ./tree-inspector/sheet.js
+
+# ---------------------------------------------------------------------------
+# Explorations: what the page has open, kept in the session.
+#
+# An exploration is a look at one tree, named by its root node: the root
+# `dialog.branch/tree` named when it started. Opening a node adds it to the
+# exploration; closing one removes it. Both are written into the stack's
+# `session:` layer, so they are never committed, never synced, and go when
+# the session does. The branch moving does not touch an exploration: its
+# root still names the tree it was started on, and exploring the branch's
+# new root starts another one beside it.
+# ---------------------------------------------------------------------------
+
+concept!: &tree-inspector/exploration
+  description: A look at a search tree, named by its root node, kept for the session.
+  with:
+    started:
+      description: When it was started, in milliseconds since the Unix epoch.
+      the: xyz.tonk.tree-inspector.exploration/started
+      as: float
+      in: "session:"
+
+concept!: &tree-inspector/opened
+  description: The nodes open in an exploration.
+  with:
+    open:
+      description: A node open in the exploration.
+      the: xyz.tonk.tree-inspector.exploration/open
+      as: entity
+      pick: :all
+      in: "session:"
+
+command!: &tree-inspector/explore
+  description: Start exploring the tree rooted at a node.
+  with:
+    root:
+      description: The tree's root node.
+      the: xyz.tonk.tree-inspector.explore/root
+      as: entity
+    time:
+      description: When it was asked, in milliseconds since the Unix epoch.
+      the: xyz.tonk.tree-inspector.explore/time
+      as: float
+
+command!: &tree-inspector/open
+  description: Open a node in an exploration.
+  with:
+    exploration:
+      description: The exploration, named by its root.
+      the: xyz.tonk.tree-inspector.open/exploration
+      as: entity
+    node:
+      description: The node to open.
+      the: xyz.tonk.tree-inspector.open/node
+      as: entity
+    time:
+      description: When it was asked, in milliseconds since the Unix epoch.
+      the: xyz.tonk.tree-inspector.open/time
+      as: float
+
+command!: &tree-inspector/close
+  description: Close a node in an exploration.
+  with:
+    exploration:
+      description: The exploration, named by its root.
+      the: xyz.tonk.tree-inspector.close/exploration
+      as: entity
+    node:
+      description: The node to close.
+      the: xyz.tonk.tree-inspector.close/node
+      as: entity
+    time:
+      description: When it was asked, in milliseconds since the Unix epoch.
+      the: xyz.tonk.tree-inspector.close/time
+      as: float
+
+rule!:
+  description: Exploring a root starts an exploration of it.
+  assert!: tree-inspector/exploration
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?this, time: ?started }
+
+rule!:
+  description: An exploration starts with its root open.
+  assert!: tree-inspector/opened
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?this, time: ?time }
+    - assert: ==
+      where: { this: ?this, is: ?open }
+
+rule!:
+  description: Opening a node adds it to the exploration.
+  assert!: tree-inspector/opened
+  when:
+    - assert: tree-inspector/open
+      where: { exploration: ?this, node: ?open, time: ?time }
+
+rule!:
+  description: Closing a node takes it out of the exploration.
+  retract!: tree-inspector/opened
+  when:
+    - assert: tree-inspector/close
+      where: { exploration: ?this, node: ?open, time: ?time }
+    - assert: tree-inspector/opened
+      where: { this: ?this, open: ?open }
+
+# ---------------------------------------------------------------------------
+# What the page shows: the open nodes, read through dialog's resolvers.
+#
+# Each rule reads only nodes an exploration names, so nothing here can
+# list a tree; a node this replica lacks is fetched when it is opened.
+# ---------------------------------------------------------------------------
+
+concept!: &tree-inspector/node
+  description: What an explored node is.
+  with:
+    kind:
+      description: "`index` (a table of spans) or `segment` (a run of entries)."
+      the: xyz.tonk.tree-inspector.node/kind
+      as: text
+    size:
+      description: Size of the node's block in bytes.
+      the: xyz.tonk.tree-inspector.node/size
+      as: natural
+    count:
+      description: Its spans (an index) or entries (a segment).
+      the: xyz.tonk.tree-inspector.node/count
+      as: natural
+    scale:
+      description: An advisory log-scale size of the node's subtree.
+      the: xyz.tonk.tree-inspector.node/scale
+      as: natural
+    novelty:
+      description: Buffered operations riding the node.
+      the: xyz.tonk.tree-inspector.node/novelty
+      as: natural
+    version:
+      description: "The layout version, which pins how the rest of the node is read."
+      the: xyz.tonk.tree-inspector.node/version
+      as: natural
+    fanout-exponent:
+      description: "How many bits of a key's hash decide a boundary; the expected fanout is 2 to this."
+      the: xyz.tonk.tree-inspector.node/fanout-exponent
+      as: natural
+    max-separator:
+      description: "Keys longer than this never become boundaries."
+      the: xyz.tonk.tree-inspector.node/max-separator
+      as: natural
+    inline-n:
+      description: "Values longer than this spill out of the key."
+      the: xyz.tonk.tree-inspector.node/inline-n
+      as: natural
+    spill-prefix:
+      description: "Leading value bytes a spilled value's key keeps."
+      the: xyz.tonk.tree-inspector.node/spill-prefix
+      as: natural
+    max-segment:
+      description: "The leaf-run weight cap; 0 disables it."
+      the: xyz.tonk.tree-inspector.node/max-segment
+      as: natural
+    frame-ceiling-factor:
+      description: "The hard frame-weight ceiling, as a multiple of `max-segment`."
+      the: xyz.tonk.tree-inspector.node/frame-ceiling-factor
+      as: natural
+    anchor-selector:
+      description: "Which candidate seam a forced cut anchors at."
+      the: xyz.tonk.tree-inspector.node/anchor-selector
+      as: natural
+    entry-overhead:
+      description: "Weight charged per leaf entry beyond its key and value bytes."
+      the: xyz.tonk.tree-inspector.node/entry-overhead
+      as: natural
+    key-overhead:
+      description: "Weight the per-key cut floor charges beyond a key's bytes."
+      the: xyz.tonk.tree-inspector.node/key-overhead
+      as: natural
+    link-overhead:
+      description: "Weight charged per index link beyond its separator and child hash."
+      the: xyz.tonk.tree-inspector.node/link-overhead
+      as: natural
+
+rule!:
+  description: An open node is read through `tree/node`.
+  assert: tree-inspector/node
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?this }
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+        version: ?version
+        fanout-exponent: ?fanout-exponent
+        max-separator: ?max-separator
+        inline-n: ?inline-n
+        spill-prefix: ?spill-prefix
+        max-segment: ?max-segment
+        frame-ceiling-factor: ?frame-ceiling-factor
+        anchor-selector: ?anchor-selector
+        entry-overhead: ?entry-overhead
+        key-overhead: ?key-overhead
+        link-overhead: ?link-overhead
+
+rule!:
+  description: A child of an open index node that this replica holds is read through `tree/node` too, so its row shows its size and count; one it lacks is not read, so nothing is fetched.
+  assert: tree-inspector/node
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?parent }
+    - assert: tree/span
+      where: { of: ?parent, node: ?this }
+    - assert: tree-inspector/held
+      where: { this: ?this, local: true }
+    - assert: tree/node
+      where:
+        of: ?this
+        kind: ?kind
+        size: ?size
+        count: ?count
+        scale: ?scale
+        novelty: ?novelty
+        version: ?version
+        fanout-exponent: ?fanout-exponent
+        max-separator: ?max-separator
+        inline-n: ?inline-n
+        spill-prefix: ?spill-prefix
+        max-segment: ?max-segment
+        frame-ceiling-factor: ?frame-ceiling-factor
+        anchor-selector: ?anchor-selector
+        entry-overhead: ?entry-overhead
+        key-overhead: ?key-overhead
+        link-overhead: ?link-overhead
+
+concept!: &tree-inspector/span
+  description: A span of an open index node, naming a child node.
+  with:
+    parent:
+      description: The index node the span is in.
+      the: xyz.tonk.tree-inspector.span/parent
+      as: entity
+    at:
+      description: Its position among the node's spans.
+      the: xyz.tonk.tree-inspector.span/at
+      as: natural
+    child:
+      description: The node rooting the span's subtree.
+      the: xyz.tonk.tree-inspector.span/child
+      as: entity
+    separator:
+      description: A component of the span's lower bound; its other components share its prefix.
+      the: xyz.tonk.tree-inspector.span/separator
+      as: entity
+    scale:
+      description: The subtree's advisory scale.
+      the: xyz.tonk.tree-inspector.span/scale
+      as: natural
+    novelty:
+      description: Buffered operations the node holds against the span.
+      the: xyz.tonk.tree-inspector.span/novelty
+      as: natural
+    rank:
+      description: The seam rank of the span's separator, the level coin that made the boundary.
+      the: xyz.tonk.tree-inspector.span/rank
+      as: natural
+
+rule!:
+  description: An open index node's spans are read through `tree/span`.
+  assert: tree-inspector/span
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?parent }
+    - assert: tree/span
+      where: { of: ?parent, span: ?this, at: ?at, node: ?child, separator: ?bytes, scale: ?scale, novelty: ?novelty, rank: ?rank }
+    - assert: dialog/separator-part
+      where: { of: ?bytes, part: ?separator, at: ?position, kind: ?kind, text: ?text, bytes: ?component }
+
+concept!: &tree-inspector/entry
+  description: An entry of an open segment, or an operation an open index node buffers.
+  with:
+    segment:
+      description: The node the entry is in.
+      the: xyz.tonk.tree-inspector.entry/segment
+      as: entity
+    at:
+      description: Its position in the segment.
+      the: xyz.tonk.tree-inspector.entry/at
+      as: natural
+    key:
+      description: A component of the entry's key; its other components share its prefix.
+      the: xyz.tonk.tree-inspector.entry/key
+      as: entity
+    state:
+      description: "`asserted` for a stored datum, `removed` for a tombstone."
+      the: xyz.tonk.tree-inspector.entry/state
+      as: text
+
+rule!:
+  description: An open node's entries, or an index's buffered operations, are read through `tree/entry`.
+  assert: tree-inspector/entry
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?segment }
+    - assert: tree/entry
+      where: { of: ?segment, entry: ?this, at: ?at, key: ?bytes, state: ?state }
+    - assert: dialog/key-part
+      where: { of: ?bytes, part: ?key, at: ?position, kind: ?kind, text: ?text, bytes: ?component }
+
+# What an entry holds beyond its key, each part read only where it
+# applies: a claim (not on a blob record), a version (not on an
+# unversioned write), the span a buffered operation rides (not in a
+# segment), and the blob a blob record is about.
+concept!: &tree-inspector/claim
+  description: The claim an entry of an open node carries.
+  with:
+    retraction:
+      description: Whether the datum marks a retraction.
+      the: xyz.tonk.tree-inspector.claim/retraction
+      as: boolean
+    cause:
+      description: Prior claim versions in the entry's cause.
+      the: xyz.tonk.tree-inspector.claim/cause
+      as: natural
+    collapsed:
+      description: Claim versions collapsed into the entry.
+      the: xyz.tonk.tree-inspector.claim/collapsed
+      as: natural
+    supersedes:
+      description: Versions a covering record supersedes.
+      the: xyz.tonk.tree-inspector.claim/supersedes
+      as: natural
+
+rule!:
+  description: An open node's entries carry their claims.
+  assert: tree-inspector/claim
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, retraction: ?retraction, cause: ?cause, collapsed: ?collapsed, supersedes: ?supersedes }
+
+concept!: &tree-inspector/rank
+  description: The leaf-coin rank of an entry's key in an open segment; a buffered operation has none.
+  with:
+    rank:
+      description: The rank, which decides whether a boundary forms after the key.
+      the: xyz.tonk.tree-inspector.entry/rank
+      as: natural
+
+rule!:
+  description: An open segment's entries carry their key's rank.
+  assert: tree-inspector/rank
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, rank: ?rank }
+
+concept!: &tree-inspector/version
+  description: The version that wrote an entry of an open node.
+  with:
+    origin:
+      description: The replica that wrote it.
+      the: xyz.tonk.tree-inspector.version/origin
+      as: bytes
+    edition:
+      description: Its causal depth on that replica.
+      the: xyz.tonk.tree-inspector.version/edition
+      as: natural
+
+rule!:
+  description: An open node's versioned entries name their version.
+  assert: tree-inspector/version
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, origin: ?origin, edition: ?edition }
+
+concept!: &tree-inspector/buffer
+  description: The span an operation an open index node buffers rides.
+  with:
+    span:
+      description: The span, as `tree/span` names it.
+      the: xyz.tonk.tree-inspector.buffer/span
+      as: entity
+
+rule!:
+  description: An open index node's buffered operations name their span.
+  assert: tree-inspector/buffer
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, span: ?span }
+
+concept!: &tree-inspector/blob
+  description: The blob an entry of an open segment records.
+  with:
+    blob:
+      description: The blob, as its `asset:` entity.
+      the: xyz.tonk.tree-inspector.blob/blob
+      as: entity
+    size:
+      description: Its size in bytes.
+      the: xyz.tonk.tree-inspector.blob/size
+      as: natural
+
+rule!:
+  description: An open segment's blob records name their blob.
+  assert: tree-inspector/blob
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?node }
+    - assert: tree/entry
+      where: { of: ?node, entry: ?this, blob: ?blob, blob-size: ?size }
+
+concept!: &tree-inspector/part
+  description: A component of a key or a separator in an open node.
+  with:
+    at:
+      description: Its position in the key.
+      the: xyz.tonk.tree-inspector.part/at
+      as: natural
+    kind:
+      description: What it is, such as `entity`, `attribute`, `value` or `index`.
+      the: xyz.tonk.tree-inspector.part/kind
+      as: text
+    text:
+      description: How it reads.
+      the: xyz.tonk.tree-inspector.part/text
+      as: text
+
+rule!:
+  description: The keys of an open node's entries are decoded by `dialog/key-part`.
+  assert: tree-inspector/part
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?segment }
+    - assert: tree/entry
+      where: { of: ?segment, key: ?bytes }
+    - assert: dialog/key-part
+      where: { of: ?bytes, part: ?this, at: ?at, kind: ?kind, text: ?text, bytes: ?component }
+
+rule!:
+  description: The separators of an open index node's spans are decoded by `dialog/separator-part`.
+  assert: tree-inspector/part
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?parent }
+    - assert: tree/span
+      where: { of: ?parent, separator: ?bytes }
+    - assert: dialog/separator-part
+      where: { of: ?bytes, part: ?this, at: ?at, kind: ?kind, text: ?text, bytes: ?component }
+
+# An entry whose value spilled out of its key names the value by its
+# `asset:` entity. Opening that entity in an exploration reads the value,
+# as opening a node reads the node: only when it is asked for.
+concept!: &tree-inspector/spill
+  description: The spilled value of an entry of an open segment.
+  with:
+    value:
+      description: The value, as its `asset:` entity.
+      the: xyz.tonk.tree-inspector.spill/value
+      as: entity
+
+rule!:
+  description: An open segment's entries name their spilled values.
+  assert: tree-inspector/spill
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?segment }
+    - assert: tree/entry
+      where: { of: ?segment, entry: ?this, spill: ?value }
+
+concept!: &tree-inspector/value
+  description: A spilled value opened in an exploration.
+  with:
+    size:
+      description: Its size in bytes.
+      the: xyz.tonk.tree-inspector.value/size
+      as: natural
+    bytes:
+      description: Its bytes.
+      the: xyz.tonk.tree-inspector.value/bytes
+      as: bytes
+
+rule!:
+  description: An open value is read through `tree/value`.
+  assert: tree-inspector/value
+  when:
+    - assert: tree-inspector/opened
+      where: { this: ?exploration, open: ?this }
+    - assert: tree/value
+      where: { of: ?this, size: ?size, bytes: ?bytes }
+
+# ---------------------------------------------------------------------------
+# What this replica holds, asked of dialog by command.
+#
+# Reading a node fetches it, so whether it was held cannot be read from a
+# query. dialog answers two commands instead, written into `control:` on
+# the node's own entity: a probe says whether a node is held without
+# fetching it, a fetch brings it local and says whether that worked. A
+# node opened is fetched; the children an open index names are probed.
+# Each answer is kept in the session as `held`.
+# ---------------------------------------------------------------------------
+
+concept!: &tree-inspector/probe
+  description: dialog's command asking whether a node is held, without fetching it.
+  with:
+    node:
+      description: The node asked about.
+      the: dialog.node.probe/node
+      as: entity
+      in: "control:"
+
+concept!: &tree-inspector/fetch
+  description: dialog's command asking for a node to be brought local.
+  with:
+    node:
+      description: The node to bring local.
+      the: dialog.node.fetch/node
+      as: entity
+      in: "control:"
+
+concept!: &tree-inspector/probed
+  description: dialog's answer to a probe.
+  with:
+    node:
+      description: The node asked about.
+      the: dialog.node.probed/node
+      as: entity
+    local:
+      description: Whether the replica held it.
+      the: dialog.node.probed/local
+      as: boolean
+
+concept!: &tree-inspector/fetched
+  description: dialog's answer to a fetch.
+  with:
+    node:
+      description: The node asked for.
+      the: dialog.node.fetched/node
+      as: entity
+    local:
+      description: Whether the replica holds it, having tried.
+      the: dialog.node.fetched/local
+      as: boolean
+
+concept!: &tree-inspector/held
+  description: Whether this replica holds a node, as dialog last answered.
+  with:
+    local:
+      description: Whether the node is held.
+      the: xyz.tonk.tree-inspector.node/held
+      as: boolean
+      in: "session:"
+
+rule!:
+  description: Exploring a root fetches it.
+  assert!: tree-inspector/fetch
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?this, time: ?time }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Opening a node a span names fetches it; a spilled value opened beside it is no node, and is read by `tree/value` alone.
+  assert!: tree-inspector/fetch
+  when:
+    - assert: tree-inspector/open
+      where: { exploration: ?exploration, node: ?this, time: ?time }
+    - assert: tree-inspector/span
+      where: { child: ?this }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Opening an index node probes each child it names.
+  assert!: tree-inspector/probe
+  when:
+    - assert: tree-inspector/open
+      where: { exploration: ?exploration, node: ?parent, time: ?time }
+    - assert: tree/span
+      where: { of: ?parent, node: ?this }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: Exploring a root probes each child it names.
+  assert!: tree-inspector/probe
+  when:
+    - assert: tree-inspector/explore
+      where: { root: ?root, time: ?time }
+    - assert: tree/span
+      where: { of: ?root, node: ?this }
+    - assert: ==
+      where: { this: ?this, is: ?node }
+
+rule!:
+  description: A probe's answer is kept in the session.
+  assert!: tree-inspector/held
+  when:
+    - assert: tree-inspector/probed
+      where: { this: ?command, node: ?this, local: ?local }
+
+rule!:
+  description: A fetch's answer is kept in the session.
+  assert!: tree-inspector/held
+  when:
+    - assert: tree-inspector/fetched
+      where: { this: ?command, node: ?this, local: ?local }
+
+event!: &on/tree-explore
+  type: "tree-explore"
+  where:
+    root: ".detail.root"
+    time: ".detail.time"
+
+event!: &on/tree-open
+  type: "tree-open"
+  where:
+    exploration: ".detail.exploration"
+    node: ".detail.node"
+    time: ".detail.time"
+
+event!: &on/tree-close
+  type: "tree-close"
+  where:
+    exploration: ".detail.exploration"
+    node: ".detail.node"
+    time: ".detail.time"
+
+# The console page: `/console/tree` lists the explorations and the
+# branch's current root, and `/console/tree/<root>` shows one.
+concept!: &tree-inspector/console
+  this: tonk:tree-inspector/console
+  description: The search-tree console (`/console/tree[/<root>]`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+  maybe:
+    entity:
+      description: The exploration from the path, named by its root, picked off the site entity.
+      the: xyz.tonk.site/entity
+      as: entity
+
+view!:
+  this: tonk:tree-inspector/console
+  show:
+    ui: !include/text ./tree-inspector/console.html
+
+route!:
+  this: tonk:tree-inspector/route
+  path: "/console/tree"
+  concept: tonk:tree-inspector/console
+
+route!:
+  this: tonk:tree-inspector/route/exploration
+  path: "/console/tree/{*entity}"
+  concept: tonk:tree-inspector/console

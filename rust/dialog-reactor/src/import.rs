@@ -8,7 +8,9 @@ use dialog_common::ConditionalSend;
 use dialog_repository::{CommitError, Importer, Revision};
 
 use super::BranchReference;
-use super::env::{BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider};
+use super::env::{
+    BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider, SettleProvider,
+};
 use super::error::ReactorError;
 
 /// Import-artifacts effect. Generic over the [`Importer`] source so
@@ -32,7 +34,7 @@ impl<'a, I: Importer + Unpin + ConditionalSend> Import<'a, I> {
     /// revision.
     pub async fn perform<Env>(self, env: &Env) -> Result<Revision, ImportError>
     where
-        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
+        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider + SettleProvider,
     {
         let cached = self.branch.acquire(env).await?;
         let revision = cached

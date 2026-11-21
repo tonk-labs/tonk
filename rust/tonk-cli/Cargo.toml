@@ -37,7 +37,8 @@ tar = { workspace = true }
 # `&'static str` literals), which needs `Arg`/`Command` builders
 # that accept owned strings.
 clap = { workspace = true, features = ["string"] }
-dialog-artifacts = { workspace = true }
+dialog-corpus = { workspace = true }
+dialog-search-tree = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }

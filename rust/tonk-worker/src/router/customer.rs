@@ -167,8 +167,7 @@ pub(crate) async fn enroll_customer(
 /// A command's fields are scalars and a concept resolves only when every
 /// one is there, so "unset" is the empty string; an empty email means
 /// the account's recorded address.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
     for crate::router::CommandEnv
 {
@@ -200,8 +199,7 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 /// it never got there or refused it. `requested` does not promise a
 /// mail: the service rate limits sends and, so as not to say whether an
 /// account exists, answers a throttled request exactly like a sent one.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
@@ -245,7 +243,7 @@ async fn request_resend(state: &AppState) -> Result<(), String> {
 /// the profile branch, never account data.
 async fn report_resend_activation(
     state: &AppState,
-    receipt: &dialog_artifacts::Entity,
+    receipt: &dialog_corpus::Entity,
     status: &str,
     detail: &str,
 ) {
@@ -526,6 +524,40 @@ pub(crate) async fn record_custody_cell(
     Ok(())
 }
 
+/// Record the account's recovery phrase on profile main: the account
+/// secret sealed to the custody DID the words derive, and the phrase's
+/// row on that same entity, in one transaction.
+///
+/// The row is what settings reads to know a phrase exists, and what
+/// [`super::account_state::recovery_phrase`] checks to refuse a second
+/// one.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) async fn record_recovery_phrase(
+    state: &crate::worker::TonkState,
+    custody: &dialog_varsig::Did,
+    sealed: &[u8],
+    created_at: u64,
+) -> Result<(), TonkWorkerError> {
+    let account = super::identity::root_did(state).await?;
+    state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .transaction()
+        .assert(tonk_schema::SecretMessage::new(custody, sealed.to_vec()).sealed_by(&account))
+        .assert(tonk_schema::RecoveryPhrase::new(custody, created_at))
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to record the recovery phrase: {error}"))
+        })?;
+    Ok(())
+}
+
 /// Provision `consumer`, or queue it when the account has not yet
 /// confirmed its email.
 ///
@@ -652,6 +684,33 @@ pub(crate) async fn provision_consumer(
     }
 }
 
+/// Add a custodian to this account with one `/custody/add`: the
+/// service writes the custody cell, then provisions the custody space.
+///
+/// Answers success when the service already provides that custody space
+/// for this account, so a retry after a lost answer finishes rather than
+/// failing.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) async fn add_custody(
+    state: &crate::worker::TonkState,
+    custody: &tonk_identity::request::CustodyMaterial<'_>,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_custody_add_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.credential().signer().clone();
+    let body = build_custody_add_invocation(device, &link, custody)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the custody invocation: {error}"))
+        })?;
+    let origin = home_service_origin(state).await?;
+    post_cbor(&ucan_endpoint(&origin)?, &body).await?;
+    Ok(())
+}
+
 /// Record that this account provides `consumer`, on the space's
 /// directory entity in the account db. The write side of the fact
 /// [`space_provider_recorded`] reads: its presence is what lets a share
@@ -730,10 +789,11 @@ pub(crate) async fn retract_space_provider(
     for row in recorded {
         if let Err(error) = branch
             .handle()
-            .transaction()
-            .retract(row)
-            .commit()
-            .publish()
+            .transact(|transaction| {
+                std::future::ready(Ok::<_, dialog_repository::CommitError>(
+                    transaction.retract(row.clone()),
+                ))
+            })
             .perform(&state.operator)
             .await
         {

@@ -36,7 +36,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use tonk_notation::{Application as SyntaxApplication, Expression, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
@@ -371,9 +371,7 @@ fn lower_statement(
 /// Extract a bound entity from a term, if it carries one.
 fn term_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<Entity> {
     match term {
-        dialog_query::Term::Constant(dialog_artifacts::Value::Entity(entity)) => {
-            Some(entity.clone())
-        }
+        dialog_query::Term::Constant(dialog_corpus::Value::Entity(entity)) => Some(entity.clone()),
         _ => None,
     }
 }

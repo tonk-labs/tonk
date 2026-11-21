@@ -35,7 +35,6 @@ members = [
   "rust/tonk-schema",
   "rust/tonk-table",
   "rust/tonk-template",
-  "rust/tonk-tree",
   "rust/tonk-ui",
   "rust/tonk-worker",
   "rust/tonk-worker-api",
@@ -80,7 +79,6 @@ tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-table = { path = "./rust/tonk-table" }
 tonk-template = { path = "./rust/tonk-template" }
-tonk-tree = { path = "./rust/tonk-tree" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
@@ -91,6 +89,7 @@ async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
 base58 = "0.2"
 base64 = "0.22"
+bip39 = { version = "3.0", default-features = false, features = ["alloc", "zeroize"] }
 blake3 = "1.5"
 bs58 = "0.5"
 bytes = "1"
@@ -198,26 +197,43 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-# 0.4.0-rc.4: trees read through the env (dialog-db#730, #735) and a
-# difference reads a shared leaf only where its ops touch (dialog-db#736).
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "v0.4.0-rc.5", version = "0.4.0-rc.5" }
+# 0.5.0 (dialog-db#845), whose last candidate (0.5.0-rc.8, #842) brought
+# a concept read that binds stored values in place and left-merges
+# optional fields (dialog-db#825), a query that folds and a subscription
+# that keeps the fold current (#839), a subscription poll that costs what
+# it touched (#838) and `Ephemeral::frozen` (#841). Pinned to its release
+# commit on dialog's main, 875cc7f, until the tag `v0.5.0` is published;
+# then each pin becomes `tag = "v0.5.0"`. Every workspace in this
+# repository pins the same commit: two dialogs in one build are two `Did`
+# types.
+# v0.5.0-rc.7 carries a search-tree node as a `node:` handle read through
+# five resolvers (dialog-db#829, #832, #833), which `tree-inspector` needs.
+# v0.5.0-rc.6 is the release that carried the layers stack (dialog-db#823):
+# a row has a layer `in`, a `Stack` over a
+# branch routes writes to layers, commands land in `control:` for one
+# tick and providers answer them as the invocation report's effect, a
+# durable layer is a tree the primary points at, and a stack shares
+# one evaluation of a query among its subscribers (`Stack::subscribe`,
+# `Stack::settle`).
+dialog-stack = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-corpus = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "875cc7f15dbd360e7fd4324cb9e1e9afbce3d42b", version = "0.5.0" }
 
 [profile.dev]
 opt-level = 1

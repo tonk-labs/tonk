@@ -10,9 +10,9 @@
 //! repo load and `BranchOpenProvider` for the branch open), the
 //! bound is `LoadProvider + BranchOpenProvider`.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Preload, Speculation};
 use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
@@ -29,8 +29,32 @@ pub trait LoadProvider: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv
 impl<T> LoadProvider for T where T: Provider<Load> + Provider<List> + RegistryEnv + PeersEnv {}
 
 /// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+pub trait BranchOpenProvider:
+    Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
+impl<T> BranchOpenProvider for T where
+    T: Provider<Resolve> + dialog_repository::OpenStackEnv + ConditionalSync + 'static
+{
+}
+
+/// What settling a branch's stack needs ([`Stack::settle`]): the reads
+/// a subscription's poll makes, through a handle the stack clones once
+/// and shares among every subscription it polls.
+///
+/// [`Stack::settle`]: dialog_repository::Stack::settle
+pub trait SettleProvider:
+    dialog_repository::OpenStackEnv + Clone + dialog_common::ConditionalSend + ConditionalSync + 'static
+{
+}
+impl<T> SettleProvider for T where
+    T: dialog_repository::OpenStackEnv
+        + Clone
+        + dialog_common::ConditionalSend
+        + ConditionalSync
+        + 'static
+{
+}
 
 /// Bound needed for raw content-addressed block access to the branch
 /// archive, reading tree nodes by hash. `Put` is part of the
@@ -47,6 +71,9 @@ pub trait SelectProvider:
     + Provider<Resolve>
     + Provider<Identify>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -64,6 +91,9 @@ impl<T> SelectProvider for T where
         + Provider<Resolve>
         + Provider<Identify>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -88,6 +118,9 @@ pub trait CommitProvider:
     + Provider<Identify>
     + Provider<Attest>
     + Provider<ArchiveLoad>
+    + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+    + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
     + Provider<BlobLoad>
     + Provider<Preload>
     + Provider<Speculation>
@@ -110,6 +143,9 @@ impl<T> CommitProvider for T where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
         + Provider<BlobLoad>
         + Provider<Preload>
         + Provider<Speculation>
@@ -121,7 +157,7 @@ impl<T> CommitProvider for T where
 {
 }
 
-/// Bound needed to pull from upstream (`branch.pull().perform`): the
+/// Bound needed to pull from upstream (`branch.pull(dialog_repository::Download::MinimalRanges).perform`): the
 /// registry the branch's upstreams resolve from, and the host's
 /// connections to the peers they live at.
 pub trait PullProvider:

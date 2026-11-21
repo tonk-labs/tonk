@@ -291,7 +291,7 @@ impl dialog_varsig::Principal for AccountBoundOperator {
 
 macro_rules! forward {
     ($command:ty) => {
-        #[async_trait::async_trait]
+        #[dialog_capability::provider]
         impl Provider<$command> for AccountBoundOperator
         where
             Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
@@ -322,7 +322,7 @@ forward!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward!(dialog_effects::credential::Save<dialog_effects::credential::Secret>);
 // Keep complete signed heads as they are observed or published. Dialog's
 // in-tree log deliberately omits their tree roots; native checkout needs them.
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl Provider<dialog_effects::memory::Resolve> for AccountBoundOperator {
     async fn execute(
         &self,
@@ -340,7 +340,7 @@ impl Provider<dialog_effects::memory::Resolve> for AccountBoundOperator {
     }
 }
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl Provider<dialog_effects::memory::Publish> for AccountBoundOperator {
     async fn execute(
         &self,
@@ -386,14 +386,17 @@ forward!(dialog_did_web::Discover);
 forward!(dialog_repository::Hydrate);
 forward!(dialog_effects::archive::Load);
 forward!(dialog_effects::blob::Load);
-forward!(dialog_artifacts::Preload);
-forward!(dialog_artifacts::Speculation);
+forward!(dialog_corpus::Preload);
+forward!(dialog_corpus::Speculation);
+forward!(dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>);
+forward!(dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>);
+forward!(dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>);
 forward!(dialog_effects::space::Load);
 forward!(dialog_effects::space::Create);
 forward!(Prove<Ucan>);
 forward!(Retain<Ucan>);
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl Provider<Authorize<Ucan>> for AccountBoundOperator {
     async fn execute(
         &self,
@@ -416,7 +419,7 @@ struct Guarded<'a> {
     guard: Option<&'a AccountSessionReadGuard>,
 }
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<'a> Provider<Identify> for Guarded<'a> {
     async fn execute(&self, input: <Identify as Command>::Input) -> <Identify as Command>::Output {
         <Peer<NativeSpace, Session> as Provider<Identify>>::execute(&self.operator.inner, input)
@@ -426,7 +429,7 @@ impl<'a> Provider<Identify> for Guarded<'a> {
 
 macro_rules! forward_guarded {
     ($command:ty) => {
-        #[async_trait::async_trait]
+        #[dialog_capability::provider]
         impl<'a> Provider<$command> for Guarded<'a>
         where
             Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
@@ -450,7 +453,7 @@ macro_rules! forward_guarded {
 forward_guarded!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward_guarded!(Prove<Ucan>);
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<'a> Provider<Authorize<Ucan>> for Guarded<'a> {
     async fn execute(
         &self,
@@ -476,7 +479,7 @@ impl<T, E: From<AuthorizeError>> FromAuthError for std::result::Result<T, E> {
     }
 }
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<At, Fx> Provider<Fork<At, Fx>> for AccountBoundOperator
 where
     At: Site,

@@ -382,6 +382,19 @@ pub(crate) async fn request_webauthn_with(
     intent: Option<tonk_worker_api::CustodyIntent>,
     credential_id: Option<String>,
 ) -> Result<(), crate::TonkWorkerError> {
+    request_webauthn_for(client, request, intent, credential_id, false).await
+}
+
+/// [`request_webauthn_with`], saying whether this browser signed in with
+/// the account's recovery phrase and so holds no passkey for it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_webauthn_for(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
+    phrase_only: bool,
+) -> Result<(), crate::TonkWorkerError> {
     use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -406,6 +419,7 @@ pub(crate) async fn request_webauthn_with(
         request,
         intent,
         credential_id,
+        phrase_only,
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
@@ -489,9 +503,22 @@ pub(crate) async fn request_webauthn_with(
     ))
 }
 
+/// [`request_webauthn_with`], saying whether this browser signed in with
+/// the account's recovery phrase; refused on this host just the same.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn request_webauthn_for(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
+    phrase_only: bool,
+) -> Result<(), crate::TonkWorkerError> {
+    let _ = phrase_only;
+    request_webauthn_with(client, request, intent, credential_id).await
+}
+
 /// Go home: send the page that asked back to the hub.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Home> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::Home) {
         notify_navigate(self.client(), "/");

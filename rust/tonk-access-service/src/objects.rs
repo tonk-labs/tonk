@@ -89,7 +89,7 @@ pub(crate) async fn read(bucket: &Bucket, key: &str) -> Result<Option<(Vec<u8>, 
     Ok(Some((bytes, etag)))
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<archive::Get> for Objects {
     async fn execute(
         &self,
@@ -107,7 +107,7 @@ impl Provider<archive::Get> for Objects {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<archive::Put> for Objects {
     async fn execute(&self, capability: Capability<archive::Put>) -> Result<(), ArchiveError> {
         let content = capability.content();
@@ -125,7 +125,7 @@ impl Provider<archive::Put> for Objects {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<memory::Resolve> for Objects {
     async fn execute(
         &self,
@@ -144,7 +144,7 @@ impl Provider<memory::Resolve> for Objects {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<memory::Publish> for Objects {
     async fn execute(
         &self,
@@ -171,7 +171,7 @@ impl Provider<memory::Publish> for Objects {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<memory::Retract> for Objects {
     async fn execute(&self, capability: Capability<memory::Retract>) -> Result<(), MemoryError> {
         let key = cell_key(capability.subject(), capability.space(), capability.cell());
@@ -219,7 +219,7 @@ impl BlobSource for Streamed {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<blob::Read> for Objects {
     async fn execute(&self, capability: Capability<blob::Read>) -> Result<BlobReader, BlobError> {
         let digest = capability.digest().clone();
@@ -291,7 +291,7 @@ impl BlobSink for Importing {
     }
 }
 
-#[async_trait::async_trait(?Send)]
+#[dialog_capability::provider]
 impl Provider<blob::Import> for Objects {
     async fn execute(&self, capability: Capability<blob::Import>) -> Result<BlobWriter, BlobError> {
         let expected = capability.digest().clone();

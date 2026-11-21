@@ -1,0 +1,404 @@
+/* Vendored from tonk-labs/gooey in-browser/hub.css at a7a9c88d697b9fba2644c560d3db2cb24fdc708d. */
+/* =============================================================================
+   hub.css — the hub at tonk.network: your spaces, their links, your account
+   -----------------------------------------------------------------------------
+   The browser draws nothing of Tonk's over a space; a space opens at its own
+   address and shows only itself. Everything else a person does with Tonk in a
+   browser starts here (HUB.md has the rules).
+
+   One column on the page's ground. Two sheets of paper: the account, opened
+   from your name, and your spaces. Each sheet starts with Tonk's line, which
+   names the sheet and, after a change, holds the receipt with undo. A space
+   is a row: pressing it opens the space, and its chevron unfolds its links in
+   place.
+
+   Load it after ../tonk-look.css, which sets the --tonk-* values on .tonk-hub.
+   The hub follows the system: every value comes through those names, in light
+   and dark, so nothing here draws a colour of its own.
+   The host loads the faces: IBM Plex Sans Condensed 400 500 600, IBM Plex
+   Sans 400, IBM Plex Mono 400.
+============================================================================= */
+
+.tonk-hub {
+  --hub-width: 680px;
+
+  box-sizing: border-box;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 40px 16px 64px;
+  background: var(--tonk-ground);
+  color: var(--tonk-text);
+  font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: none;
+  -webkit-tap-highlight-color: transparent;   /* every control has its own press */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
+}
+.tonk-hub *, .tonk-hub *::before, .tonk-hub *::after { box-sizing: border-box; }
+.tonk-hub > * { max-width: var(--hub-width); margin-inline: auto; }
+.tonk-hub ::selection { background: var(--tonk-text); color: var(--tonk-sheet); }
+/* zero specificity, so it never outranks a button's own colour and weight */
+:where(.tonk-hub) :where(button, input, select) { font: inherit; color: inherit; }
+.tonk-hub :is(button, a, input, select, label) { touch-action: manipulation; }
+/* what takes focus clears the sticky line */
+.tonk-hub :is(button, a, input, select, form, .hub-ask, .hub-receipt) { scroll-margin-block: calc(var(--hub-line-h, var(--tonk-height-row)) + 8px) 16px; }
+.tonk-hub [hidden] { display: none !important; }
+.tonk-hub p { margin: 0; }
+.tonk-hub .hub-ic { flex: none; width: 16px; height: 16px; }
+.tonk-hub .hub-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ── the top: the logotype, and your name, which opens the account ──────── */
+.hub-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.hub-logo { flex: none; width: auto; height: 22px; }
+/* at this size the N's hairline falls under a pixel: this holds it */
+.hub-logo path { stroke: currentColor; stroke-width: .5px; vector-effect: non-scaling-stroke; }
+/* the logotype and the chevron's ink stand on the sheet's own edges */
+.hub-me { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 44px; margin-right: -10px; padding: 0 10px; border: 0; border-radius: var(--tonk-radius-control); background: none; font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); letter-spacing: 0.02em; cursor: pointer; transition: background-color var(--tonk-change), scale var(--tonk-change); }
+.hub-me > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* -3px: the chevron's ink starts 3px inside its box */
+.hub-me .hub-ic, .hub-toggle .hub-ic { margin-right: -3px; transition: transform 200ms var(--tonk-ease-open); }
+.hub-me[aria-expanded="true"] .hub-ic, .hub-toggle[aria-expanded="true"] .hub-ic { transform: rotate(180deg); }
+
+/* ── a sheet, and Tonk's line at its top ─────────────────────────────────── */
+.hub-sheet { border-radius: var(--tonk-radius-sheet); background: var(--tonk-sheet); box-shadow: var(--tonk-shadow); }
+.hub-sheet + .hub-sheet { margin-top: 16px; }
+/* the line stays in view while the sheet scrolls, so the receipt is always seen */
+.hub-line { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--tonk-height-row); padding: 5px 16px 6px; border-bottom: 1px solid var(--tonk-rule-soft); border-radius: var(--tonk-radius-sheet) var(--tonk-radius-sheet) 0 0; background: var(--tonk-sheet); }
+/* what shows at rest stands on the 16px line, as the sheet's name does at the
+   left: a solid button's box, a plain button's word with its box overhanging */
+.hub-line > .hub-btn:not(.hub-btn--main) { margin-right: -10px; }
+/* undo and try again start 12px past the receipt, so their wash never touches it */
+.hub-line-l { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; }
+.hub-line-name { margin: 0; font: 600 var(--tonk-size-heading)/var(--tonk-leading-label) var(--tonk-font-label); }
+.hub-count { margin-left: 4px; color: var(--tonk-text-soft); font-weight: 400; font-variant-numeric: tabular-nums; }
+.hub-receipt { color: var(--tonk-text-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; overflow-wrap: anywhere; }
+.hub-receipt b { font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+
+/* ── spaces: a row each, opening in place ───────────────────────────────── */
+.hub-rows { list-style: none; margin: 0; padding: 0; }
+.hub-row + .hub-row { border-top: 1px solid var(--tonk-rule-soft); }
+/* the row opens the space, at its own address; the chevron beside it is a button
+   of its own, the height of the row, that unfolds the space's links */
+/* a row's wash comes and goes at once, with no change of state: one that eased
+   in would trail the pointer a row behind as it runs down the list */
+.hub-row-line { display: flex; }
+/* the chevron's field starts 12px past the role, as the role starts 12px past
+   the count, so its wash never touches the word */
+.hub-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: var(--tonk-height-row); padding: 6px 12px 6px 16px; color: inherit; text-decoration: none; }
+.hub-toggle { flex: none; width: 44px; display: flex; align-items: center; justify-content: flex-end; padding: 0 16px 0 0; border: 0; background: none; cursor: pointer; }
+.hub-name { flex: 1; min-width: 0; overflow: hidden; font: 500 var(--tonk-size-name)/var(--tonk-leading-label) var(--tonk-font-label); text-overflow: ellipsis; white-space: nowrap; }
+.hub-meta { flex: none; display: flex; gap: 12px; color: var(--tonk-text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* the role stands in a column of its own, as wide as its longest word, so the
+   count ends on one edge down the list and the roles start on another */
+.hub-role { width: 5ch; }
+@media (hover: none) { .hub-name { white-space: normal; overflow-wrap: anywhere; } }
+@media (hover: hover) and (pointer: fine) {
+  .hub-row-line:hover, .hub-toggle:hover { background: var(--tonk-wash); }
+}
+.hub-open:active, .hub-toggle:active { background: var(--tonk-wash-strong); }
+/* the sheet doesn't clip, because hit areas in its line reach past its edge, so
+   the last row's washes take the sheet's bottom corners themselves */
+.hub-rows:last-child > .hub-row:last-child:not([data-open]) > .hub-row-line { border-radius: 0 0 var(--tonk-radius-sheet) var(--tonk-radius-sheet); }
+.hub-rows:last-child > .hub-row:last-child:not([data-open]) .hub-open { border-bottom-left-radius: var(--tonk-radius-sheet); }
+.hub-rows:last-child > .hub-row:last-child:not([data-open]) .hub-toggle { border-bottom-right-radius: var(--tonk-radius-sheet); }
+/* open, the row shows the space's whole name */
+.hub-row[data-open] .hub-name { white-space: normal; overflow-wrap: anywhere; }
+.hub-body { padding: 0 16px 16px 38px; }
+/* a row unfolds in place: the rows below travel with it, both ways, and a second
+   press turns it round mid-way. Closed, the details stay in the page, hidden and
+   inert. The clip's 4px above keeps a high-contrast outline whole */
+.hub-fold { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 160ms var(--tonk-ease-open); }
+.hub-fold-in { min-height: 0; margin-top: -4px; padding-top: 4px; overflow: clip; visibility: hidden; opacity: 0; transition: opacity 120ms ease-out, visibility 0s linear 160ms; }
+:is(.hub-row, .hub-help, .hub-help-q)[data-open] > .hub-fold { grid-template-rows: 1fr; transition-duration: 240ms; }
+:is(.hub-row, .hub-help, .hub-help-q)[data-open] > .hub-fold > .hub-fold-in { visibility: visible; opacity: 1; transition: opacity 200ms ease-out, visibility 0s; }
+/* a form or a question appearing in place */
+.hub-enter { animation: hub-in 200ms var(--tonk-ease-open); }
+@keyframes hub-in { from { opacity: 0; transform: translateY(-4px); } }
+/* the account sheet changes the whole page, so the page crossfades. This runs on
+   the document's root, outside the --tonk-* scope, so the curve is written out */
+::view-transition { pointer-events: none; }
+::view-transition-group(root), ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 200ms; animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1); }
+/* a keyboard press lands at once: nothing moves under someone going fast */
+.tonk-hub[data-still] *, .tonk-hub[data-still] *::before { transition: none !important; }
+
+.hub-note { margin-top: 4px; max-width: var(--tonk-measure); color: var(--tonk-text-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; overflow-wrap: anywhere; }
+
+/* ── a space's links ────────────────────────────────────────────────────── */
+.hub-links { list-style: none; margin: 12px 0 0; padding: 0; }
+.hub-link { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 12px; padding: 10px 0; border-top: 1px solid var(--tonk-rule-soft); }
+/* the links open the space's body: the row's own line is above them, so no rule */
+.hub-body > .hub-links:first-child { margin-top: 0; }
+.hub-body > .hub-links:first-child > .hub-link:first-child { padding-top: 0; border-top: 0; }
+.hub-link-what { font-weight: 600; }
+.hub-link-what .hub-link-role { font-weight: 400; }
+.hub-link-url { color: var(--tonk-text-soft); font: 400 var(--tonk-size-code)/var(--tonk-leading-sentence) var(--tonk-font-code); overflow-wrap: anywhere; }
+/* shown whole after a failed copy: the middle gives way, and one press selects it all */
+.hub-link-url[data-whole] { display: flex; min-width: 0; color: var(--tonk-text); -webkit-user-select: all; user-select: all; }
+.hub-link-url[data-whole] > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-link-url[data-whole] > :last-child { flex: none; }
+.hub-link-meta { color: var(--tonk-text-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; }
+/* a button's word on the 16px line, its box overhanging: the same on every row */
+.hub-link-acts { display: flex; gap: 2px; margin-right: -10px; }
+/* copy stands in one column on every row: reset holds the width of remove, and a
+   row with only copy keeps the same room beside it */
+.hub-btn[data-ask="reset"] { flex-direction: column; gap: 0; align-items: flex-end; }
+.hub-btn[data-ask="reset"]::after { content: "removing"; height: 0; overflow: hidden; visibility: hidden; }
+.hub-links:has(.hub-link-acts > :nth-child(2)) .hub-link-acts:has(> :only-child)::after { content: "removing"; height: 0; padding: 0 10px; overflow: hidden; visibility: hidden; font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); letter-spacing: 0.02em; }
+.hub-link > .hub-ask { grid-column: 1 / -1; }
+.hub-btn.hub-new-link { display: flex; width: fit-content; margin: 6px -10px 0 auto; }
+
+/* ── a space's own actions ──────────────────────────────────────────────── */
+/* at its foot, under a line, at the right: rename, duplicate, then leave or
+   delete, their words ending on the 16px line. A form or the question takes
+   their place, the full width */
+.hub-own { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--tonk-rule-soft); }
+.hub-own > .hub-btn:last-child { margin-right: -10px; }
+.hub-own > .hub-linkform, .hub-own > .hub-ask { flex-basis: 100%; }
+.hub-own > .hub-linkform { margin-top: 0; padding-top: 6px; border-top: 0; }
+.hub-own > .hub-ask { margin-top: 2px; }
+.hub-tag, .hub-bot { display: inline-block; padding: 0 3px; border-radius: var(--tonk-radius-tag); background: var(--tonk-wash-strong); font: 500 var(--tonk-size-tag)/var(--tonk-leading-tag) var(--tonk-font-label); letter-spacing: 0.02em; vertical-align: 1px; }
+
+/* ── buttons: solid ink is the main action and nothing else ─────────────── */
+.hub-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--tonk-height-control); padding: 0 10px; border: 0; border-radius: var(--tonk-radius-control); background: transparent; color: var(--tonk-text); font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); letter-spacing: 0.02em; white-space: nowrap; -webkit-user-select: none; user-select: none; cursor: pointer; transition: background-color var(--tonk-change), color var(--tonk-change), scale var(--tonk-change); }
+.hub-btn::before { content: ""; position: absolute; inset: -4px 0; }   /* 44px to hit */
+/* the waiting word holds its width from the start, under the label at no height,
+   so saying it moves nothing. A plain button's word stays on the row's edge */
+.hub-btn[data-wait] { flex-direction: column; gap: 0; }
+.hub-btn[data-wait]::after { content: attr(data-wait); height: 0; overflow: hidden; visibility: hidden; }
+.hub-btn[data-wait]:not(.hub-btn--main, .hub-btn--ring) { align-items: flex-end; }
+/* in the line the word follows the receipt, so it starts where its box starts */
+.hub-line-l .hub-btn[data-wait]:not(.hub-btn--main, .hub-btn--ring) { align-items: flex-start; }
+/* both words share one cell, so "copied" never changes the button's width */
+.hub-copy { display: inline-grid; place-items: center; }
+.hub-copy > span { grid-area: 1 / 1; transition: opacity 120ms ease-out, visibility 0s; }
+.hub-copy > [data-done] { opacity: 0; visibility: hidden; transition: opacity 120ms ease-out, visibility 0s linear 120ms; }
+/* it only fades, so the button keeps its name while "copied" shows */
+.hub-copy[data-copied] > [data-idle] { opacity: 0; transition: opacity 120ms ease-out; }
+.hub-copy[data-copied] > [data-done] { opacity: 1; visibility: visible; transition: opacity 120ms ease-out, visibility 0s; }
+.hub-btn--main { padding: 0 12px; background: var(--tonk-text); color: var(--tonk-sheet); }
+.hub-btn--ring { padding: 0 12px; box-shadow: inset 0 0 0 1.5px var(--tonk-text); }
+@media (hover: hover) and (pointer: fine) {
+  .hub-btn:not(.hub-btn--main):hover, .hub-me:hover { background: var(--tonk-wash); }
+  .hub-btn--main:hover { background: var(--tonk-main-hover); }
+}
+/* waiting: the button says so in its own words and takes no second press */
+.hub-btn[aria-busy="true"] { pointer-events: none; }
+.hub-btn:active, .hub-me:active { scale: 0.96; }
+.hub-btn:not(.hub-btn--main):active, .hub-me:active { background: var(--tonk-wash-strong); }
+/* focus is the press wash, as on task pages; solid ink lightens, as it does on hover */
+.tonk-hub :is(button, a, input, select, .hub-receipt, .hub-line-name):focus-visible { outline: none; background-color: var(--tonk-wash-strong); }
+.tonk-hub .hub-btn--main:focus-visible { background: var(--tonk-main-hover); }
+
+/* ── a question asked in place: the safe answer first ───────────────────── */
+.hub-ask { margin-top: 8px; padding: 12px; border-radius: var(--tonk-radius-control); background: var(--tonk-wash); }
+.hub-ask p { margin-bottom: 8px; max-width: var(--tonk-measure); font: 400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; overflow-wrap: anywhere; }
+/* the answers at the right, near the button that asked */
+.hub-ask-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+/* ── fields ─────────────────────────────────────────────────────────────── */
+.tonk-hub :is(input:not([type="radio"], [type="checkbox"]), select) { width: 100%; max-width: 360px; height: var(--tonk-height-field); padding: 0 12px; border: 1px solid var(--tonk-control-edge); border-radius: var(--tonk-radius-control); background: var(--tonk-field); color: var(--tonk-text); font: 400 var(--tonk-size-field)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+/* a select's value is a word the person picks, so it wears the label face at
+   the field's size, 14, and is as wide as its longest option.
+   The minimum holds that width while the web font loads, so it never jumps */
+.tonk-hub .hub-lf-row select { width: fit-content; min-width: 168px; max-width: 100%; font: 600 var(--tonk-size-field)/var(--tonk-leading-label) var(--tonk-font-label); cursor: pointer; }
+/* a select's chevron is the hub's own, 8 wide and 4 tall, and its ink ends 12px
+   from the edge, as the value starts 12px from the other. The browser's arrow
+   sits 4px from the edge whatever the padding, so it's drawn here instead: two
+   strokes in the text's colour, which follow light and dark */
+.tonk-hub select:not([multiple]) {
+  appearance: none;
+  padding-right: 32px;
+  background-image:
+    linear-gradient(45deg, transparent calc(50% - 1.1px), currentColor calc(50% - 0.75px) calc(50% + 0.75px), transparent calc(50% + 1.1px)),
+    linear-gradient(-45deg, transparent calc(50% - 1.1px), currentColor calc(50% - 0.75px) calc(50% + 0.75px), transparent calc(50% + 1.1px));
+  background-size: 5px 5px;
+  background-position: right 15px center, right 11px center;
+  background-repeat: no-repeat;
+}
+.tonk-hub input::placeholder { color: var(--tonk-text-soft); }
+/* one ink: an error is a heavier edge and a sentence, never a hue */
+.tonk-hub input[aria-invalid="true"] { border-color: var(--tonk-text); box-shadow: inset 0 0 0 1px var(--tonk-text); }
+.tonk-hub .hub-err { margin-top: 4px; font: 600 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); overflow-wrap: anywhere; }
+.hub-err:empty { display: none; }
+
+/* a new space: its name, in a row under the line */
+.hub-new { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--tonk-rule-soft); }
+.hub-new > label { display: flex; align-items: center; min-height: var(--tonk-height-field); font-weight: 600; }
+.hub-new-acts { display: flex; gap: 4px; padding-top: 4px; }
+
+/* a new link: what it is, then how much or which view, then how long */
+.hub-linkform { display: grid; gap: 10px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--tonk-rule-soft); }
+.hub-lf-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; gap: 4px 12px; min-width: 0; }
+/* a row's name stands on its first line of options, however many wrap */
+.hub-lf-label { display: flex; align-items: center; min-height: var(--tonk-height-field); color: var(--tonk-text-soft); }
+.hub-opts { display: flex; flex-wrap: wrap; gap: 8px 4px; }
+/* the row gap keeps wrapped options' 44px hit areas apart.
+   a choice is drawn with a ring, never filled, so it never reads as the main action */
+.hub-opt { position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: var(--tonk-height-field); padding: 0 12px; border-radius: var(--tonk-radius-control); color: var(--tonk-text); font-weight: 600; letter-spacing: 0.02em; cursor: pointer; transition: background-color var(--tonk-change), box-shadow var(--tonk-change), scale var(--tonk-change); }
+.hub-opt small { color: var(--tonk-text-soft); font-size: var(--tonk-size-label); font-weight: 400; letter-spacing: 0; }
+.hub-opt input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.hub-opt:has(input:checked) { box-shadow: inset 0 0 0 1.5px var(--tonk-text); }
+.hub-opt:active { background: var(--tonk-wash-strong); scale: 0.96; }
+.hub-opt:has(input:focus-visible) { background: var(--tonk-wash-strong); }
+@media (hover: hover) and (pointer: fine) { .hub-opt:hover { background: var(--tonk-wash); } }
+.hub-lf-note { max-width: var(--tonk-measure); color: var(--tonk-text-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); overflow-wrap: anywhere; }
+.hub-lf-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+/* its label names the link, so it can run long: it wraps before it widens the page */
+.hub-lf-acts .hub-btn { height: auto; min-height: var(--tonk-height-control); padding-block: 4px; white-space: normal; }
+
+/* ── the account sheet ──────────────────────────────────────────────────── */
+.hub-account { padding: 0 16px 8px; }
+.hub-sec { padding: 16px 0; }
+.hub-sec + .hub-sec { border-top: 1px solid var(--tonk-rule-soft); }
+.hub-sec-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-height: var(--tonk-height-control); margin-bottom: 8px; }
+.hub-sec-h h3 { margin: 0; font: 400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+.hub-sec-h .hub-btn { margin: 0 -10px 0 auto; }
+.hub-kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: start; gap: 12px; padding: 4px 0; }
+.hub-kv-l { display: flex; align-items: center; min-height: var(--tonk-height-field); color: var(--tonk-text-soft); }
+.hub-kv-text { display: flex; align-items: center; min-height: var(--tonk-height-field); overflow-wrap: anywhere; }
+.hub-items { list-style: none; margin: 0; padding: 0; }
+.hub-item { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; min-height: 44px; }
+.hub-item-name { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.hub-item-meta { flex: 1; color: var(--tonk-text-soft); font-variant-numeric: tabular-nums; }
+.hub-nowrap { white-space: nowrap; }
+.hub-item > .hub-btn { margin-right: -10px; }
+.hub-item > .hub-ask { flex-basis: 100%; margin-bottom: 8px; }
+/* deleting the account stands apart from the rest */
+.hub-apart { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.hub-apart > .hub-note { flex: 1 1 280px; margin: 0; }
+.hub-apart > .hub-btn { margin: 0 -10px 0 auto; }
+.hub-apart > .hub-ask { flex-basis: 100%; }
+
+.hub-empty { padding: 20px 16px; }
+/* the list didn't load: the sentence at the left, what to do at the right */
+.hub-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+.hub-failed > p { flex: 1 1 280px; }
+/* the list is on its way: rows of the same height, a wash where the words go */
+/* 56px at the right: the chevron's 44 and the 12 before it, so the count's wash ends where the count will */
+.hub-skel { display: flex; align-items: center; gap: 12px; min-height: var(--tonk-height-row); padding: 6px 56px 6px 38px; }
+.hub-skel i { display: block; height: 12px; border-radius: var(--tonk-radius-tag); background: var(--tonk-wash-strong); }
+.hub-skel i:first-child { flex: 0 1 var(--w); }
+.hub-skel i:last-child { flex: none; width: 88px; margin-left: auto; }
+.hub-empty p { max-width: var(--tonk-measure); font: 400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+.tonk-hub .hub-foot { margin-top: 20px; color: var(--tonk-text-soft); font: 400 var(--tonk-size-code)/var(--tonk-leading-sentence) var(--tonk-font-code); }
+
+/* ── nothing here yet: one sheet that starts Tonk in an agent app ─────────
+   A sentence, the prompt the person pastes into their agent app, then what
+   happens next and the one action. It reads down the left; the action is at
+   the right edge, under the prompt's corner. The page is narrower than the
+   hub, 480 like a task page, since it holds one task; the logotype, sign in
+   and the address narrow with it, so they stay on the sheet's edges */
+.tonk-hub--start { --hub-width: 480px; }
+.hub-start { display: grid; gap: 16px; padding: 16px; }
+/* the prompt fills the sheet, so its right edge is the button's; the sentence
+   keeps a sentence's measure */
+.hub-start-read { display: grid; gap: 12px; font: 400 var(--tonk-size-sentence)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
+.hub-start-read > p { max-width: var(--tonk-measure); text-wrap: pretty; }
+.hub-start-read > .hub-prompt { max-width: none; }
+/* the prompt is what the agent reads, word for word, so it's in the code face,
+   in ink, on a wash */
+.hub-prompt { padding: 12px; border-radius: var(--tonk-radius-control); background: var(--tonk-wash); font: 400 var(--tonk-size-code)/var(--tonk-leading-sentence) var(--tonk-font-code); overflow-wrap: anywhere; }
+/* after a failed copy one press selects all of it, to copy by hand */
+.hub-prompt[data-whole] { -webkit-user-select: all; user-select: all; }
+.hub-start-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.hub-start-acts > .hub-note { flex: 1 1 280px; margin: 0; }
+.hub-start-acts > .hub-btn { margin-left: auto; }
+
+/* ── troubleshooting: an FAQ at the start sheet's foot ──────────────────────
+   Two levels, each closed at first: the section, then each question in it.
+   A whole row is its button, and rows unfold as a space's row does, their
+   wash coming and going at once. Everything at rest stands on the 16px line */
+.hub-help { border-top: 1px solid var(--tonk-rule-soft); }
+.hub-help-h { margin: 0; font: inherit; }
+.hub-help-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: var(--tonk-height-row); padding: 6px 16px; border: 0; background: none; font-weight: 600; letter-spacing: 0.02em; text-align: left; cursor: pointer; }
+.hub-help-toggle > span { min-width: 0; overflow-wrap: anywhere; }
+.hub-help-toggle .hub-ic { transition: transform 200ms var(--tonk-ease-open); }
+@media (hover: hover) and (pointer: fine) { .hub-help-toggle:hover { background: var(--tonk-wash); } }
+.hub-help-toggle:active { background: var(--tonk-wash-strong); }
+/* the section: its name at the left, the chevron at the right, as on a space's
+   row. -3px: the chevron's ink starts 3px inside its box, so it ends on the line */
+.hub-help > .hub-help-h > .hub-help-toggle { justify-content: space-between; gap: 12px; }
+.hub-help > .hub-help-h > .hub-help-toggle .hub-ic { margin-right: -3px; }
+.hub-help > .hub-help-h > .hub-help-toggle[aria-expanded="true"] .hub-ic { transform: rotate(180deg); }
+/* a question: 44px to hit, the chevron before its words, pointing right, then
+   down. -5px: pointing right, its ink starts 5px inside its box, so it stands on
+   the line, and the words start 16px past it */
+.hub-help-q > .hub-help-h > .hub-help-toggle { min-height: 44px; padding-block: 4px; }
+.hub-help-q > .hub-help-h > .hub-help-toggle .hub-ic { margin: 0 -1px 0 -5px; }
+.hub-help-q > .hub-help-h > .hub-help-toggle[aria-expanded="true"] .hub-ic { transform: rotate(90deg); }
+/* an answer: hints under the question's words, 32px in */
+.hub-help-a { padding: 0 16px 12px 32px; }
+.hub-help-a p { max-width: var(--tonk-measure); color: var(--tonk-text-soft); font: 400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); text-wrap: pretty; overflow-wrap: anywhere; }
+.hub-help-a p + p { margin-top: 6px; }
+/* an address to type into an app's settings: the code face, in ink */
+.hub-help-a code { color: var(--tonk-text); font: 400 var(--tonk-size-code)/var(--tonk-leading-sentence) var(--tonk-font-code); overflow-wrap: anywhere; }
+.hub-help-a a { border-radius: 2px; color: var(--tonk-text); text-decoration: underline 1px; text-underline-offset: 3px; }
+/* the sheet doesn't clip, so the last row's wash takes its bottom corners */
+.hub-help:not([data-open]) > .hub-help-h > .hub-help-toggle,
+.hub-help-q:last-child:not([data-open]) > .hub-help-h > .hub-help-toggle { border-radius: 0 0 var(--tonk-radius-sheet) var(--tonk-radius-sheet); }
+.hub-help-q:last-child > .hub-fold .hub-help-a { padding-bottom: 16px; }
+
+/* the sync disc, as on every surface (root rule 2) */
+.hub-disc { flex: none; width: 10px; height: 10px; border-radius: 50%; background: currentColor; color: var(--tonk-text); }
+.hub-disc[data-sync="paused"] { background: linear-gradient(135deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
+.hub-disc[data-sync="local"] { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+
+/* a touch screen draws at the size it hits, like in-agent's buttons */
+@media (pointer: coarse) {
+  .hub-btn { height: 44px; }
+  .hub-btn::before { inset: 0; }
+  .hub-line { min-height: 60px; padding-block: 8px; }   /* a 44px button, 8px in on each side */
+  .hub-lf-acts .hub-btn { min-height: 44px; }
+  .hub-new-acts { padding-top: 0; }
+}
+
+/* ── a phone ────────────────────────────────────────────────────────────── */
+@media (max-width: 560px) {
+  .tonk-hub { padding-top: 20px; }
+  .hub-open { flex-wrap: wrap; row-gap: 0; }
+  .hub-name { flex-basis: calc(100% - 22px); }
+  .hub-meta { flex-basis: 100%; padding-left: 22px; }
+  .hub-body { padding-left: 16px; }
+  /* a receipt and its undo run on as one sentence, so the line holds two lines */
+  .hub-line-l { display: block; }
+  .hub-receipt { display: inline; }
+  .hub-line-l .hub-btn { height: auto; padding: 0; vertical-align: baseline; }
+  .hub-line-l .hub-btn::before { inset: -13px -8px; }
+  .hub-line-l .hub-btn[data-wait]::after { content: none; }
+  .hub-link { grid-template-columns: minmax(0, 1fr); }
+  .hub-link-acts { justify-content: flex-end; }
+  .hub-new { grid-template-columns: minmax(0, 1fr); }
+  .hub-new > label { display: block; min-height: 0; }
+  .hub-new-acts { justify-content: flex-end; }
+  /* the name and its details stack beside the button, however far either wraps */
+  .hub-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding-top: 8px; }
+  .hub-item-name, .hub-item-meta { grid-column: 1; }
+  .hub-item-meta { padding-bottom: 8px; }
+  .hub-item > .hub-btn { grid-area: 1 / 2 / span 2; margin-left: auto; }
+  .hub-item > .hub-ask { grid-column: 1 / -1; }
+  .hub-kv { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .hub-kv-l, .hub-kv-text { display: block; min-height: 0; }
+  .hub-skel { flex-direction: column; align-items: flex-start; justify-content: center; gap: 8px; min-height: calc(12px + (var(--tonk-size-name) + var(--tonk-size-label)) * var(--tonk-leading-label)); }
+  .hub-skel i:first-child { flex: none; width: var(--w); }
+  .hub-skel i:last-child { margin-left: 0; }
+}
+/* high-contrast mode drops backgrounds and box-shadows, so a button's edge, the
+   chosen option and the disc each need a mark of their own */
+@media (forced-colors: active) {
+  .hub-btn { border: 1px solid transparent; }
+  .hub-opt:has(input:checked) { outline: 2px solid CanvasText; outline-offset: -2px; }
+  /* the wash is a background, so focus needs its outline back here */
+  .tonk-hub :is(button, a, input, select, .hub-receipt, .hub-line-name):focus-visible, .hub-opt:has(input:focus-visible) { outline: 2px solid Highlight; outline-offset: 2px; }
+  .tonk-hub :is(.hub-open, .hub-toggle):focus-visible { outline-offset: -2px; }
+  .hub-disc { forced-color-adjust: none; color: CanvasText; }
+  /* the system draws the arrow in its own colours */
+  .tonk-hub select:not([multiple]) { appearance: auto; padding-right: 12px; background-image: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hub-enter { animation: none; }
+  .tonk-hub *, .tonk-hub *::before { transition: none !important; }
+  .tonk-hub :active { scale: 1 !important; }
+}
