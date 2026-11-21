@@ -4342,10 +4342,17 @@ pub(crate) mod tests {
         let card = format!(".space-card[data-space-subject$='{zebra}']");
         click(&driver, &format!("{card} .hub-toggle")).await?;
         click(&driver, &format!("{card} [data-space-pin]")).await?;
-        wait_for_text(&driver, first, "Zebra").await?;
+        wait_for_text(&driver, &format!("{card}[data-pinned] .hub-name"), "Zebra")
+            .await
+            .context("pin click did not reflect in the Zebra card")?;
+        wait_for_text(&driver, first, "Zebra")
+            .await
+            .context("pinned Zebra did not move to the top")?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_text(&driver, first, "Zebra").await?;
+        wait_for_text(&driver, first, "Zebra")
+            .await
+            .context("pin order did not survive reloading the hub")?;
         click(&driver, &format!("{card} .hub-toggle")).await?;
         wait_for_text(&driver, &format!("{card} [data-space-pin]"), "unpin space").await?;
         click(&driver, &format!("{card} [data-space-pin]")).await?;
@@ -4367,10 +4374,14 @@ pub(crate) mod tests {
             .await
             .context("select recently opened in the hub")?;
         wait_for_displayed(&driver, "[data-space-sort]:enabled").await?;
-        wait_for_text(&driver, first, "Zebra").await?;
+        wait_for_text(&driver, first, "Zebra")
+            .await
+            .context("direct visit did not make Zebra the most recently opened space")?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_text(&driver, first, "Zebra").await?;
+        wait_for_text(&driver, first, "Zebra")
+            .await
+            .context("recent sort did not survive reloading the hub")?;
         wait_for_text(&driver, &format!("{card} [data-space-opened]"), "just now").await?;
         driver.quit().await?;
         Ok(())
