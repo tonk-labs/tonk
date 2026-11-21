@@ -1,16 +1,56 @@
 # Tonk
 
+```
+                                    .-            ::.
+                                    -##.   ..     +@@@+
+                              -:    ###-  *##
+                              +##+  ###* *##%
+                              ########%*###*   +*%
+                        *###*:+##=*..:=####*++*#@
+                          ######*==-.----%#**##%..:                        :=
+                          .:=##-=:*#===*-##%@@*#@-                      ::.:=.
+                      =#%%%#%%***##+#-*-##@@@@@              -..      .---++
+                      =@%####@@@%%=*#@#*@@@@                -:      :--++
+                        -+****#*#%@@@@%@@@-                  :.:   =::     .....
+                      ++*#%*-+++*#@@@@@@@.                .:::-+:.#+   ..  .::::.
+                      -%     =+#@   . %@@@*                     =##@        .
+      ..                   *#%        .%@@+                       =###
+    ##@%#*%                             +@%+                           #=
+    :*#%%-:@                              @#=                            +-
+      +@@@##@                               %+-                             *
+                                        ::: :+=-     ...:-==.
+                                    ......:-++:  ::.::::=+
+                                    ++=-::+%@@#:--:...:-=+
+                            .--           @@%%#*+-:::-=+-
+                        .=++=--=+-     -==#%%####****#-
+                    .%@@@      +%+ ..-*%#
+              -=    =@@@@#       --:+%-     .    +@@%  :+#%*-:.
+          :+-==+=   =@@@       ==+%  *#     +@+%@@@@ #=    %#****@:
+          ###*=*  ..       .- .*=*. *        -@@#.-=#+      .**#*@+
+          :=-:=@.+=*   ::= :..===+= #-:.     .#-...++ .=....   =@+
+                %%%.   . -+    @*---%=*@@*:  ......-=  ==...-+  +%
+          -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
+```
+
 Tonk is a system for co-computing over live data in a programmable environment.
 People and programs share a **space** through links that grant capabilities
 such as reading or writing. A space holds its data, the schemas that describe
 it, the views that show and edit it, its rules, and a signed history of changes.
 Local copies can work offline and sync when they reconnect.
 
+## Typical uses
+
+- Automate workflows with state machines that agents run and people operate through views.
+- Reuse a workflow as a template with different credentials.
+- Build internal tools that agents and teammates use together.
+- Share an application with a small group through a link.
+- Coordinate multiple agents through shared tasks and messages.
+- Run applications on remote devices that work offline and sync later.
+
 ## Web
 
 [Open Tonk](https://tonk.network) to create a space or open one someone has
-shared with you. The [guide](https://tonk.network/guide/) walks through building
-a counter, from the fact that holds its value to the button that changes it.
+shared with you.
 
 ## MCP
 
@@ -44,6 +84,18 @@ tonk concept add task --field title:text:one --description "A task to do"
 tonk eval -c 'task!: {title: Water the garden}'
 tonk query task
 ```
+
+## Resources
+
+- [Website](https://tonk.xyz)
+- [Updates](https://tonk.xyz/updates)
+- [Defining the common primitive](https://tonk.xyz/updates/defining-the-common-primitive)
+- [Discord](https://discord.com/invite/hBPQ9xPWF7)
+- For agents only: [Tonk guide](https://tonk.network/guide/) and [llms.txt](https://tonk.xyz/llms.txt).
+
+## License
+
+[MIT](LICENSE) © Tonk Labs
 
 ## Development
 
