@@ -26,6 +26,7 @@ for your OS and CPU:
 | ------------- | ------------------------- |
 | macOS (arm64) | `@tonk/cli-darwin-arm64`  |
 | Linux (x64)   | `@tonk/cli-linux-x64`     |
+| Linux (arm64) | `@tonk/cli-linux-arm64`   |
 
 More platforms coming soon.
 

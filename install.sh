@@ -6,10 +6,10 @@
 #   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
 #
 # Pre-release (staging channel):
-#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/download/tonk-staging/install.sh | TONK_CHANNEL=staging sh
 #
 # Latest main (dev channel):
-#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/download/tonk-dev/install.sh | TONK_CHANNEL=dev sh
 #
 # Environment:
 #   TONK_CHANNEL=staging   install the pre-release channel (default: stable)
@@ -69,7 +69,8 @@ case "$os" in
   Linux)
     case "$arch" in
       x86_64|amd64) platform="linux-x86_64" ;;
-      *) die "unsupported Linux architecture: $arch (only x86_64 is published)" ;;
+      aarch64|arm64) platform="linux-arm64" ;;
+      *) die "unsupported Linux architecture: $arch (x86_64 and arm64 are published)" ;;
     esac
     ;;
   *)

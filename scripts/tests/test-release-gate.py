@@ -86,6 +86,10 @@ class GateTests(unittest.TestCase):
         del self.candidate["artifacts"]["macos-cli"]
         self.blocked("missing or unknown artifact")
 
+    def test_missing_linux_arm64_artifact(self):
+        del self.candidate["artifacts"]["linux-arm64-cli"]
+        self.blocked("missing or unknown artifact")
+
     def test_chatgpt_contracts_are_required_without_manual_chatgpt_group(self):
         self.assertIn("chatgpt", self.policy["checks"])
         self.assertNotIn("chatgpt", self.policy["manual_groups"])

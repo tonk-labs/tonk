@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "check-cli.py"
 spec = importlib.util.spec_from_file_location("cli_smoke", SCRIPT)
 smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
+LINUX_PLATFORM = "linux-arm64" if platform.machine() in ("aarch64", "arm64") else "linux-x64"
 
 
 class ArtifactTests(unittest.TestCase):
@@ -33,29 +35,35 @@ class ArtifactTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "linux", "Linux ELF guard")
     def test_static_executable_is_accepted(self):
-        smoke.check_static(self.build("-static"))
+        smoke.check_static(self.build("-static"), LINUX_PLATFORM)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux ELF guard")
     def test_dynamic_executable_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "must be static"):
-            smoke.check_static(self.build())
+            smoke.check_static(self.build(), LINUX_PLATFORM)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux ELF guard")
     def test_original_nix_interpreter_failure_is_rejected(self):
         binary = self.build("-Wl,--dynamic-linker=/nix/store/missing/lib/ld-linux-x86-64.so.2")
         with self.assertRaisesRegex(RuntimeError, "must be static"):
-            smoke.check_static(binary)
+            smoke.check_static(binary, LINUX_PLATFORM)
 
     @unittest.skipUnless(sys.platform == "linux", "Linux ELF guard")
     def test_non_elf_is_rejected(self):
         with self.assertRaises(subprocess.CalledProcessError):
-            smoke.check_static(self.source)
+            smoke.check_static(self.source, LINUX_PLATFORM)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux ELF guard")
+    def test_wrong_linux_architecture_is_rejected(self):
+        other = "linux-x64" if LINUX_PLATFORM == "linux-arm64" else "linux-arm64"
+        with self.assertRaisesRegex(RuntimeError, f"expected a {other} ELF"):
+            smoke.check_static(self.build("-static"), other)
 
     def test_real_offline_npm_package_and_launcher(self):
         binary = self.build(*(["-static"] if sys.platform == "linux" else []))
         env = {**os.environ, "HOME": str(self.temp), "npm_config_cache": str(self.temp / "cache")}
         smoke.check_npm(binary, SCRIPT.parent.parent, self.temp, env, "tonk smoke",
-                        "linux-x64" if sys.platform == "linux" else "darwin-arm64")
+                        LINUX_PLATFORM if sys.platform == "linux" else "darwin-arm64")
 
     def packed_manifest(self, filename, manifest):
         archive = self.temp / filename
@@ -67,7 +75,7 @@ class ArtifactTests(unittest.TestCase):
         return archive
 
     def test_packed_wrapper_requires_platform_dependency_and_selectors(self):
-        for target in ["linux-x64", "darwin-arm64"]:
+        for target in ["linux-x64", "linux-arm64", "darwin-arm64"]:
             target_os, cpu = target.split("-")
             manifest = {"name": f"@tonk/cli-{target}", "version": "1.2.3",
                         "os": [target_os], "cpu": [cpu]}

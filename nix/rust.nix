@@ -149,9 +149,14 @@ let
   # `buildCrate` binary names Nix's glibc as its ELF interpreter and
   # library path, so on any other distribution the kernel cannot start it
   # ("required file not found"). Linking statically against musl leaves no
-  # interpreter and no libc to find. Only x86_64 Linux ships.
-  muslTarget = "x86_64-unknown-linux-musl";
-  muslCc = pkgs.pkgsCross.musl64.stdenv.cc;
+  # interpreter and no libc to find, on both shipped Linux architectures.
+  muslTarget = "${pkgs.stdenv.hostPlatform.parsed.cpu.name}-unknown-linux-musl";
+  muslTargetEnv = builtins.replaceStrings [ "-" ] [ "_" ] muslTarget;
+  muslCc =
+    if pkgs.stdenv.hostPlatform.isAarch64 then
+      pkgs.pkgsCross.aarch64-multiplatform-musl.stdenv.cc
+    else
+      pkgs.pkgsCross.musl64.stdenv.cc;
   muslToolchain = rustToolchain.override { targets = [ muslTarget ]; };
   muslCraneLib = (crane.mkLib pkgs).overrideToolchain (_: muslToolchain);
   muslAttributes = commonAttributes // {
@@ -163,11 +168,11 @@ let
     buildInputs = [ ];
     CARGO_BUILD_TARGET = muslTarget;
     CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    "CARGO_TARGET_${pkgs.lib.toUpper muslTargetEnv}_LINKER" = "${muslCc}/bin/${muslCc.targetPrefix}cc";
     # C code in dependencies (`ring`) is compiled for the target with the
     # musl compiler; build scripts still run on the host.
-    CC_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}cc";
-    AR_x86_64_unknown_linux_musl = "${muslCc}/bin/${muslCc.targetPrefix}ar";
+    "CC_${muslTargetEnv}" = "${muslCc}/bin/${muslCc.targetPrefix}cc";
+    "AR_${muslTargetEnv}" = "${muslCc}/bin/${muslCc.targetPrefix}ar";
     HOST_CC = "${pkgs.stdenv.cc}/bin/cc";
   };
 

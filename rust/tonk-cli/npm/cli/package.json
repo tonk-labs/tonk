@@ -31,6 +31,7 @@
   },
   "optionalDependencies": {
     "@tonk/cli-darwin-arm64": "0.6.0",
-    "@tonk/cli-linux-x64": "0.6.0"
+    "@tonk/cli-linux-x64": "0.6.0",
+    "@tonk/cli-linux-arm64": "0.6.0"
   }
 }

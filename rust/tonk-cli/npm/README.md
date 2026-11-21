@@ -13,14 +13,17 @@ work with no Rust toolchain.
 - `darwin-arm64/` — **`@tonk/cli-darwin-arm64`** (`os: darwin`,
   `cpu: arm64`).
 - `linux-x64/` — **`@tonk/cli-linux-x64`** (`os: linux`, `cpu: x64`).
+- `linux-arm64/` — **`@tonk/cli-linux-arm64`** (`os: linux`, `cpu: arm64`).
 
 The platform packages' `bin/tonk` binaries are **build artifacts**, not
 committed (`.gitignore`d). Release CI (or the local pack test below)
 injects them before publishing.
 
-Adding a platform later = one nix build matrix row in each of
-`.github/workflows/cli-npm.yml` and `release.yml`, a new `<platform>/package.json` here,
-and an entry in the wrapper's `optionalDependencies`.
+Linux builds use static musl linkage on native x86_64 and ARM64 runners.
+Adding a platform also requires the PR, dev and release build matrices,
+archive/checksum packaging, installer and updater mappings, and artifact
+smoke tests. Pinned releases build ARM64 only when the selected source
+contains its platform package, so older revisions remain publishable.
 
 ## Publishing (maintainers)
 
@@ -28,6 +31,13 @@ Publishing runs in CI so every platform binary is built reproducibly;
 you cannot build the Linux binary from a Mac. npm Trusted Publishing is
 attached to `.github/workflows/cli-npm.yml`, which uses GitHub OIDC and
 `npm publish` with no repository npm token.
+
+Before the first ARM64 npm release, create `@tonk/cli-linux-arm64` and
+configure its [trusted publisher](https://docs.npmjs.com/trusted-publishers/)
+for GitHub organization `tonk-labs`, repository `tonk`, workflow
+`cli-npm.yml`, with direct publishing allowed. This is package-specific;
+the existing platform packages' settings do not cover the new package.
+The GitHub archive and dev channel do not depend on this npm setup.
 
 A release is a `v*` tag on a commit already on `main`. Push one with git:
 
@@ -46,7 +56,7 @@ tag decides everything else:
 | `v0.7.0` (no `-`) | stable | tonk.network | GitHub `latest` | `latest` |
 
 The tag is the version. CI stamps it into `[workspace.package] version`
-and `Cargo.lock` before building, so `tonk --version` and all three
+and `Cargo.lock` before building, so `tonk --version` and all four
 `package.json`s match the tag. The version committed in `Cargo.toml` is
 only what untagged builds report.
 
@@ -95,21 +105,22 @@ tmp=$(mktemp -d) && npm --prefix "$tmp" install ./tonk-cli-darwin-arm64-*.tgz ./
 ```
 
 The versions committed in the `package.json`s are placeholders. CI
-stamps the release tag's version into all three at publish time, and
+stamps the release tag's version into all four at publish time, and
 nothing else reads them.
 
 ## CLI artifact smoke gates
 
 `cli-smoke.yml` runs after PR builds and gates both GitHub and npm
 publication. It tests the exact downloaded artifacts for every currently
-shipped platform; it does not add support for new platforms.
+shipped platform. The dev channel also waits for these checks.
 
 | Artifact | Runtime | Additional checks |
 | --- | --- | --- |
 | Linux x86_64 | Clean Debian and Alpine containers, no Nix store | Static x86_64 ELF, no interpreter or shared-library dependencies |
+| Linux arm64 | Clean native ARM64 Debian and Alpine containers, no Nix store | Static AArch64 ELF, no interpreter or shared-library dependencies |
 | macOS arm64 | Fresh native macOS runner, no Nix installation | arm64 Mach-O executable, system libraries only, no Nix load commands, valid signature |
 
-Both platforms check direct `--version`/`--help`, packed npm platform
+All platforms check direct `--version`/`--help`, packed npm platform
 OS/CPU selectors, the wrapper's exact optional dependency version, offline
 installation, byte-for-byte binary preservation, and launcher version/help.
 The disposable packages are stamped to the artifact version, matching release
@@ -125,11 +136,12 @@ Apple notarization on the downloaded bytes. The existing signing action still
 signs/notarizes before upload; these checks do not create credentials or submit
 new artifacts for notarization.
 
-From the repository root, run the guard regressions on Linux x86_64 or macOS
+From the repository root, run the guard regressions on Linux x86_64/arm64 or macOS
 arm64 with Python, a C compiler, npm, and native inspection tools:
 
 ```sh
 python3 scripts/tests/test-cli.py
+python3 scripts/tests/test-install.py
 ```
 
 Run the real artifact smoke check on its native platform:
@@ -137,6 +149,8 @@ Run the real artifact smoke check on its native platform:
 ```sh
 # In a clean Debian/Alpine container with Python, binutils, OpenSSL and npm:
 python3 scripts/check-cli.py /path/to/tonk --platform linux-x64
+# On native ARM64 Linux in the same clean runtime:
+python3 scripts/check-cli.py /path/to/tonk --platform linux-arm64
 # On macOS arm64 with Python, OpenSSL, npm and Apple command-line tools:
 python3 scripts/check-cli.py /path/to/tonk --platform darwin-arm64
 ```
@@ -149,5 +163,5 @@ After an authorized release, also download and checksum-verify the exact
 GitHub archives and repeat the corresponding artifact checks. Verify a fresh
 `npx @tonk/cli@<released-version> --version` and the intended `latest` or `next`
 alias independently: offline tests cannot prove registry propagation or
-dist-tag correctness. Windows, Linux arm64 and macOS x86_64 are not currently
+dist-tag correctness. Windows and macOS x86_64 are not currently
 shipped and therefore are not added to this gate.

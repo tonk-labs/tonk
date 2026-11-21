@@ -213,7 +213,7 @@ def main():
         context = load(args.context)
         root = Path(args.artifacts)
         artifacts = {}
-        for name in ("linux-cli", "macos-cli", "web"):
+        for name in load(args.policy)["artifacts"]:
             path = root / f"release-evidence-{name}-{context['run_attempt']}" / "identity.json"
             if path.exists():
                 record = load(path)

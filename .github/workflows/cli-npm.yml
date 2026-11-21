@@ -42,6 +42,8 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact-name: tonk-linux-x86_64
+          - os: ubuntu-24.04-arm
+            artifact-name: tonk-linux-arm64
           - os: macos-latest
             artifact-name: tonk-macos-arm64
 
@@ -139,6 +141,11 @@ jobs:
           name: tonk-linux-x86_64
           path: artifacts/linux-x64
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-arm64
+          path: artifacts/linux-arm64
+
       - name: Assemble platform packages
         working-directory: rust/tonk-cli/npm
         run: |
@@ -152,6 +159,10 @@ jobs:
             "$GITHUB_WORKSPACE/artifacts/linux-x64/tonk" \
             linux-x64/bin/tonk
 
+          install -Dm0755 \
+            "$GITHUB_WORKSPACE/artifacts/linux-arm64/tonk" \
+            linux-arm64/bin/tonk
+
       - name: Stamp version
         working-directory: rust/tonk-cli/npm
         env:
@@ -159,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          for dir in darwin-arm64 linux-x64 cli; do
+          for dir in darwin-arm64 linux-x64 linux-arm64 cli; do
             (
               cd "$dir"
               npm version "$VERSION" \
@@ -201,7 +212,7 @@ jobs:
           #
           # The `./` prefix is required — a bare name like `darwin-arm64`
           # is parsed as a registry package spec, not a local directory.
-          for dir in darwin-arm64 linux-x64 cli; do
+          for dir in darwin-arm64 linux-x64 linux-arm64 cli; do
             name="$(node -p "require('./$dir/package.json').name")"
 
             # npm never allows a version to be republished, so a retry

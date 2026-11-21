@@ -33,16 +33,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.platforms.outputs.matrix }}
+      linux-arm64: ${{ steps.platforms.outputs.linux-arm64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      # Old refs must remain publishable with their original platforms.
+      - id: platforms
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          rows = [
+              {"os": "ubuntu-latest", "artifact-name": "tonk-linux-x86_64"},
+              {"os": "macos-latest", "artifact-name": "tonk-macos-arm64"},
+          ]
+          arm64 = Path("rust/tonk-cli/npm/linux-arm64/package.json").is_file()
+          if arm64:
+              rows.append({"os": "ubuntu-24.04-arm", "artifact-name": "tonk-linux-arm64"})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"matrix={json.dumps({'include': rows})}\n")
+              output.write(f"linux-arm64={str(arm64).lower()}\n")
+          PY
+
   build:
     name: 'Build pinned CLI'
+    needs: ['platforms']
     runs-on: ${{ matrix.os }}
     strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact-name: tonk-linux-x86_64
-          - os: macos-latest
-            artifact-name: tonk-macos-arm64
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
     steps:
       # The ref being published, not the branch this workflow lives on.
       - uses: actions/checkout@v4
@@ -104,7 +127,7 @@ jobs:
 
   publish:
     name: 'Publish pinned release'
-    needs: ['build']
+    needs: ['platforms', 'build']
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -130,10 +153,17 @@ jobs:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
       - uses: actions/download-artifact@v4
+        if: needs.platforms.outputs.linux-arm64 == 'true'
+        with:
+          name: tonk-linux-arm64
+          path: artifacts/linux-arm64
+      - uses: actions/download-artifact@v4
         with:
           name: tree
           path: artifacts/tree
       - name: Prepare release assets
+        env:
+          LINUX_ARM64: ${{ needs.platforms.outputs.linux-arm64 }}
         run: |
           cp .ci/install.sh install.sh
           # Archive each binary as `tonk` so it extracts ready to run,
@@ -145,6 +175,12 @@ jobs:
           tar -czf tonk-linux-x86_64.tar.gz tonk
           rm tonk
           sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          if [ "$LINUX_ARM64" = "true" ]; then
+            install -m 0755 artifacts/linux-arm64/tonk tonk
+            tar -czf tonk-linux-arm64.tar.gz tonk
+            rm tonk
+            sha256sum tonk-linux-arm64.tar.gz >> checksums.txt
+          fi
           tree="$(cat artifacts/tree/tree.txt)"
           version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
@@ -190,7 +226,7 @@ jobs:
           make_latest: false
           files: |
             tonk-macos-arm64.tar.gz
-            tonk-linux-x86_64.tar.gz
+            tonk-linux-*.tar.gz
             checksums.txt
             manifest.json
             install.sh

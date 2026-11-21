@@ -53,6 +53,8 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact-name: tonk-linux-x86_64
+          - os: ubuntu-24.04-arm
+            artifact-name: tonk-linux-arm64
           - os: macos-latest
             artifact-name: tonk-macos-arm64
     steps:
@@ -174,6 +176,10 @@ jobs:
           path: artifacts/linux-x86_64
       - uses: actions/download-artifact@v4
         with:
+          name: tonk-linux-arm64
+          path: artifacts/linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
           name: tonk-agent-peer-macos-arm64
           path: artifacts/peer-macos-arm64
       - uses: actions/download-artifact@v4
@@ -190,6 +196,8 @@ jobs:
           rm tonk
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf tonk-linux-x86_64.tar.gz tonk
+          install -m 0755 artifacts/linux-arm64/tonk tonk
+          tar -czf tonk-linux-arm64.tar.gz tonk
           rm tonk
           install -m 0755 artifacts/peer-macos-arm64/tonk-agent-peer tonk-agent-peer
           tar -czf tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer
@@ -198,7 +206,7 @@ jobs:
           tar -czf tonk-agent-peer-linux-x86_64.tar.gz tonk-agent-peer
           rm tonk-agent-peer
           # Checksums the installer and the plugin launcher verify.
-          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz \
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz tonk-linux-arm64.tar.gz \
             tonk-agent-peer-macos-arm64.tar.gz tonk-agent-peer-linux-x86_64.tar.gz > checksums.txt
           # Release identity for `tonk update`.
           cat > manifest.json <<EOF
@@ -233,6 +241,7 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-linux-arm64.tar.gz
             tonk-agent-peer-macos-arm64.tar.gz
             tonk-agent-peer-linux-x86_64.tar.gz
             checksums.txt
@@ -270,6 +279,7 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            tonk-linux-arm64.tar.gz
             tonk-agent-peer-macos-arm64.tar.gz
             tonk-agent-peer-linux-x86_64.tar.gz
             checksums.txt

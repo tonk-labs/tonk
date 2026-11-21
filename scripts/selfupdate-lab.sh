@@ -20,6 +20,7 @@ TONK="${1:-$ROOT/target/debug/tonk}"
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) PLATFORM=macos-arm64 ;;
   Linux/x86_64) PLATFORM=linux-x86_64 ;;
+  Linux/aarch64|Linux/arm64) PLATFORM=linux-arm64 ;;
   *) echo "no published platform slug for $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
 

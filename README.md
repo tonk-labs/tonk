@@ -79,18 +79,22 @@ version, channel and source commit. Downloads are manual.
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
 ```
 
-This detects your platform, verifies the download against the release checksums, and installs the `tonk` binary to `/usr/local/bin` (or `~/.local/bin` if that is not writable). Apple Silicon macOS and x86_64 Linux are published. If `tonk` isn't found afterward, the install location isn't on your `PATH` — add it, e.g. `export PATH="$HOME/.local/bin:$PATH"`. Set `TONK_INSTALL_DIR` to install elsewhere.
+This detects your platform, verifies the download against the release checksums, and installs the `tonk` binary to `/usr/local/bin` (or `~/.local/bin` if that is not writable). The release builds support Apple Silicon macOS and x86_64/ARM64 Linux. If `tonk` isn't found afterward, the install location isn't on your `PATH` — add it, e.g. `export PATH="$HOME/.local/bin:$PATH"`. Set `TONK_INSTALL_DIR` to install elsewhere.
+
+ARM64 support is available in releases built with this platform support; older
+releases may have no ARM64 asset. Use the installer from the selected channel
+so an older stable installer does not reject the architecture.
 
 To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
 
 ```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/download/tonk-staging/install.sh | TONK_CHANNEL=staging sh
 ```
 
 To follow the latest build of `main`, set `TONK_CHANNEL=dev`. It moves with every merge, so it can read and write whatever `main` does:
 
 ```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/download/tonk-dev/install.sh | TONK_CHANNEL=dev sh
 ```
 
 You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. Newly published macOS binaries are Developer ID signed and notarized by Apple.

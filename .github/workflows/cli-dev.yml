@@ -32,6 +32,8 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact-name: tonk-linux-x86_64
+          - os: ubuntu-24.04-arm
+            artifact-name: tonk-linux-arm64
           - os: macos-latest
             artifact-name: tonk-macos-arm64
     steps:
@@ -68,9 +70,15 @@ jobs:
           path: artifacts/tonk
           overwrite: true
 
+  artifact-smoke:
+    needs: ['build']
+    uses: ./.github/workflows/cli-smoke.yml
+    with:
+      release-signed: true
+
   publish:
     name: 'Publish dev release'
-    needs: ['build']
+    needs: ['build', 'artifact-smoke']
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,6 +95,10 @@ jobs:
         with:
           name: tonk-linux-x86_64
           path: artifacts/linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-arm64
+          path: artifacts/linux-arm64
       # Assets are staged in `dist/`, not `release/`: the repository
       # tracks its own `release/` (the release policy), and those files must
       # not ride along into the upload.
@@ -101,8 +113,10 @@ jobs:
           tar -czf dist/tonk-macos-arm64.tar.gz tonk
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf dist/tonk-linux-x86_64.tar.gz tonk
+          install -m 0755 artifacts/linux-arm64/tonk tonk
+          tar -czf dist/tonk-linux-arm64.tar.gz tonk
           rm tonk
-          (cd dist && sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt)
+          (cd dist && sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz tonk-linux-arm64.tar.gz > checksums.txt)
           version="$(grep -A30 '^\[workspace.package\]' Cargo.toml \
             | grep -m1 '^version' \
             | sed -E 's/.*"([^"]+)".*/\1/')"
@@ -139,7 +153,7 @@ jobs:
           notes="Latest tonk CLI built from main: $GITHUB_SHA.
 
           \`\`\`
-          curl -fsSL https://github.com/$GH_REPO/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
+          curl -fsSL https://github.com/$GH_REPO/releases/download/tonk-dev/install.sh | TONK_CHANNEL=dev sh
           \`\`\`
 
           The macOS binary is Developer ID signed and notarized by Apple. This build moves with every merge to main."

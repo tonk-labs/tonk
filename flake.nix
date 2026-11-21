@@ -748,9 +748,9 @@
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
 
-          # Static on x86_64 Linux: the release binary has to start on any
+          # Static on Linux: the release binary has to start on any
           # distribution, not only where Nix's glibc is installed.
-          tonk-cli = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+          tonk-cli = (if pkgs.stdenv.isLinux then buildStaticCrate else buildCrate) {
             pname = "tonk-cli";
             cargoExtraArgs = "--package tonk-cli";
             TONK_POSTHOG_KEY = posthogKey;
@@ -773,7 +773,7 @@
             doCheck = false;
           };
 
-          tonk-cli-ci = (if system == "x86_64-linux" then buildStaticCrate else buildCrate) {
+          tonk-cli-ci = (if pkgs.stdenv.isLinux then buildStaticCrate else buildCrate) {
             pname = "tonk-cli-ci";
             CARGO_PROFILE = "ci-release";
             cargoExtraArgs = "--package tonk-cli";
