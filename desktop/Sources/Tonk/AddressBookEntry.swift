@@ -17,19 +17,23 @@ struct AddressBookEntry: Identifiable, Equatable {
   let contact: DesktopContact?
   /// Live grants that something connected through, newest first.
   let grants: [AgentConnection]
+  /// The agent ChatGPT or Claude connected as, when this key is one.
+  var hosted: HostedAgent? = nil
 
   /// A person's email, known only when they were added by it. Agents have none.
   var email: EmailContactIdentity? { kind == .person ? contact?.emailIdentity : nil }
 
   /// The key shown and copied; `nil` for a grant that names no recipient.
-  var did: String? { contact?.id ?? grants.first?.recipient }
+  var did: String? { contact?.id ?? grants.first?.recipient ?? hosted?.did }
 
-  /// Contacts and grants become one sorted list. A grant whose recipient is a
-  /// known contact joins that contact; other grants group by recipient key,
-  /// or stand alone when the worker names none.
+  /// Contacts, grants and hosted agents become one sorted list. A grant whose
+  /// recipient is a known contact joins that contact; other grants group by
+  /// recipient key, or stand alone when the worker names none. A hosted agent
+  /// joins the contact or grant group with its key, or stands as its own row.
   static func entries(
-    contacts: [DesktopContact], grants: [AgentConnection]
+    contacts: [DesktopContact], grants: [AgentConnection], hosted: [HostedAgent] = []
   ) -> [AddressBookEntry] {
+    var byAgent = Dictionary(hosted.map { ($0.did, $0) }, uniquingKeysWith: { first, _ in first })
     var byRecipient: [String: [AgentConnection]] = [:]
     var anonymous: [AgentConnection] = []
     for grant in grants.sorted(by: { $0.expiresAt > $1.expiresAt }) {
@@ -41,19 +45,32 @@ struct AddressBookEntry: Identifiable, Equatable {
     }
     var rows = contacts.map { contact in
       let held = byRecipient.removeValue(forKey: contact.id) ?? []
+      let hostedAgent = byAgent.removeValue(forKey: contact.id)
       let agent =
-        !held.isEmpty
+        !held.isEmpty || hostedAgent != nil
         || contact.labels.contains { $0.caseInsensitiveCompare("Agent") == .orderedSame }
       return AddressBookEntry(
         id: contact.id, kind: agent ? .agent : .person, name: contact.name, contact: contact,
-        grants: held)
+        grants: held, hosted: hostedAgent)
     }
     for (recipient, held) in byRecipient {
+      let hostedAgent = byAgent.removeValue(forKey: recipient)
+      // The approval page's name, when it set one, else the grant's.
+      let title =
+        hostedAgent?.name.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        ?? name(of: held[0])
       rows.append(
         AddressBookEntry(
-          id: recipient, kind: .agent, name: name(of: held[0]),
-          contact: DesktopContact(id: recipient, name: name(of: held[0]), labels: []),
-          grants: held))
+          id: recipient, kind: .agent, name: title,
+          contact: DesktopContact(id: recipient, name: title, labels: []),
+          grants: held, hosted: hostedAgent))
+    }
+    for agent in byAgent.values {
+      rows.append(
+        AddressBookEntry(
+          id: agent.did, kind: .agent, name: agent.displayName,
+          contact: DesktopContact(id: agent.did, name: agent.displayName, labels: []),
+          grants: [], hosted: agent))
     }
     for grant in anonymous {
       rows.append(
@@ -77,6 +94,7 @@ struct AddressBookEntry: Identifiable, Equatable {
     let text = [
       name, did ?? "", contact?.emailIdentity?.email ?? "",
       grants.flatMap { $0.installations.map(\.name) }.joined(separator: " "),
+      hosted?.name ?? "",
     ].joined(separator: " ")
     return text.localizedCaseInsensitiveContains(search)
   }

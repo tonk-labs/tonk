@@ -25,6 +25,8 @@ final class AccessModel: ObservableObject {
   @Published private(set) var loading: Set<String> = []
   @Published private(set) var errors: [String: String] = [:]
   @Published private(set) var agentConnections: [AgentConnection] = []
+  /// Agents ChatGPT or Claude connected over OAuth, from `GET /api/agents`.
+  @Published private(set) var hostedAgents: [HostedAgent] = []
   @Published private(set) var accountName: String?
   @Published private(set) var selfDid: String?
   @Published private(set) var accountEmail: String?
@@ -241,6 +243,7 @@ final class AccessModel: ObservableObject {
     spaces = [:]
     errors = [:]
     agentConnections = []
+    hostedAgents = []
     accountName = nil
     selfDid = nil
     passkeyCreatedOn = nil
@@ -294,6 +297,9 @@ final class AccessModel: ObservableObject {
       guard generation == started else { return }
       let data = try JSONSerialization.data(withJSONObject: result["connections"] ?? [])
       agentConnections = try JSONDecoder().decode([AgentConnection].self, from: data)
+      hostedAgents = try JSONDecoder().decode(
+        [HostedAgent].self,
+        from: JSONSerialization.data(withJSONObject: result["agents"] ?? []))
       let root = (result["root"] as? String).flatMap { $0.isEmpty ? nil : $0 }
       // Before the account branch first syncs the name can read empty; keep the
       // one already shown for this same account rather than blanking it.
@@ -334,6 +340,10 @@ final class AccessModel: ObservableObject {
     if (!response.ok) throw new Error('Agent connections could not be loaded (HTTP ' + response.status + ').');
     const connections = await response.json();
     if (!Array.isArray(connections)) throw new Error('Invalid agent connections response.');
+    const agentsResponse = await fetch('/api/agents', {signal: AbortSignal.timeout(60000)});
+    if (!agentsResponse.ok) throw new Error('Connected agents could not be loaded (HTTP ' + agentsResponse.status + ').');
+    const agents = await agentsResponse.json();
+    if (!Array.isArray(agents)) throw new Error('Invalid connected agents response.');
     let details = {};
     if (root.rootDid) {
       try {
@@ -342,7 +352,7 @@ final class AccessModel: ObservableObject {
     }
     return {...details,
             name: details.displayName || profile.display_name || profile.displayName || '', root: root.rootDid || '', passkey: root.passkey || null,
-            connections: Array.isArray(connections) ? connections : []};
+            connections: Array.isArray(connections) ? connections : [], agents};
     """
 
   /// Read a space. A call while one is running makes it read again afterwards,
@@ -749,6 +759,45 @@ final class AccessModel: ObservableObject {
       notice = "Couldn’t revoke the link: " + Self.message(error)
       return false
     }
+  }
+
+  /// Withdraw a hosted agent's access to one space. The worker revokes it at
+  /// the space's access service before dropping it, so a failure stays listed.
+  func revoke(_ space: HostedAgentSpace, from agent: HostedAgent) async {
+    let key = Self.workingKey(space, of: agent)
+    guard let runtime, !working.contains(key) else { return }
+    let attempt = Telemetry.shared.begin(.collaboration, .revokeLink, surface: .hub)
+    let started = generation
+    working.insert(key)
+    defer { if generation == started { working.remove(key) } }
+    do {
+      _ = try await runtime.accountScript(
+        Self.hostedRevokeScript, arguments: ["agent": agent.key, "space": space.subject])
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return
+      }
+      notice = "Access revoked"
+      await refreshAccount()
+      attempt.finish(.success, stage: .remoteCommit)
+    } catch {
+      guard generation == started else {
+        attempt.finish(.cancelled, stage: .worker)
+        return
+      }
+      notice = "Couldn’t revoke the access: " + Self.message(error)
+      attempt.finish(.retryableFailure, stage: .worker)
+    }
+  }
+
+  /// The route answers `null` on success and an error status otherwise.
+  static let hostedRevokeScript = """
+    await api('/api/agents/' + encodeURIComponent(agent) + '/revoke', {space});
+    return {done: true};
+    """
+
+  static func workingKey(_ space: HostedAgentSpace, of agent: HostedAgent) -> String {
+    "hosted:" + agent.key + ":" + space.subject
   }
 
   /// Remove a member from a space: the worker revokes the grant that admits
