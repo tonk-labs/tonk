@@ -354,7 +354,7 @@ async fn plan<Env: QueryEnv>(
                     the: claim.the.clone(),
                     of: now.clone(),
                     is: follow(&claim.is),
-                    pick: pick.clone(),
+                    pick,
                 }));
             }
         }
