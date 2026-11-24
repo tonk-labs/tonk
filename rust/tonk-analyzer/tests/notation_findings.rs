@@ -1,5 +1,5 @@
 //! Demo (notation tour): the two behaviours the tour found and worked
-//! around, run as written in `demo/notation-tour/findings/`, so the
+//! around, run as written in `rust/tonk-analyzer/tests/notation-tour/findings/`, so the
 //! answers in `demo/notation-tour/findings.md` can be produced again.
 //! They assert nothing; `cargo test -p tonk-analyzer --test
 //! notation_findings -- --ignored --nocapture` prints what each gives.
@@ -44,7 +44,7 @@ async fn run(cells: &[&str]) {
 #[ignore = "prints a finding; asserts nothing"]
 async fn a_formula_in_a_select_head() {
     run(&[include_str!(
-        "../../../demo/notation-tour/findings/1-head-formula.notation"
+        "notation-tour/findings/1-head-formula.notation"
     )])
     .await;
 }
@@ -53,8 +53,8 @@ async fn a_formula_in_a_select_head() {
 #[ignore = "prints a finding; asserts nothing"]
 async fn a_retract_through_a_concept() {
     run(&[
-        include_str!("../../../demo/notation-tour/findings/2-retract-through-concept.notation"),
-        include_str!("../../../demo/notation-tour/findings/2b-issue-and-read.notation"),
+        include_str!("notation-tour/findings/2-retract-through-concept.notation"),
+        include_str!("notation-tour/findings/2b-issue-and-read.notation"),
     ])
     .await;
 }

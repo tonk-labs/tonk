@@ -1,6 +1,6 @@
 //! Demo (notation tour): every ```notation cell of the tour runs.
 //!
-//! `demo/notation-tour/tour.md` is the notebook a "Notation tour" space
+//! `rust/tonk-analyzer/tests/notation-tour/tour.md` is the notebook a "Notation tour" space
 //! opens on. Each cell is run here in order, on one branch, the way the
 //! notebook runs it (the cells above as its context), and a cell either
 //! runs clean or, when it says `; expect: refused`, is refused. Set
@@ -11,7 +11,7 @@
 use dialog_peer::helpers::{test_repo, test_session_with_peer};
 use tonk_analyzer::notation::tour::{Cell, evaluate_on_branch};
 
-const TOUR: &str = include_str!("../../../demo/notation-tour/tour.md");
+const TOUR: &str = include_str!("notation-tour/tour.md");
 
 /// The ```notation fences of a Markdown document, in order.
 fn cells(markdown: &str) -> Vec<String> {
@@ -192,7 +192,7 @@ fn tour_seed(notebook: &str, tour: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let mut doc = vec![
-        "# GENERATED from notebook.yaml and demo/notation-tour/tour.md by".to_owned(),
+        "# GENERATED from notebook.yaml and rust/tonk-analyzer/tests/notation-tour/tour.md by".to_owned(),
         "# rust/tonk-analyzer/tests/notation_tour.rs. Do not edit; edit those and run".to_owned(),
         "# TONK_TOUR_WRITE_SEED=1 cargo test -p tonk-analyzer --test notation_tour".to_owned(),
         "#".to_owned(),

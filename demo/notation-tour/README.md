@@ -56,9 +56,9 @@ cargo test -p tonk-analyzer --test notation_tour
 
 | piece | file |
 |---|---|
-| the tour, as Markdown | `demo/notation-tour/tour.md` |
+| the tour, as Markdown | `rust/tonk-analyzer/tests/notation-tour/tour.md` (inside the crate, because the nix build takes only `rust/` as source) |
 | the seed a space is created from, generated | `rust/tonk-core/assets/library/notation-tour.yaml`, written by `the_tour_seed_is_current` in `rust/tonk-analyzer/tests/notation_tour.rs` (`TONK_TOUR_WRITE_SEED=1 cargo test -p tonk-analyzer --test notation_tour`; the test fails when the seed is stale against `tour.md` or `notebook.yaml`) |
-| what the tour found in dialog | `demo/notation-tour/findings.md`, `findings/*.notation`, `rust/tonk-analyzer/tests/notation_findings.rs` |
+| what the tour found in dialog | `demo/notation-tour/findings.md`, `rust/tonk-analyzer/tests/notation-tour/findings/*.notation`, `rust/tonk-analyzer/tests/notation_findings.rs` |
 | a cell, in the notebook | `rust/tonk-inspector/src/notation_cell.rs` (two hooks in `notebook.rs`) |
 | the body's content type through the host | `rust/tonk-host/src/{consumer,ops}.rs` (`evaluate_as`, `contentType`) |
 | the worker side, on the existing `/evaluate` route | `rust/tonk-worker/src/router/notation_tour.rs` (`evaluate_route` in `evaluate.rs`) |

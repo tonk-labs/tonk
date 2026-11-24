@@ -2,7 +2,7 @@
 
 Two behaviours the tour ran into at the pinned dialog revision
 (`7b7484a8cdd8904a2547ae0e2b0c5b935e23151a`, `wip/engine-fold`) and worked
-around. Each is checked in as runnable notation under `findings/`, and
+around. Each is checked in as runnable notation under `rust/tonk-analyzer/tests/notation-tour/findings/`, and
 `cargo test -p tonk-analyzer --test notation_findings -- --ignored --nocapture --test-threads 1`
 runs it through the tour's evaluator (`tonk_analyzer::notation::tour`, which
 follows `dialog-notation/examples/notebook/session.rs`) on a fresh branch and
