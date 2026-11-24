@@ -77,15 +77,17 @@
 
 /* Tonk's own pages in a browser (gooey's in-browser system, vendored in
    assets/in-browser/) read their values from tonk-look.css. The knobs above
-   are the in-space bar's frost; on a task page they are unset, so its
-   sheet is paper, not frost. */
+   are the in-space bar's frost; on a task page they name tonk-look's paper
+   instead. Unset, a gooey rule that reads one directly fell through to its
+   literal light fallback (`var(--fabb-ink, #38182a)`), which on a dark task
+   page drew dark plum on the dark sheet. */
 .fabb-page {
-    --fabb-ink: initial;
-    --fabb-ink-soft: initial;
-    --fabb-on-ink: initial;
-    --fabb-hover: initial;
-    --fabb-press: initial;
-    --fabb-panel: initial;
+    --fabb-ink: var(--tonk-text);
+    --fabb-ink-soft: var(--tonk-text-soft);
+    --fabb-on-ink: var(--tonk-sheet);
+    --fabb-hover: var(--tonk-wash);
+    --fabb-press: var(--tonk-wash-strong);
+    --fabb-panel: var(--tonk-sheet);
 }
 /* Web Awesome colours every `label` with its own (dark-mode) label colour;
    a task page's labels are ink, as fabb-forms.css draws them. */
@@ -3566,7 +3568,7 @@ tonk-notebook-index {
 #tonk-register #tonk-register-resend {
     display: block; width: auto; min-height: 44px; margin-top: 16px; padding: 10px 0;
     text-align: left; cursor: pointer;
-    border: 0; background: transparent; color: var(--ink);
+    border: 0; background: transparent; color: var(--fp-ink);
     font: 600 17px/1.1 var(--cond);
     text-decoration: underline; text-underline-offset: 4px;
 }
@@ -3575,14 +3577,14 @@ tonk-notebook-index {
 #tonk-register #tonk-register-phrase-switch {
     display: block; width: auto; min-height: 44px; margin-top: 12px; padding: 10px 0;
     text-align: left; cursor: pointer;
-    border: 0; background: transparent; color: var(--ink);
+    border: 0; background: transparent; color: var(--fp-ink);
     font: 600 15px/1.1 var(--cond);
     text-decoration: underline; text-underline-offset: 4px;
 }
 #tonk-register #tonk-register-resend[hidden],
 #tonk-register #tonk-register-wait-title[hidden] { display: none; }
 #tonk-register #tonk-register-resend:focus-visible {
-    outline: 2px solid var(--ink); outline-offset: 2px;
+    outline: 2px solid var(--fp-ink); outline-offset: 2px;
 }
 #tonk-register[data-awaiting-email] .obtn:disabled { opacity: .45; }
 
@@ -3614,7 +3616,16 @@ tonk-notebook-index {
    Its top-document dialog keeps the passkey gesture and return focus. */
 #tonk-register.register-page {
   inset: 0; width: 100%; height: 100%; max-width: none; max-height: none;
-  overflow: auto; overscroll-behavior: contain; color-scheme: light;
+  overflow: auto; overscroll-behavior: contain; color-scheme: light dark;
+}
+/* Task pages follow the system as the hub and settings do. tonk-look.css
+   declares every colour as light-dark(), so only the scheme decides; gooey
+   keeps them light (`.tonk-task, .fabb-page { color-scheme: light }`), which
+   put a light sign-in page between a dark hub and dark settings. This
+   outranks that rule without editing the vendored file. The ceremony seated
+   in the FABB keeps the FABB's bright twin (`[data-fabb-task]` above). */
+:root :is(.tonk-task, .fabb-page):not(#tonk-register[data-fabb-task] *) {
+  color-scheme: light dark;
 }
 #tonk-register.register-page .register-record {
   display: grid; grid-template-columns: minmax(5rem, auto) 1fr;

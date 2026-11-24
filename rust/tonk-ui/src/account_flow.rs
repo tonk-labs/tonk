@@ -2030,11 +2030,11 @@ pub(crate) mod tests {
             "a recovery phrase is twelve words: {words:?}"
         );
 
-        // The card is a centred dialog, like the login ceremony, not a
-        // corner card.
+        // The card is the same task sheet as every other dialog: a modal
+        // page with the sheet centred on it, not a corner card.
         let geometry = first
             .execute(
-                "const dialog = document.querySelector('[data-phrase-dialog] [role=dialog]');
+                "const dialog = document.querySelector('dialog[data-phrase-dialog] .tc-card.fabb-task');
                  if (!dialog) return null;
                  const rect = dialog.getBoundingClientRect();
                  const frame = document.querySelector('[data-phrase-dialog]');
@@ -2175,6 +2175,60 @@ pub(crate) mod tests {
     /// The second browser's service worker is throttled to a slow 3G
     /// link, so the sync takes long enough to click during it, as it does
     /// for an account with real content.
+    /// In a dark scheme the sign-in page wears the hub's and settings'
+    /// dark paper and ink, not the light task page gooey keeps (a light
+    /// page between a dark hub and dark settings), and its inline link
+    /// reads as ink rather than the light fallback, dark plum on the dark
+    /// sheet.
+    // Storybook LIFE-32: account dialogs wear settings' palette in both schemes.
+    #[dialog_common::test]
+    async fn it_draws_the_sign_in_page_in_the_schemes_the_hub_does(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = env.driver().await?;
+        for dark in [true, false] {
+            ChromeDevTools::new(driver.handle.clone())
+                .execute_cdp_with_params(
+                    "Emulation.setEmulatedMedia",
+                    serde_json::json!({ "features": [
+                        { "name": "prefers-color-scheme", "value": if dark { "dark" } else { "light" } },
+                    ] }),
+                )
+                .await?;
+            wait_for_service_worker(&driver).await?;
+            raise_cluster_from_hub(&driver, &env).await?;
+            wait_for_displayed(&driver, "#tonk-register .fabb-page").await?;
+            let page = driver
+                .execute(
+                    r#"const style = (el) => el && getComputedStyle(el);
+                       const page = style(document.querySelector('#tonk-register .fabb-page'));
+                       const link = style(document.querySelector('#tonk-register .fabb-inline-action'));
+                       return { background: page.backgroundColor, color: page.color, link: link?.color };"#,
+                    Vec::new(),
+                )
+                .await?
+                .json()
+                .clone();
+            // tonk-look.css's ground and ink, which the hub wears too.
+            let (ground, ink) = if dark {
+                ("rgb(24, 13, 18)", "rgb(247, 246, 245)")
+            } else {
+                ("rgb(232, 230, 228)", "rgb(56, 24, 42)")
+            };
+            anyhow::ensure!(
+                page["background"] == ground && page["color"] == ink,
+                "the sign-in page in the {} scheme must wear the hub's ground and ink: {page}",
+                if dark { "dark" } else { "light" }
+            );
+            anyhow::ensure!(
+                page["link"] == ink,
+                "its inline link must be ink, not a fallback from the other scheme: {page}"
+            );
+        }
+        driver.quit().await?;
+        Ok(())
+    }
+
     // Storybook LIFE-31: a first sign-in says the spaces are arriving and never draws a half-synced page.
     #[dialog_common::test]
     async fn it_shows_the_account_arriving_after_a_first_sign_in(

@@ -1806,6 +1806,14 @@
       "result": "Browser: it_shows_the_account_arriving_after_a_first_sign_in passes against the dev build and fails without the worker fix with the reported No \\ui\\ view for tonk:site dump. Worker: a_first_contact_never_sends_profile_main_without_its_library, a_profile_stream_waits_out_a_hydration, the_last_navigation_during_a_hydration_wins. CI unverified at the time of writing."
     },
     {
+      "claim": "Account dialogs wear settings' palette and sheet in light and dark (Settings presentation decision).",
+      "device": "fresh-browser + both schemes",
+      "file": "verification/accounts.md",
+      "id": "LIFE-32",
+      "priority": "P2",
+      "result": "Browser: it_draws_the_sign_in_page_in_the_schemes_the_hub_does (ground, ink and inline-link ink in both schemes); it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser (the phrase card is a centred task sheet). Static: style-boundaries.test.mjs. Dialogs captured in both schemes on the dev build."
+    },
+    {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
       "device": "hybrid",
       "file": "verification/accounts.md",
@@ -2577,7 +2585,7 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 17,
+    "other": 18,
     "pass": 3,
     "unrun": 107
   },

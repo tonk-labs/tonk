@@ -206,7 +206,8 @@
                logotype, its title, the reason, and the one thing to do.
                Drawn here, inline, because the sheets that draw every other
                task page may be what didn't load; the values are
-               tonk-look.css's light ones. */
+               tonk-look.css's, as light-dark() pairs so the wall
+               follows the system like the hub it stands in for. */
             .tonk-boot-top,
             .tonk-boot-actions {
                 display: none;
@@ -215,9 +216,9 @@
                 align-items: center;
                 padding: 40px 16px 32px;
                 overflow: auto;
-                background: #e8e6e4;
-                color: #38182a;
-                color-scheme: light;
+                background: light-dark(#e8e6e4, #180d12);
+                color: light-dark(#38182a, #f7f6f5);
+                color-scheme: light dark;
             }
             #tonk-boot:has([data-failed]) .tonk-boot-top {
                 display: flex;
@@ -235,11 +236,11 @@
                 display: block;
                 width: min(480px, 100%);
                 border-radius: 12px;
-                background: #f7f6f5;
+                background: light-dark(#f7f6f5, #23141c);
                 box-shadow:
-                    0 0 0 1px rgb(56 24 42 / 6%),
-                    0 1px 3px rgb(56 24 42 / 6%),
-                    0 8px 24px -12px rgb(56 24 42 / 12%);
+                    0 0 0 1px light-dark(rgb(56 24 42 / 6%), rgb(247 246 245 / 10%)),
+                    0 1px 3px light-dark(rgb(56 24 42 / 6%), transparent),
+                    0 8px 24px -12px light-dark(rgb(56 24 42 / 12%), transparent);
             }
             #tonk-boot:has([data-failed]) .tonk-boot-title {
                 display: flex;
@@ -247,7 +248,7 @@
                 min-height: 48px;
                 max-width: none;
                 padding: 5px 16px 6px;
-                border-bottom: 1px solid rgb(56 24 42 / 12%);
+                border-bottom: 1px solid light-dark(rgb(56 24 42 / 12%), rgb(247 246 245 / 12%));
                 font-size: 16px;
                 line-height: 1.3;
                 text-align: start;
@@ -257,7 +258,7 @@
                 position: relative;
                 width: auto;
                 padding: 16px 16px 16px 44px;
-                color: #38182a;
+                color: light-dark(#38182a, #f7f6f5);
                 text-align: start;
                 outline: none;
             }
@@ -289,8 +290,8 @@
                 padding: 0 12px;
                 border: 0;
                 border-radius: 6px;
-                background: #38182a;
-                color: #f7f6f5;
+                background: light-dark(#38182a, #f7f6f5);
+                color: light-dark(#f7f6f5, #38182a);
                 font:
                     600 14px / 1.3 "IBM Plex Sans Condensed",
                     "Arial Narrow",
@@ -300,7 +301,7 @@
             }
             .tonk-boot-actions button:focus-visible {
                 outline: none;
-                background: color-mix(in oklab, #f7f6f5 12%, #38182a);
+                background: light-dark(color-mix(in oklab, #f7f6f5 12%, #38182a), color-mix(in oklab, #38182a 12%, #f7f6f5));
             }
             @media (pointer: coarse) {
                 .tonk-boot-actions button {
