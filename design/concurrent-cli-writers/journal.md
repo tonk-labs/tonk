@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | What an agent's write must mean when the head moved under it: its claims applied on the new head, or its document run again there. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Scope: one machine's writers only, or the remote head too. What 25 ms is compared to. Whether agents reach saturation. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -71,3 +71,21 @@ argument has no evidence yet; it would need a realistic space to make it.
 **Decided.** The local cause is that a lost race is a failure the agent
 sees, whether lost at the version check or at the lock. Not decided: what
 the eval should do instead, which turns on what its write means.
+
+## 2026-11-24, Diagnosing: is 31 ms a lot, and does retry starve
+
+**Asked.** Irakli: 31 ms is a lot. Compared to what? Not yet answered.
+Irakli: a daemon serializes, but under retry a writer that commits more
+may lose every time.
+
+**Learned.** Of a cold eval's ~25 ms, ~4 ms is the process start that a
+daemon's client still pays. The starvation hypothesis holds at saturation:
+retried, a 220 ms eval never landed in 64 attempts against 8 back-to-back
+writers; queued it landed first time. I had said the two meet "the same
+lost race"; that was wrong, a queue guarantees progress and retry does
+not. The queue that did it is a `flock` around the CLI: serializing does
+not need a daemon. Under a queue on one machine no write loses a race, so
+the apply-or-rerun question only remains for the remote head.
+
+**Decided.** Not decided. Open: whether agents reach saturation; which
+budget 25 ms is measured against; whether the remote head is in scope.
