@@ -177,6 +177,34 @@ try {
       "a later cell's write reached the watched view as patches",
     );
     await page.screenshot({ path: path.join(SHOTS, '92-live.png') });
+
+    // An event from the page: click the open to-do in the watched card.
+    // Its bound command posts as a notation cell, and the write comes
+    // back to the card as a patch of the item's class.
+    const clicked = await notebook.evaluate(
+      async ({ deep, at }) => {
+        const view = eval(deep)('.md-code-block[data-cell-language=notation]')[at].querySelector('.notation-live');
+        const item = [...view.querySelectorAll('li')].find((li) => li.textContent === 'Bake bread');
+        const before = { cls: item.getAttribute('class'), patches: Number(view.dataset.patches) };
+        const clickedAt = performance.now();
+        item.click();
+        for (let i = 0; i < 500; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+          const now = [...view.querySelectorAll('li')].find((li) => li.textContent === 'Bake bread');
+          if (now && now.getAttribute('class') !== before.cls) {
+            return { before, after: now.getAttribute('class'), patches: Number(view.dataset.patches), posted: view.dataset.posted, same: now === item, ms: Math.round(performance.now() - clickedAt) };
+          }
+        }
+        return { before, after: null, posted: view.dataset.posted || null, error: view.dataset.error || null };
+      },
+      { deep, at: live.at },
+    );
+    log('click in the live view:', JSON.stringify(clicked));
+    check(
+      clicked.before.cls === 'open:' && clicked.after === 'done:' && clicked.patches > clicked.before.patches && clicked.same,
+      'a click in the watched view posted its command and came back as a patch',
+    );
+    await page.screenshot({ path: path.join(SHOTS, '93-clicked.png') });
   }
 
   // The views cell rendered HTML; the refusals said where.

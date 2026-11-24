@@ -1029,12 +1029,12 @@ notebook/blocks!:
 notebook/block!:
   this: id:notation-tour/block-1
   notebook: notebook:notation-tour
-  source: "# A tour of the Dialog notation\n\nThis notebook is a tour of the notation Dialog is growing: s-expressions over a small kernel, where the core forms (`concept`, `select`, `query`, commands) are themselves defined as rules. Every ```notation block below is a cell. Press Run (or Cmd/Ctrl+Enter in the cell) and the space's worker reads it, expands it, analyzes it and compiles it with `dialog-notation`, then runs what it compiled against this space's branch."
+  source: "# A tour of the Dialog notation\n\nThis notebook is a tour of the notation Dialog is growing: s-expressions over a small kernel, where the core forms (`concept`, `select`, `query`, commands) are themselves defined as rules. Every notation code block below is a cell. Press Run (or Cmd/Ctrl+Enter in the cell) and the space's worker reads it, expands it, analyzes it and compiles it with `dialog-notation`, then runs what it compiled against this space's branch."
 
 notebook/block!:
   this: id:notation-tour/block-2
   notebook: notebook:notation-tour
-  source: "Under each result, four sections show the stages: read (the syntax trees, and each tree as data), expanded (every form rewritten to a rule of the kernel), analysis (what the cell declares, and every diagnostic with its place) and compiled (the steps Dialog-DB runs, its descriptors as JSON). The cells above a cell are its context: their definitions are in scope, the way a later paragraph reads an earlier one."
+  source: "Under each result, four sections show the stages: read (the syntax trees, and each tree as data), expanded (every form rewritten to a rule of the kernel), analysis (what the cell declares, and every diagnostic with its place) and compiled (the steps Dialog-DB runs, its descriptors as JSON). The cells above a cell are its context: their definitions are in scope, the way a later paragraph reads an earlier one. Run the cells from the top: a cell reads the facts the cells above it wrote."
 
 notebook/block!:
   this: id:notation-tour/block-3
@@ -1169,12 +1169,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-29
   notebook: notebook:notation-tour
-  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run."
+  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class."
 
 notebook/block!:
   this: id:notation-tour/block-30
   notebook: notebook:notation-tour
-  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
+  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-31

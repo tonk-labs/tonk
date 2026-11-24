@@ -448,7 +448,7 @@ fn wire_watch(
         let _ = live.set_attribute("data-patches", "0");
         let _ = live.set_inner_html("<em>watching…</em>");
         let _ = host.append_child(&live);
-        install_frames(&live);
+        install_frames(&live, &live_body);
         let Ok(query) = js_sys::JSON::parse(&live_body) else {
             return;
         };
@@ -470,7 +470,8 @@ fn wire_watch(
 
 /// The host delivers each frame to the consumer's `reset` (a frame with
 /// a kind it does not know is delivered whole), and errors to `error`.
-fn install_frames(live: &Element) {
+fn install_frames(live: &Element, live_body: &str) {
+    install_events(live, live_body);
     let target = live.clone();
     let reset = Closure::wrap(Box::new(move |frame: JsValue, _opts: JsValue| {
         let text = js_sys::JSON::stringify(&frame)
@@ -635,4 +636,109 @@ fn apply_patch(live: &Element, patch: &serde_json::Value) -> Option<()> {
         _ => return None,
     }
     Some(())
+}
+
+/// Events of the live view: a click (or change, or submit) on an
+/// element the view bound an event on posts that event's command, its
+/// fields filled from the row or from the live event, as a notation cell
+/// whose context is the view cell's own. What it writes comes back to the
+/// view as the driver's patches.
+fn install_events(live: &Element, live_body: &str) {
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(live_body) else {
+        return;
+    };
+    let cell = &body["notation_live"];
+    let mut context: Vec<serde_json::Value> =
+        cell["context"].as_array().cloned().unwrap_or_default();
+    context.push(cell["source"].clone());
+    for kind in ["click", "change", "submit"] {
+        let root = live.clone();
+        let context = context.clone();
+        let listener = Closure::wrap(Box::new(move |event: Event| {
+            let Some(mut target) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+            else {
+                return;
+            };
+            let attribute = format!("data-notation-on-{kind}");
+            let bound = loop {
+                if let Some(bound) = target.get_attribute(&attribute) {
+                    break Some((target.clone(), bound));
+                }
+                if target.is_same_node(Some(&root)) {
+                    break None;
+                }
+                match target.parent_element() {
+                    Some(parent) => target = parent,
+                    None => break None,
+                }
+            };
+            let Some((element, bound)) = bound else {
+                return;
+            };
+            if kind == "submit" {
+                event.prevent_default();
+            }
+            let Ok(bound) = serde_json::from_str::<serde_json::Value>(&bound) else {
+                return;
+            };
+            let Some(text) = command_text(&bound, &event, &element) else {
+                return;
+            };
+            let _ = root.set_attribute("data-posted", &text);
+            let request = serde_json::json!({
+                "source": text,
+                "context": context,
+            })
+            .to_string();
+            let root = root.clone();
+            spawn_local(async move {
+                if let Err(error) =
+                    tonk_host::consumer::evaluate_as(&root, &request, CONTENT_TYPE, true).await
+                {
+                    let _ = root.set_attribute("data-error", &error.message);
+                }
+            });
+        }) as Box<dyn FnMut(Event)>);
+        let _ = live.add_event_listener_with_callback_and_bool(
+            kind,
+            listener.as_ref().unchecked_ref(),
+            true,
+        );
+        listener.forget();
+    }
+}
+
+/// `(assert (command label: value ...))` for a bound event that fired.
+fn command_text(bound: &serde_json::Value, event: &Event, element: &Element) -> Option<String> {
+    let command = bound["command"].as_str()?;
+    let mut out = format!("(assert ({command}");
+    for field in bound["fields"].as_array()? {
+        let label = field.get(0)?.as_str()?;
+        let given = field.get(1)?;
+        let value = if let Some(notation) = given["notation"].as_str() {
+            notation.to_owned()
+        } else {
+            let steps = given["path"].as_array()?;
+            let mut current: JsValue = event.clone().into();
+            for (at, step) in steps.iter().enumerate() {
+                let step = step.as_str()?;
+                current = if at == 0 && step == "currentTarget" {
+                    element.clone().into()
+                } else {
+                    js_sys::Reflect::get(&current, &JsValue::from_str(step)).ok()?
+                };
+            }
+            match current.as_f64() {
+                Some(number) => number.to_string(),
+                None => {
+                    serde_json::Value::String(current.as_string().unwrap_or_default()).to_string()
+                }
+            }
+        };
+        out.push_str(&format!(" {label}: {value}"));
+    }
+    out.push_str("))");
+    Some(out)
 }

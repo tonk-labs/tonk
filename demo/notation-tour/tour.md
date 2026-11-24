@@ -1,8 +1,8 @@
 # A tour of the Dialog notation
 
-This notebook is a tour of the notation Dialog is growing: s-expressions over a small kernel, where the core forms (`concept`, `select`, `query`, commands) are themselves defined as rules. Every ```notation block below is a cell. Press Run (or Cmd/Ctrl+Enter in the cell) and the space's worker reads it, expands it, analyzes it and compiles it with `dialog-notation`, then runs what it compiled against this space's branch.
+This notebook is a tour of the notation Dialog is growing: s-expressions over a small kernel, where the core forms (`concept`, `select`, `query`, commands) are themselves defined as rules. Every notation code block below is a cell. Press Run (or Cmd/Ctrl+Enter in the cell) and the space's worker reads it, expands it, analyzes it and compiles it with `dialog-notation`, then runs what it compiled against this space's branch.
 
-Under each result, four sections show the stages: read (the syntax trees, and each tree as data), expanded (every form rewritten to a rule of the kernel), analysis (what the cell declares, and every diagnostic with its place) and compiled (the steps Dialog-DB runs, its descriptors as JSON). The cells above a cell are its context: their definitions are in scope, the way a later paragraph reads an earlier one.
+Under each result, four sections show the stages: read (the syntax trees, and each tree as data), expanded (every form rewritten to a rule of the kernel), analysis (what the cell declares, and every diagnostic with its place) and compiled (the steps Dialog-DB runs, its descriptors as JSON). The cells above a cell are its context: their definitions are in scope, the way a later paragraph reads an earlier one. Run the cells from the top: a cell reads the facts the cells above it wrote.
 
 ## Facts and concepts
 
@@ -169,12 +169,12 @@ A value can be a record or a list, and a query takes it apart by shape. An open 
 
 ## Views
 
-A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run.
+A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class.
 
 ```notation
 (query (todo/item ?t list: ?l is: ?item)
   (todo ?t title: ?title state: ?s list: ?l)
-  (view ?item [:li {:class ?s} ?title]))
+  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))
 
 (query (list/card ?l is: ?card)
   (list ?l name: ?name)

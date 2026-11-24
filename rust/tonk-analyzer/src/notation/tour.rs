@@ -990,7 +990,12 @@ fn patch_json(patch: &dialog_notation::Patch) -> Option<serde_json::Value> {
         Patch::SetAttribute { at, name, value } => serde_json::json!({
             "op": "attribute", "at": address(at), "name": name, "value": value,
         }),
-        Patch::SetEvent { .. } => return None,
+        Patch::SetEvent { at, event, .. } => serde_json::json!({
+            "op": "attribute",
+            "at": address(at),
+            "name": format!("data-notation-on-{}", event.kind),
+            "value": posted(event).to_string(),
+        }),
     })
 }
 
@@ -1004,8 +1009,8 @@ fn marked(shown: &dialog_notation::Shown, slot: usize) -> String {
     let Content::Element {
         tag,
         attributes,
+        events,
         slots,
-        ..
     } = &shown.content;
     let mut out = format!(
         "<{tag} data-ns=\"{slot}\" data-nk=\"{}\"",
@@ -1013,6 +1018,13 @@ fn marked(shown: &dialog_notation::Shown, slot: usize) -> String {
     );
     for (name, value) in attributes {
         out.push_str(&format!(" {name}=\"{}\"", escape(value)));
+    }
+    for event in events {
+        out.push_str(&format!(
+            " data-notation-on-{}=\"{}\"",
+            event.kind,
+            escape(&posted(event).to_string())
+        ));
     }
     out.push('>');
     for (at, inner) in slots.iter().enumerate() {
@@ -1035,4 +1047,23 @@ fn escape(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// An event bound on an instance, as the page posts it: the command and
+/// each field, a value of the row written in the notation, or a path
+/// into the live event the page reads when it fires.
+fn posted(event: &dialog_notation::Posted) -> serde_json::Value {
+    use dialog_notation::Given;
+    let fields: Vec<serde_json::Value> = event
+        .fields
+        .iter()
+        .map(|(label, given)| match given {
+            Given::Value(value) => {
+                serde_json::json!([label, { "notation": Syntax::Constant(value.clone()).to_string() }])
+            }
+            Given::Written(text) => serde_json::json!([label, { "notation": text }]),
+            Given::Path(steps) => serde_json::json!([label, { "path": steps }]),
+        })
+        .collect();
+    serde_json::json!({ "command": event.command, "fields": fields })
 }
