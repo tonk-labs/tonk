@@ -55,3 +55,8 @@ Backtracking moves a topic to an earlier phase and says so in its journal.
 
 ## Topics
 
+- [Agents running the CLI on one space at once fail one another's writes](concurrent-cli-writers.md):
+  **Describing.** Several `tonk` processes on one replica; eval commits
+  with one try, the head lock refuses at once, and every write pulls and
+  pushes.
+
