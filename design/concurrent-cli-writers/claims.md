@@ -19,4 +19,6 @@ an ancestor, so lines may differ slightly).
 | tonk already has a shared owner process for MCP servers: one takes a `flock` on `peer.lock`, keeps the worker open, syncs every 5 s, serves the others over `peer.sock`, and hands over on exit | fact | `rust/tonk-agent-peer/src/owner.rs:1-30`; `tonk-worker/src/router/local_peer.rs:461-480` | holds |
 | Sapling's daemon both serializes (one commit turn per space) and retries a lost compare-and-swap (up to 8) | fact | sapling `rust/sapling-kernel/src/subject.rs:87,113`; test `rust/sapling/tests/transact.rs:319` | holds |
 | Sapling's process-lifecycle modules (auto-start, instance lock, runtime dir, leases, idle exit) are not tied to its kernel model; its worker handover is | hypothesis | read of sapling `rust/sapling/src/commands/daemon/`; they live in a binary crate, so tonk would copy, not depend | open |
-| What Gavin's agents saw is the same as BUG-350's | hypothesis | the errors they saw, and whether the agents share one machine and one replica directory | open |
+| What Gavin's agents saw is the same as BUG-350's | hypothesis | no further report exists (Irakli, 2026-11-24); settled only by reproducing it | open, research/concurrent-cli-writes |
+| Gavin's agents run on one machine, sharing one replica directory | opinion | Irakli, 2026-11-24 ("I believe") | - |
+| Agents on one machine still meet at the remote head: a committing eval pulls and pushes unless `--no-sync`, and other members' devices push to the same upstream | fact | `auto_sync.rs:1-27,245-276` | holds |

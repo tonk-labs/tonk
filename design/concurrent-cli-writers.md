@@ -1,6 +1,6 @@
 # Agents running the CLI on one space at once fail one another's writes
 
-**Phase: Describing.**
+**Phase: Diagnosing.**
 
 ## Description
 
