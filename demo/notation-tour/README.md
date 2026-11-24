@@ -26,13 +26,14 @@ A cold build took about 80 minutes in this container at two build jobs
 (`CARGO_BUILD_JOBS=2`); it is much less on a workstation, and seconds once
 warm. In the browser each cell runs in 70 to 150 ms.
 
-Open http://localhost:8080/ once and let the new profile finish its
-onboarding, then open:
-
-    http://localhost:8080/seed/http://localhost:8080/library/notation-tour.yaml
-
-(entered exactly as shown: the seed's URL follows `/seed/` unencoded), name the space (say "Notation tour") and create it. The space opens on the
-tour notebook. Press Run on each cell from the top (each cell reads the
+Open http://localhost:8080/ and let the new profile finish its onboarding.
+On the hub, open `troubleshooting`, then "can I use tonk without an
+agent?", and follow "start from the notation tour". That opens the `/seed`
+page for the bundled tour (`/seed/%2Flibrary%2Fnotation-tour.yaml`, the
+same link on any origin); name the space (say "Notation tour") and create
+it. The link is demo scaffolding: a template picker over `space/create`'s
+`template` is where a starting point like this belongs. The space opens on
+the tour notebook. Press Run on each cell from the top (each cell reads the
 definitions of the cells above it, and the facts the cells above wrote).
 Under the Views cell, press Watch live before running the cells below it:
 the to-dos they add arrive in the watched card as the driver's patches.
