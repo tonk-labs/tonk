@@ -4460,6 +4460,7 @@ pub(crate) mod tests {
     /// showing stays. Before, the withdrawal reached every reader at
     /// once, and a page re-rendering during the pull drew the site with
     /// no view and no route to stamp, as a notation dump.
+    // Storybook LIFE-31: profile main never reaches a page without its library.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn a_first_contact_never_sends_profile_main_without_its_library() {

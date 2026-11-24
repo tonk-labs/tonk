@@ -210,6 +210,20 @@ sharing are waiting on confirmation.
 > the resulting fact through a subscription rather than a fetch, so an
 > activation performed anywhere repaints every open tab.
 
+Signing in on a browser that has never seen the account brings the account's
+spaces in over the network, which takes as long as the account is large and
+the link is slow. Until they arrive, the Hub says “Bringing your spaces from
+your account…” where the spaces will be, and never “No spaces yet”. A person
+who moves between their spaces and settings meanwhile sees that same waiting
+state; no page draws the half-synced profile, and a navigation made during the
+sync lands once it ends (`LIFE-31`, `BUG-351`).
+
+> Technical note: on first contact the browser withdraws its own profile
+> library before pulling the account's, so profile main briefly holds no routes
+> or views. The worker holds delivery on that branch for the take-over and
+> answers streams opened meanwhile with `pending`, so readers go from the
+> device's library straight to the account's.
+
 CLI login waits on a loopback callback and Ctrl-C concurrently. After browser
 approval, it validates the returned grant before writing it, then writes the
 grant, root, provider, active session, hydrates the account, retains authority,

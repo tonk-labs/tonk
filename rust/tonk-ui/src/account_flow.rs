@@ -2175,6 +2175,7 @@ pub(crate) mod tests {
     /// The second browser's service worker is throttled to a slow 3G
     /// link, so the sync takes long enough to click during it, as it does
     /// for an account with real content.
+    // Storybook LIFE-31: a first sign-in says the spaces are arriving and never draws a half-synced page.
     #[dialog_common::test]
     async fn it_shows_the_account_arriving_after_a_first_sign_in(
         env: TestEnvironment,
