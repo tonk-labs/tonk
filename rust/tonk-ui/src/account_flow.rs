@@ -2207,25 +2207,34 @@ pub(crate) mod tests {
         // the one failure.
         let look = async |driver: &WebDriver| -> Result<serde_json::Value> {
             let read = async {
+                // The guest renders at an opaque origin, so where the tab
+                // is comes from the top document.
+                driver.enter_default_frame().await?;
+                let path = driver.current_url().await?.path().to_owned();
                 enter_guest(driver).await?;
-                anyhow::Ok(
-                    driver
+                let mut seen = driver
                         .execute(
                             r#"const shown = (el) => !!el && el.checkVisibility();
+                               const dumps = [...document.querySelectorAll('[data-tonk-display-default-notice], tonk-notation')]
+                                 .map((el) => {
+                                   const host = el.closest('tonk-display');
+                                   return `${el.localName} model=${host?.getAttribute('model')} entity=${host?.getAttribute('entity')}: ${el.textContent.trim().slice(0, 160)}`;
+                                 });
                                return {
-                                 path: location.pathname,
-                                 dump: !!document.querySelector('[data-tonk-display-default-notice], tonk-notation'),
+                                 dump: dumps.length > 0,
+                                 dumps,
                                  notice: shown(document.querySelector('[data-account-linking]')),
                                  empty: [...document.querySelectorAll('[data-spaces-sheet] .hub-empty:not(.hub-failed)')].some(shown),
                                  spaces: document.querySelectorAll('[data-spaces-sheet] [data-id]').length,
-                                 close: shown(document.querySelector('[data-return-spaces]')),
+                                 home: [...document.querySelectorAll('a[href="/"]')].some(shown),
                                };"#,
                             Vec::new(),
                         )
                         .await?
                         .json()
-                        .clone(),
-                )
+                        .clone();
+                seen["path"] = serde_json::Value::String(path);
+                anyhow::Ok(seen)
             };
             let seen = match read.await {
                 Ok(seen) => seen,
@@ -2243,7 +2252,7 @@ pub(crate) mod tests {
         let deadline = until(60);
         loop {
             let seen = look(&second).await?;
-            if seen["notice"] == true && seen["close"] == true {
+            if seen["notice"] == true && seen["home"] == true {
                 break;
             }
             anyhow::ensure!(
@@ -2253,22 +2262,50 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        // Back to your spaces while they are still on their way: the
-        // click the bug report made.
-        click(&second, "[data-return-spaces]").await?;
+        // Back and forth between the spaces and settings while they are
+        // still on their way: the clicks the bug report made, through the
+        // whole sync rather than at one moment in it, since the window in
+        // which the page used to break opens a little after sign-in and
+        // lasts until the account's library lands. Whichever link the page
+        // shows at this size is clicked (`close` or the spaces tab back,
+        // the account menu's settings link out).
+        let navigate = async |driver: &WebDriver, selector: &str| -> Result<bool> {
+            enter_guest(driver).await?;
+            Ok(driver
+                .execute(
+                    r#"const link = [...document.querySelectorAll(arguments[0])].find((el) => el.checkVisibility());
+                       link?.click();
+                       return !!link;"#,
+                    vec![serde_json::json!(selector)],
+                )
+                .await?
+                .json()
+                == &serde_json::Value::Bool(true))
+        };
         let mut waited = false;
+        let mut last_click = tokio::time::Instant::now() - Duration::from_secs(10);
         let deadline = until(120);
         loop {
             let seen = look(&second).await?;
             if seen["spaces"].as_u64() == Some(SPACES as u64) {
                 break;
             }
-            if seen["path"] == "/" {
+            if seen["path"] == "/" && seen["notice"] == true {
                 anyhow::ensure!(
-                    seen["notice"] == true && seen["empty"] == false,
+                    seen["empty"] == false,
                     "with the spaces on their way the Hub says so, and not that there are none: {seen}"
                 );
                 waited = true;
+            }
+            if last_click.elapsed() >= Duration::from_millis(1500) {
+                let to = if seen["path"] == "/" {
+                    r#"a[href="/settings"]"#
+                } else {
+                    r#"a[href="/"]"#
+                };
+                if navigate(&second, to).await.unwrap_or(false) {
+                    last_click = tokio::time::Instant::now();
+                }
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
