@@ -49,6 +49,10 @@ pub mod index;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod notebook;
 
+/// Demo (notation tour): ```notation cells in a notebook.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod notation_cell;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use element::TonkInspectorElement;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -171,6 +171,30 @@ pub async fn evaluate(
     Ok(result)
 }
 
+/// [`evaluate`] with the body's content type named: the notation tour's
+/// cells post a JSON body as `application/x-dialog-notation+json`, which
+/// the worker's `/evaluate` hands to its notation evaluator (demo).
+pub async fn evaluate_as(
+    consumer: &Element,
+    document: &str,
+    content_type: &str,
+    transact: bool,
+) -> Result<JsValue, ErrorDetail> {
+    let detail = Object::new();
+    Reflect::set(&detail, &"document".into(), &JsValue::from_str(document)).ok();
+    Reflect::set(&detail, &"transact".into(), &JsValue::from_bool(transact)).ok();
+    Reflect::set(
+        &detail,
+        &"contentType".into(),
+        &JsValue::from_str(content_type),
+    )
+    .ok();
+    let result_promise = dispatch_one_shot(consumer, events::EVALUATE, &detail)?;
+    JsFuture::from(result_promise)
+        .await
+        .map_err(|e| js_to_error(&e))
+}
+
 /// Dispatch `tonk-subscribe` on `consumer` with the given query
 /// body and optional tag. Returns a subscription handle. Frames
 /// arrive via `consumer.reset(conclusions, { tag })` /

@@ -168,6 +168,8 @@ mod profile_name;
 
 mod evaluate;
 mod library;
+/// Demo (notation tour): notation cells evaluated through dialog-notation.
+mod notation_tour;
 mod seed;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
@@ -503,7 +505,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // matches plus a commit summary in one response.
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate",
-            post(evaluate::evaluate),
+            post(evaluate::evaluate_route),
         )
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate/conditional",

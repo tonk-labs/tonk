@@ -261,6 +261,11 @@ impl Watched {
     }
 }
 
+/// A rendered tree as HTML, in the same spelling [`Watched::html`] gives.
+pub fn rendered_html(tree: &Rendered) -> String {
+    tree.roots.iter().map(instance_html).collect()
+}
+
 /// An instance as HTML. An event bound on it is written as
 /// `data-on-<type>="<command>"`, which is this module's own spelling
 /// and not yet what `tonk-display` listens for.
