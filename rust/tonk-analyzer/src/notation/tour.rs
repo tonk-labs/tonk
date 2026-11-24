@@ -882,3 +882,157 @@ fn said(value: &dialog_corpus::Value) -> String {
     }
     Syntax::Constant(value.clone()).to_string()
 }
+
+/// A view cell kept current: the driver's watch over the view the cell
+/// selects, its first frame the whole view as HTML and every later one
+/// the driver's patches. What a "Watch live" cell streams.
+pub struct LiveCell {
+    driven: dialog_notation::live::Watched,
+    first: bool,
+}
+
+/// Watch the first view `cell` selects, after its context, on `branch`.
+/// The driver lays the view's rules on the branch's session overlay;
+/// nothing is committed.
+pub fn watch_cell(branch: &Branch, cell: &Cell) -> Result<LiveCell, String> {
+    let mut analyzer = analyzer_after(&cell.context)?;
+    let checked = check_forms(&mut analyzer, &cell.source);
+    if let Some(refused) = checked.refusals().next() {
+        return Err(format!("the cell is refused: {}", refused.message));
+    }
+    let plan = checked
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            Step::View(plan) => Some((**plan).clone()),
+            _ => None,
+        })
+        .ok_or("the cell selects no view")?;
+    let given = plan.given.clone();
+    let driven = Live::new(branch.clone())
+        .watch(plan, given)
+        .map_err(|error| error.to_string())?;
+    Ok(LiveCell {
+        driven,
+        first: true,
+    })
+}
+
+impl LiveCell {
+    /// What moved since the last poll, as one frame: the whole view as
+    /// marked HTML on the first poll, the driver's patches after, and
+    /// nothing when nothing the view reads moved.
+    pub async fn poll<E: Reader>(&mut self, env: &E) -> Result<Option<serde_json::Value>, String> {
+        let patches = self
+            .driven
+            .poll(env)
+            .await
+            .map_err(|error| error.to_string())?;
+        if self.first {
+            self.first = false;
+            let html: String = self
+                .driven
+                .tree()
+                .roots
+                .iter()
+                .map(|root| marked(root, 0))
+                .collect();
+            return Ok(Some(serde_json::json!({
+                "kind": "notation-view",
+                "first": true,
+                "html": html,
+            })));
+        }
+        if patches.is_empty() {
+            return Ok(None);
+        }
+        let patches: Vec<serde_json::Value> = patches.iter().filter_map(patch_json).collect();
+        Ok(Some(serde_json::json!({
+            "kind": "notation-view",
+            "patches": patches,
+        })))
+    }
+}
+
+/// A key as the page matches it: the same text on an instance's
+/// `data-nk` and in an address.
+fn key_text(key: &[dialog_corpus::Value]) -> String {
+    format!("{key:?}")
+}
+
+fn address(at: &dialog_notation::Address) -> serde_json::Value {
+    serde_json::Value::Array(
+        at.iter()
+            .map(|(slot, key)| serde_json::json!([slot, key_text(key)]))
+            .collect(),
+    )
+}
+
+fn patch_json(patch: &dialog_notation::Patch) -> Option<serde_json::Value> {
+    use dialog_notation::Patch;
+    Some(match patch {
+        Patch::Insert {
+            parent,
+            slot,
+            index,
+            instance,
+        } => serde_json::json!({
+            "op": "insert",
+            "parent": address(parent),
+            "slot": slot,
+            "index": index,
+            "html": marked(instance, *slot),
+        }),
+        Patch::Remove { at } => serde_json::json!({ "op": "remove", "at": address(at) }),
+        Patch::SetText { at, slot, text } => {
+            serde_json::json!({ "op": "text", "at": address(at), "slot": slot, "text": text })
+        }
+        Patch::SetAttribute { at, name, value } => serde_json::json!({
+            "op": "attribute", "at": address(at), "name": name, "value": value,
+        }),
+        Patch::SetEvent { .. } => return None,
+    })
+}
+
+/// An instance as HTML a page can patch: the instance carries the slot
+/// of its parent it stands in (`data-ns`) and its key (`data-nk`), and
+/// each slot of it opens with a comment naming it (`t<n>` for a text,
+/// `s<n>` for instances).
+fn marked(shown: &dialog_notation::Shown, slot: usize) -> String {
+    use dialog_notation::Content;
+    use dialog_notation::view::tree::Slot;
+    let Content::Element {
+        tag,
+        attributes,
+        slots,
+        ..
+    } = &shown.content;
+    let mut out = format!(
+        "<{tag} data-ns=\"{slot}\" data-nk=\"{}\"",
+        escape(&key_text(&shown.key))
+    );
+    for (name, value) in attributes {
+        out.push_str(&format!(" {name}=\"{}\"", escape(value)));
+    }
+    out.push('>');
+    for (at, inner) in slots.iter().enumerate() {
+        match inner {
+            Slot::Text(text) => out.push_str(&format!("<!--t{at}-->{}", escape(text))),
+            Slot::Instances(list) => {
+                out.push_str(&format!("<!--s{at}-->"));
+                for child in list {
+                    out.push_str(&marked(child, at));
+                }
+            }
+        }
+    }
+    out.push_str(&format!("</{tag}>"));
+    out
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}

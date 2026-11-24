@@ -169,7 +169,7 @@ A value can be a record or a list, and a query takes it apart by shape. An open 
 
 ## Views
 
-A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows (and keeps it current, patch by patch, on a live page).
+A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run.
 
 ```notation
 (query (todo/item ?t list: ?l is: ?item)

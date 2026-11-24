@@ -88,6 +88,7 @@ try {
 
   // Run each cell in order, and check its outcome.
   const results = [];
+  let live = null;
   for (let at = 0; at < cells; at++) {
     const outcome = await notebook.evaluate(
       async ({ deep, at }) => {
@@ -122,6 +123,25 @@ try {
       { deep, at },
     );
     results.push(outcome);
+    if (outcome.forms.some((f) => f.html) && !live) {
+      // Watch the view live: the first frame is the driver's render.
+      live = await notebook.evaluate(
+        async ({ deep, at }) => {
+          const cell = eval(deep)('.md-code-block[data-cell-language=notation]')[at];
+          cell.querySelector('.notation-watch').click();
+          for (let i = 0; i < 100; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            const view = cell.querySelector('.notation-live');
+            if (view && Number(view.dataset.frames) > 0) {
+              return { at, items: view.querySelectorAll('li').length, frames: Number(view.dataset.frames) };
+            }
+          }
+          return { at, items: 0, frames: 0 };
+        },
+        { deep, at },
+      );
+      check(live.frames === 1 && live.items > 0, `the view is watched live: ${live.items} item(s) in its first frame`);
+    }
     const expected = outcome.source.includes('; expect: refused') ? 'refused' : 'ran';
     const answered = outcome.forms
       .filter((f) => f.kind === 'select' || f.kind === 'query')
@@ -131,6 +151,32 @@ try {
       outcome.state === expected && answered && warned && outcome.stages.length === 4,
       `cell ${at + 1}: ${outcome.state} (${outcome.forms.map((f) => `${f.kind}: ${f.head}`).join('; ')})`,
     );
+  }
+
+  // The watched view followed the cells run after it, by patches.
+  if (live) {
+    await page.waitForTimeout(1000);
+    const after = await notebook.evaluate(
+      ({ deep, at }) => {
+        const view = eval(deep)('.md-code-block[data-cell-language=notation]')[at].querySelector('.notation-live');
+        view.scrollIntoView({ block: 'center' });
+        return {
+          items: [...view.querySelectorAll('li')].map((li) => li.textContent),
+          frames: Number(view.dataset.frames),
+          patches: Number(view.dataset.patches),
+          missed: view.dataset.missed || null,
+          error: view.dataset.error || null,
+          lastMs: view.dataset.lastMs || null,
+        };
+      },
+      { deep, at: live.at },
+    );
+    log('live view after the later cells:', JSON.stringify(after));
+    check(
+      after.items.length > live.items && after.items.includes('Bake bread') && after.patches > 0 && !after.missed && !after.error,
+      "a later cell's write reached the watched view as patches",
+    );
+    await page.screenshot({ path: path.join(SHOTS, '92-live.png') });
   }
 
   // The views cell rendered HTML; the refusals said where.

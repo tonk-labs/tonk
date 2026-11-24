@@ -294,6 +294,19 @@ async fn query_on_branch(
         .await
         .map_err(|e| TonkWorkerError::Router(format!("failed to read body: {e}")))?
         .to_bytes();
+    // Demo (notation tour): a "Watch live" view cell subscribes here with
+    // a notation body instead of a concept query; its stream is the
+    // driver's frames rather than rows.
+    if let Some(cell) = super::notation_tour::live_request(&bytes) {
+        let session = branch
+            .acquire(&tonk.operator)
+            .await
+            .map_err(reactor_to_error)?;
+        let frames =
+            super::notation_tour::live_frames(tonk.clone(), session.handle().clone(), cell)
+                .map_err(TonkWorkerError::Router)?;
+        return Ok(sse_response(UnboundedReceiverStream::new(frames)));
+    }
     let wire: Query = serde_json::from_slice(&bytes)
         .map_err(|e| TonkWorkerError::Router(format!("invalid query body: {e}")))?;
 

@@ -132,3 +132,66 @@ impl Sink for Stacked<'_> {
         Stacked(self.0.dispatch(claim))
     }
 }
+
+/// A "Watch live" subscription's body: `{"notation_live": {source,
+/// context}}`, posted to the branch's query route by the cell.
+pub(super) fn live_request(body: &[u8]) -> Option<Cell> {
+    #[derive(serde::Deserialize)]
+    struct Live {
+        notation_live: Cell,
+    }
+    serde_json::from_slice::<Live>(body)
+        .ok()
+        .map(|live| live.notation_live)
+}
+
+/// The frames of a watched view cell: the driver's first render, then
+/// its patches each time what the view reads moves. The driver is polled
+/// every quarter second; a poll with nothing moved costs a check of each
+/// layer's subscription. The stream ends when the page lets go of it.
+pub(super) fn live_frames(
+    tonk: crate::worker::TonkState,
+    branch: dialog_repository::Branch,
+    cell: Cell,
+) -> Result<tokio::sync::mpsc::UnboundedReceiver<Bytes>, String> {
+    let mut live = tonk_analyzer::notation::tour::watch_cell(&branch, &cell)?;
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    spawn_live(async move {
+        loop {
+            let started = web_time::Instant::now();
+            match live.poll(&tonk.operator).await {
+                Ok(Some(mut frame)) => {
+                    frame["took_ms"] = serde_json::json!(started.elapsed().as_secs_f64() * 1000.0);
+                    if sender.send(Bytes::from(frame.to_string())).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let frame = serde_json::json!({ "kind": "notation-view", "error": error });
+                    let _ = sender.send(Bytes::from(frame.to_string()));
+                    break;
+                }
+            }
+            if sender.is_closed() {
+                break;
+            }
+            let _ = crate::r#async::sleep(web_time::Duration::from_millis(250)).await;
+        }
+    });
+    Ok(receiver)
+}
+
+/// Run the watch detached from the request, on the service worker as a
+/// local task. Demo limit: natively it is not run at all (the stream
+/// stays open and empty), as the driver's watch is not known to be
+/// `Send` and no native page watches a view.
+fn spawn_live<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_futures::spawn_local(future);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    drop(future);
+}

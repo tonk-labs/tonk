@@ -15,7 +15,7 @@
 //! Everything here is demo scaffolding for the notation tour; delete this
 //! file, its `mod` line and the two hooks in `notebook.rs` to remove it.
 
-use std::cell::Cell as Flag;
+use std::cell::{Cell as Flag, RefCell};
 use std::rc::Rc;
 
 use serde::Deserialize;
@@ -160,6 +160,7 @@ pub(crate) fn bind(
         let bar = bar.clone();
         let with = with.to_owned();
         let running = running.clone();
+        let held = closures.clone();
         move || {
             if running.get() {
                 return;
@@ -178,6 +179,7 @@ pub(crate) fn bind(
             let bar = bar.clone();
             let with = with.clone();
             let running = running.clone();
+            let held = held.clone();
             spawn_local(async move {
                 let started = js_sys::Date::now();
                 let answered =
@@ -197,6 +199,7 @@ pub(crate) fn bind(
                         let refused = answer.error.is_some()
                             || answer.forms.iter().any(|form| form.refused.is_some());
                         result.set_inner_html(&render(&answer, &with));
+                        wire_watch(&result, &editor, &body, &with, &held);
                         let state = if refused { "refused" } else { "ran" };
                         let _ = wrapper.set_attribute("data-cell-state", state);
                         set_state(&bar, &format!("{state} in {took:.0} ms"));
@@ -340,7 +343,10 @@ fn render(answer: &Answer, _with: &str) -> String {
         if let Some(html) = &form.html {
             out.push_str(&format!(
                 "<div class=\"notation-html\"><div class=\"notation-html-rendered\">{html}</div>\
-                 <pre class=\"notation-html-source\">{}</pre></div>",
+                 <pre class=\"notation-html-source\">{}</pre>\
+                 <wa-button type=\"button\" class=\"notation-watch\" size=\"small\" \
+                   appearance=\"outlined\" title=\"Keep this view current: the worker \
+                   streams the driver's patches as the space changes\">Watch live</wa-button></div>",
                 escape(html)
             ));
         }
@@ -387,5 +393,246 @@ pub(crate) const CSS: &str = r#"
 .notation-stages { display: flex; flex-direction: column; gap: .1rem; margin-top: .25rem; }
 .notation-stage summary { cursor: pointer; font-size: .75rem; }
 .notation-stage-note { opacity: .6; }
+.notation-live { border: 1px solid var(--wa-color-brand-border-normal, #6a8); padding: .5rem; margin: .25rem 0; }
 .notation-html-rendered { border: 1px dashed rgba(127,127,127,.5); padding: .5rem; margin: .25rem 0; }
 "#;
+
+thread_local! {
+    /// The live views' subscriptions, held for the page's life.
+    static LIVE: RefCell<Vec<tonk_host::consumer::Subscription>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Wire the "Watch live" button of a view the cell rendered: it opens a
+/// subscription on the branch's query route whose frames are the
+/// driver's, and keeps a copy of the view current by its patches.
+fn wire_watch(
+    result: &Element,
+    editor: &Element,
+    body: &str,
+    with: &str,
+    closures: &Rc<std::cell::RefCell<Vec<Closure<dyn FnMut(Event)>>>>,
+) {
+    let Ok(Some(button)) = result.query_selector(".notation-watch") else {
+        return;
+    };
+    let Ok(cell) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+    let live_body = serde_json::json!({ "notation_live": cell }).to_string();
+    let with = with.to_owned();
+    let editor = editor.clone();
+    let host = button.parent_element();
+    let click = Closure::wrap(Box::new(move |event: Event| {
+        event.prevent_default();
+        event.stop_propagation();
+        let Some(host) = host.clone() else {
+            return;
+        };
+        if host
+            .query_selector(".notation-live")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
+        let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let Ok(live) = document.create_element("div") else {
+            return;
+        };
+        live.set_class_name("notation-live");
+        let _ = live.set_attribute("with", &with);
+        let _ = live.set_attribute("data-frames", "0");
+        let _ = live.set_attribute("data-patches", "0");
+        let _ = live.set_inner_html("<em>watching…</em>");
+        let _ = host.append_child(&live);
+        install_frames(&live);
+        let Ok(query) = js_sys::JSON::parse(&live_body) else {
+            return;
+        };
+        let _ = &editor;
+        spawn_local(async move {
+            let tag = JsValue::from_str("notation-live");
+            match tonk_host::consumer::subscribe_claimed(&live, &query, Some(&tag)).await {
+                Ok(subscription) => LIVE.with(|held| held.borrow_mut().push(subscription)),
+                Err(error) => live.set_inner_html(&format!(
+                    "<div class=\"notation-error\">{}</div>",
+                    escape(&error.message)
+                )),
+            }
+        });
+    }) as Box<dyn FnMut(Event)>);
+    let _ = button.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+    closures.borrow_mut().push(click);
+}
+
+/// The host delivers each frame to the consumer's `reset` (a frame with
+/// a kind it does not know is delivered whole), and errors to `error`.
+fn install_frames(live: &Element) {
+    let target = live.clone();
+    let reset = Closure::wrap(Box::new(move |frame: JsValue, _opts: JsValue| {
+        let text = js_sys::JSON::stringify(&frame)
+            .ok()
+            .and_then(|s| s.as_string())
+            .unwrap_or_default();
+        let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
+        apply_frame(&target, &frame);
+    }) as Box<dyn FnMut(JsValue, JsValue)>);
+    let target = live.clone();
+    let error = Closure::wrap(Box::new(move |detail: JsValue, _opts: JsValue| {
+        let message = js_sys::Reflect::get(&detail, &"message".into())
+            .ok()
+            .and_then(|m| m.as_string())
+            .unwrap_or_else(|| "the live view failed".into());
+        let _ = target.set_attribute("data-error", &message);
+    }) as Box<dyn FnMut(JsValue, JsValue)>);
+    let _ = js_sys::Reflect::set(live, &"reset".into(), reset.as_ref());
+    let _ = js_sys::Reflect::set(live, &"update".into(), reset.as_ref());
+    let _ = js_sys::Reflect::set(live, &"error".into(), error.as_ref());
+    reset.forget();
+    error.forget();
+}
+
+fn bump(live: &Element, name: &str, by: u64) {
+    let now = live
+        .get_attribute(name)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let _ = live.set_attribute(name, &(now + by).to_string());
+}
+
+/// Apply one frame of the driver: the first is the view whole, the rest
+/// are patches, each applied where its address says.
+fn apply_frame(live: &Element, frame: &serde_json::Value) {
+    if let Some(error) = frame.get("error").and_then(|e| e.as_str()) {
+        let _ = live.set_attribute("data-error", error);
+        return;
+    }
+    if let Some(took) = frame.get("took_ms").and_then(|t| t.as_f64()) {
+        let _ = live.set_attribute("data-last-ms", &format!("{took:.2}"));
+    }
+    if frame.get("first").and_then(|f| f.as_bool()) == Some(true) {
+        live.set_inner_html(
+            frame
+                .get("html")
+                .and_then(|h| h.as_str())
+                .unwrap_or_default(),
+        );
+        bump(live, "data-frames", 1);
+        return;
+    }
+    let Some(patches) = frame.get("patches").and_then(|p| p.as_array()) else {
+        return;
+    };
+    let mut applied = 0;
+    for patch in patches {
+        if apply_patch(live, patch).is_some() {
+            applied += 1;
+        } else {
+            let _ = live.set_attribute("data-missed", &patch.to_string());
+        }
+    }
+    bump(live, "data-frames", 1);
+    bump(live, "data-patches", applied);
+}
+
+/// The instance an address names, from the live view's root.
+fn find(live: &Element, at: &serde_json::Value) -> Option<Element> {
+    let mut current = live.clone();
+    for step in at.as_array()? {
+        let slot = step.get(0)?.as_u64()?.to_string();
+        let key = step.get(1)?.as_str()?;
+        let children = current.children();
+        let mut next = None;
+        for index in 0..children.length() {
+            let child = children.item(index)?;
+            if child.get_attribute("data-ns").as_deref() == Some(slot.as_str())
+                && child.get_attribute("data-nk").as_deref() == Some(key)
+            {
+                next = Some(child);
+                break;
+            }
+        }
+        current = next?;
+    }
+    Some(current)
+}
+
+/// The comment that opens slot `marker` (`s2`, `t0`) of `element`.
+fn marker(element: &Element, marker: &str) -> Option<web_sys::Node> {
+    let nodes = element.child_nodes();
+    for index in 0..nodes.length() {
+        let node = nodes.item(index)?;
+        if node.node_type() == web_sys::Node::COMMENT_NODE
+            && node.node_value().as_deref() == Some(marker)
+        {
+            return Some(node);
+        }
+    }
+    None
+}
+
+fn apply_patch(live: &Element, patch: &serde_json::Value) -> Option<()> {
+    match patch.get("op")?.as_str()? {
+        "insert" => {
+            let parent = find(live, patch.get("parent")?)?;
+            let slot = patch.get("slot")?.as_u64()?;
+            let index = patch.get("index")?.as_u64()? as u32;
+            let html = patch.get("html")?.as_str()?;
+            let document = window()?.document()?;
+            let holder = document.create_element("div").ok()?;
+            holder.set_inner_html(html);
+            let element: web_sys::Node = holder.first_element_child()?.into();
+            // The instances already in the slot, in order.
+            let children = parent.children();
+            let mut siblings = Vec::new();
+            for at in 0..children.length() {
+                let child = children.item(at)?;
+                if child.get_attribute("data-ns").as_deref() == Some(slot.to_string().as_str()) {
+                    siblings.push(child);
+                }
+            }
+            if let Some(before) = siblings.get(index as usize) {
+                parent.insert_before(&element, Some(before)).ok()?;
+            } else if let Some(last) = siblings.last() {
+                parent
+                    .insert_before(&element, last.next_sibling().as_ref())
+                    .ok()?;
+            } else if let Some(open) = marker(&parent, &format!("s{slot}")) {
+                parent
+                    .insert_before(&element, open.next_sibling().as_ref())
+                    .ok()?;
+            } else {
+                parent.append_child(&element).ok()?;
+            }
+        }
+        "remove" => find(live, patch.get("at")?)?.remove(),
+        "text" => {
+            let element = find(live, patch.get("at")?)?;
+            let slot = patch.get("slot")?.as_u64()?;
+            let text = patch.get("text")?.as_str()?;
+            let open = marker(&element, &format!("t{slot}"))?;
+            match open.next_sibling() {
+                Some(node) if node.node_type() == web_sys::Node::TEXT_NODE => {
+                    node.set_node_value(Some(text));
+                }
+                next => {
+                    let node = window()?.document()?.create_text_node(text);
+                    element.insert_before(&node, next.as_ref()).ok()?;
+                }
+            }
+        }
+        "attribute" => {
+            let element = find(live, patch.get("at")?)?;
+            element
+                .set_attribute(patch.get("name")?.as_str()?, patch.get("value")?.as_str()?)
+                .ok()?;
+        }
+        _ => return None,
+    }
+    Some(())
+}
