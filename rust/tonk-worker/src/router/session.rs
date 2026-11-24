@@ -758,32 +758,71 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
             profile
         );
 
+        // Profile main taking over an account's content has no route table
+        // until the pull lands, so matching now would find nothing and keep
+        // the tab's previous stamp: a person who navigated during sign-in
+        // would land where they were, not where they went. The stamp waits
+        // for the branch instead, off this command, which the page does not
+        // await and would otherwise hold for the length of the pull.
+        if profile {
+            let (hydration, waits) = {
+                let tonk = self.state().read().await;
+                let waits = branch == tonk.active_branch && tonk.profile_hydration.in_progress();
+                (tonk.profile_hydration.clone(), waits)
+            };
+            if waits {
+                let state = self.state().clone();
+                crate::r#async::detach(async move {
+                    // Two navigations during the take-over both wait; the
+                    // later is where the person meant to go.
+                    if hydration.defer_load(&site).await {
+                        let tonk = state.read().await;
+                        stamp_load(&tonk, &site, client, repo, &branch, profile, &path).await;
+                    }
+                });
+                return;
+            }
+            hydration.overtake_load(&site);
+        }
         let tonk = self.state().read().await;
-        // In profile mode the origin carries no repo at all, but the stamp
-        // records a `profile:<name>` location token — and a nameless
-        // `profile:` is not a location. Fill the name from the worker's own
-        // profile, which is what the per-branch endpoint already stamps.
-        let repo = if profile {
-            tonk.profile_name.clone()
-        } else {
-            repo
-        };
-        // The command's `path` is already the route-relative path the tab
-        // routes (a nested `<tonk-site path={rest}>`), so it is both the
-        // recorded `path` and the `rest` matched against the route table.
-        stamp_site_on(
-            &tonk,
-            &site,
-            client,
-            &repo,
-            &branch,
-            profile,
-            &path,
-            &path,
-            String::new(),
-        )
-        .await;
+        stamp_load(&tonk, &site, client, repo, &branch, profile, &path).await;
     }
+}
+
+/// The stamp a [`Load`](tonk_schema::command::Load) asks for.
+async fn stamp_load(
+    tonk: &crate::worker::TonkState,
+    site: &str,
+    client: ClientId,
+    repo: String,
+    branch: &str,
+    profile: bool,
+    path: &str,
+) {
+    // In profile mode the origin carries no repo at all, but the stamp
+    // records a `profile:<name>` location token — and a nameless
+    // `profile:` is not a location. Fill the name from the worker's own
+    // profile, which is what the per-branch endpoint already stamps.
+    let repo = if profile {
+        tonk.profile_name.clone()
+    } else {
+        repo
+    };
+    // The command's `path` is already the route-relative path the tab
+    // routes (a nested `<tonk-site path={rest}>`), so it is both the
+    // recorded `path` and the `rest` matched against the route table.
+    stamp_site_on(
+        tonk,
+        site,
+        client,
+        &repo,
+        branch,
+        profile,
+        path,
+        path,
+        String::new(),
+    )
+    .await;
 }
 
 /// The existing dialog [`Replica`](dialog_repository::schema::Replica) entity for

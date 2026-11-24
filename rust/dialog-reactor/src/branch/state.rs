@@ -64,6 +64,27 @@ pub struct BranchState {
     /// not yet finished. A page asking whether to show an upgrade notice
     /// reads it.
     migrating: std::sync::atomic::AtomicBool,
+    /// How many [`DeliveryHold`]s are alive. While any is, [`Self::deliver`]
+    /// sends nothing: evaluations go on and queue in each connection's
+    /// reader, and the last hold to drop delivers them as one net change.
+    holds: std::sync::atomic::AtomicUsize,
+}
+
+/// Keeps a branch's connections from being sent frames while it lives
+/// ([`BranchState::hold_delivery`]). For a branch passing through states
+/// no reader should see, such as one whose content is withdrawn ahead of a
+/// pull that brings it back: dropping the hold delivers what queued
+/// meanwhile, and rows withdrawn and restored in that time cancel out.
+#[must_use = "delivery resumes as soon as the hold is dropped"]
+pub struct DeliveryHold(Arc<BranchState>);
+
+impl Drop for DeliveryHold {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        if self.0.holds.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.deliver();
+        }
+    }
 }
 
 impl BranchState {
@@ -78,7 +99,15 @@ impl BranchState {
             transactor: tokio::sync::Mutex::new(()),
             migration_claimed: std::sync::atomic::AtomicBool::new(false),
             migrating: std::sync::atomic::AtomicBool::new(false),
+            holds: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Hold every connection's frames until the returned hold, and any
+    /// other alive, drops. See [`DeliveryHold`].
+    pub fn hold_delivery(self: &Arc<Self>) -> DeliveryHold {
+        self.holds.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        DeliveryHold(Arc::clone(self))
     }
 
     /// Mark the one migration this branch runs while open as run.
@@ -287,6 +316,9 @@ impl BranchState {
     /// the order subscriptions were first read breaks ties. A connection
     /// whose client has dropped it, or stopped listening, is pruned.
     pub fn deliver(&self) {
+        if self.holds.load(std::sync::atomic::Ordering::Acquire) > 0 {
+            return;
+        }
         let mut listeners = self.listeners.lock();
         // Each listener's subscription, as the hash its connection reads
         // (a connection gone, or still waiting for its reader, has none).
