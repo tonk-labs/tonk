@@ -123,3 +123,19 @@ branch kept out of this one).
 
 **Decided.** Scope: writers on one machine, one replica. The remote head
 (H3, and BUG-350's swarm sync) is out of this topic.
+
+## 2026-11-24, Diagnosing: sync apart from writes
+
+**Asked.** Irakli: a separate process (not necessarily a daemon) could
+reconcile local changes with the remote, so not every local write is
+pushed at once and local writes do not wait on the remote.
+
+**Learned.** Today every committing eval pulls and pushes around its
+write, so sync sits on the local write path; taking it off is within the
+local scope even though the remote's contention is not. The syncer still
+writes the local head when it adopts remote changes, so it is one more
+local writer and needs whatever local writers get. tonk-agent-peer's owner
+already syncs on its own every 5 s.
+
+**Decided.** Not decided. Candidate for the direction matrix: sync off the
+write path, in a process of its own.
