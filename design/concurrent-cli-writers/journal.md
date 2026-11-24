@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | Scope: one machine's writers only, or the remote head too. Whether agents reach saturation. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Chronicle against the block store on the same races. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -108,3 +108,18 @@ browser's.
 **Decided.** Keeping caches warm across CLI commands is an objective of its
 own (Irakli). This topic still decides how concurrent writes are handled;
 warm caches are one input to it, not the answer to it by default.
+
+## 2026-11-24, Diagnosing: scope, and Chronicle as a second backend
+
+**Asked.** Scope? Irakli: the local problem now; the remote one later and
+separately, likely with work on the remote target itself. Irakli: measure
+the same races on dialog-chronicle, which handles writers differently from
+the block store and may argue against a daemon.
+
+**Learned.** At tonk's pinned dialog, Chronicle waits on its file's turn
+lock and reports a moved head as a version mismatch. Tonk can run on it by
+swapping the one storage type (`experiment/chronicle-space`, a worktree
+branch kept out of this one).
+
+**Decided.** Scope: writers on one machine, one replica. The remote head
+(H3, and BUG-350's swarm sync) is out of this topic.
