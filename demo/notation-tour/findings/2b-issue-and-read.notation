@@ -1,0 +1,9 @@
+(assert (todo/complete todo: todo:milk))
+
+(select (todo todo:milk title: ?title state: ?state list: ?l))
+
+(select (tour.todo todo:milk title: ?title))
+
+(select (tour.todo todo:milk state: ?state))
+
+(select (tour.todo todo:milk list: ?list))

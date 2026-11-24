@@ -1,0 +1,13 @@
+(concept (estimate ?t hours: ?h)
+  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))
+
+(assert (estimate todo:milk hours: 1))
+(assert (estimate todo:mum hours: 1))
+(assert (estimate todo:deck hours: 3))
+(assert (estimate todo:seeds hours: 2))
+
+(select (tour.morning ?a with: ?b total: (+ ?p : ?q))
+  (estimate ?a hours: ?p)
+  (estimate ?b hours: ?q)
+  (< ?p : ?q)
+  (<= (+ ?p : ?q) : 4))
