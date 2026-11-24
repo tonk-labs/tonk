@@ -32,145 +32,89 @@
           -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
 ```
 
-Tonk is a data substrate: a software environment as easy to change as it is to use. Where stacks are rigid and vertically integrated, substrates are malleable and horizontally connected. You modify software in the context of its use, not through a separate process. In a substrate, software truly becomes yours.
+Tonk is a system for co-computing over live data in a programmable environment.
+People and programs share a **space** through links that grant capabilities
+such as reading or writing. A space holds its data, the schemas that describe
+it, the views that show and edit it, its rules, and a signed history of changes.
+Local copies can work offline and sync when they reconnect.
 
-Substrates are essential when LLMs make code generation abundant and personal software becomes practical. We won't get there by speeding up the same engineering-heavy processes of traditional software practice. We need a new surface; one interoperable and owned by the person running it. Tonk is that surface.
+## Typical uses
 
-## Dialog DB: The Foundation
+- Automate workflows with state machines that agents run and people operate through views.
+- Reuse a workflow as a template with different credentials.
+- Build internal tools that agents and teammates use together.
+- Share an application with a small group through a link.
+- Coordinate multiple agents through shared tasks and messages.
+- Run applications on remote devices that work offline and sync later.
 
-At the core of Tonk is [Dialog DB](https://github.com/dialog-db/dialog-db), an embeddable, local-first database. Dialog stores everything as claims — semantic triples of (entity, attribute, value). Claims are never deleted, only superseded or retracted. This append-only, content-addressed design makes it straightforward to sync data across devices and collaborators without conflicts.
+## Web
 
-The primary interface is claims themselves — assert data, query it, retract it. On top of that, you can optionally define:
+[Open Tonk](https://tonk.network) to create a space or open one someone has
+shared with you.
 
-- **Concepts** to group related claims into queryable structures. Define a `Person` with a name, location, and photo. Then create a `ClubMember` concept that reuses name and photo but leaves out location — multiple views over the same data.
-- **Rules** to derive new concepts from existing claims. "A `FamilyMember` is any `Person` whose last name matches another and who shares the same home location."
+## MCP
 
-Add new rules, concepts, or extend existing ones as your needs evolve. No migrations required.
+Connect an agent to `https://tonk.network/mcp`. Sign in to Tonk and choose
+which spaces the agent can read or write. For example, an agent with write
+access can update a task that teammates see on their board.
+[Add Tonk to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tonk&connectorUrl=https%3A%2F%2Ftonk.network%2Fmcp)
+or follow the [MCP setup guide](https://tonk-labs.github.io/docs/mcp.html).
 
-Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
+## Desktop
 
-## Download Tonk Desktop
+Tonk Desktop is a native macOS workspace for spaces and agents.
+[Download Tonk Nightly for Apple Silicon](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip)
+(macOS 15+), unzip it and move **Tonk Nightly.app** to **Applications**.
+Nightly connects to `tonk.foundation` by default.
 
-For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk Nightly.app**
-to **Applications**.
+## CLI
 
-| Channel | Download | Published from |
-| --- | --- | --- |
-| Nightly | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
-
-Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
-`tonk.foundation` by default. The stable app, **Tonk** (`xyz.tonk`), uses
-`tonk.network`; it is not published until Desktop ships to production. The two
-have separate identities and local data, so they can be installed side by side.
-Builds are Developer ID signed and notarized, and include
-`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
-version, channel and source commit. Downloads are manual.
-
-## The `tonk` CLI
-
-`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk show`, `tonk concept`, `tonk view`) and built-in guides (`tonk help -g`, e.g. `tonk help notation`).
-
-### Install
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
-```
-
-This detects your platform, verifies the download against the release checksums, and installs the `tonk` binary to `/usr/local/bin` (or `~/.local/bin` if that is not writable). Apple Silicon macOS and x86_64 Linux are published. If `tonk` isn't found afterward, the install location isn't on your `PATH` — add it, e.g. `export PATH="$HOME/.local/bin:$PATH"`. Set `TONK_INSTALL_DIR` to install elsewhere.
-
-To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
-```
-
-To follow the latest build of `main`, set `TONK_CHANNEL=dev`. It moves with every merge, so it can read and write whatever `main` does:
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
-```
-
-You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. Newly published macOS binaries are Developer ID signed and notarized by Apple.
-
-### Update
-
-```sh
-tonk update
-```
-
-This upgrades an install made by the install script on its recorded
-channel. A default install follows the stable GitHub release; an install
-made with `TONK_CHANNEL=staging` follows the rolling staging release, and
-one made with `TONK_CHANNEL=dev` the rolling build of `main`. It
-verifies the download against the release checksums, checks the new
-binary runs, and only then replaces the old one — so a failed update
-leaves your working `tonk` untouched. On macOS it preserves the published
-Developer ID signature while replacing the executable.
-
-`tonk` checks for new releases once a day and prints a one-line notice
-on stderr when one exists. Turn that off with `tonk update
---disable-check` (or `TONK_NO_UPDATE_CHECK=1`), and back on with `tonk
-update --enable-check`. It never runs in CI.
-
-Check what you have with `tonk --version`. `tonk update` and the daily
-release check follow the channel in the matching install receipt; the
-ambient `TONK_CHANNEL` value does not switch an existing binary. Rerun
-the installer with or without `TONK_CHANNEL=staging` (or `dev`) to deliberately
-switch that installation's channel.
-
-If `tonk` was installed some other way, `tonk update` says so instead
-of interfering: use `npm i -g @tonk/cli` for a stable npm install,
-`npm i -g @tonk/cli@next` for a prerelease npm install, or your flake for
-a nix one. Re-running the install command also still works:
+The `tonk` CLI reads and writes space data from the terminal. Install it on
+Apple Silicon macOS or x86_64 Linux, then run `tonk help tutorial` for a walkthrough.
 
 ```sh
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
 ```
 
-### Quick start
+Create a local space in a fresh working directory, then write and query a task.
 
 ```sh
-tonk space new garden      # register a space and select it
-tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
-tonk show                  # the schema: concepts and their fields
-tonk help notation         # built-in asserted-notation reference
+tonk space new garden
+tonk concept add task --field title:text:one --description "A task to do"
+tonk eval -c 'task!: {title: Water the garden}'
+tonk query task
 ```
 
-# What's in This Repo
-
-This is a Rust workspace where we are implementing our early experimentations on the Tonk substrate.
-
-> ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try it, the [`tonk` CLI](#the-tonk-cli) is the easiest entry point.
-
-### Rust Crates
-
-| Crate                   | Purpose                                                                                             |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| **tonk-space**          | Core space primitives: operators, delegation, ownership, storage                                    |
-| **tonk-common**         | Cross-platform utilities (logging, etc.)                                                            |
-| **tonk-blobs**          | Content-addressed blob storage (filesystem + IndexedDB)                                             |
-| **tonk-access-service** | Cloudflare Worker that authorizes S3/R2 access via UCAN                                             |
-| **tonk-ui**             | Leptos-based web frontend                                                                           |
-| **tonk-worker**         | Browser service worker (WASM) for offline web support                                               |
-| **tonk-core**           | Core library (in progress)                                                                          |
-
-# Adjacent Projects
-
-Tonk is pluralist by design and built to work alongside other protocols building on open technology. We think that is the best way to accomplish our mission. Here are some projects that are adjacent to us and think you should check out.
-
-- [Ink and Switch](https://www.inkandswitch.com/)
-- [Automerge](https://automerge.org/)
-- [Common Tools](https://common.tools/)
-- [Iroh](https://www.iroh.computer/)
-
-If you are a friend or adjacent project and would like to be listed here, please reach out!
-
-# Resources
+## Resources
 
 - [Website](https://tonk.xyz)
-- [Roadmap](https://tonk.xyz/roadmap)
+- [Updates](https://tonk.xyz/updates)
+- [Defining the common primitive](https://tonk.xyz/updates/defining-the-common-primitive)
 - [Discord](https://discord.com/invite/hBPQ9xPWF7)
+- For agents only: [Tonk guide](https://tonk.network/guide/) and [llms.txt](https://tonk.xyz/llms.txt).
 
 ## License
 
-MIT © Tonk Labs
+[MIT](LICENSE) © Tonk Labs
+
+## Development
+
+From the repository root, use [Nix](https://nixos.org/download/) with flakes
+enabled to start the web app and its local access service.
+
+```sh
+ACCESS_STATE_DIR="$PWD/.tonk-dev/access" nix develop . -c dev:web
+```
+
+Open [localhost:8080](http://localhost:8080). The state directory preserves the
+local service's identity and data between runs.
+
+```sh
+nix develop . -c test:native:debug
+nix develop . -c test:web:debug
+nix develop . -c lint
+```
+
+Run `nix develop` for the full command list. See the
+[architecture and crate map](ARCHITECTURE.md) for the implementation and the
+[desktop build instructions](desktop/README.md#build) for macOS development.

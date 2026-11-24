@@ -2,7 +2,7 @@
 //! it owns.
 
 use ::axum::{Json, extract::State};
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use dialog_query::{Output as _, Query, Term};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};

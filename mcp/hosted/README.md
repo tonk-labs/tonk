@@ -1,11 +1,11 @@
-> The deployed `/mcp` executable now uses [agent links](../AGENT-LINKS.md),
-> replacing OAuth. The account/OAuth modules described below remain optional
-> adapters and are not the deployed entrypoint. See the agent-link guide for
-> current setup, storage limits and recovery.
+# Node MCP host
 
-# Hosted MCP service
+[`server.mjs`](server.mjs) serves the [agent-link endpoint](../AGENT-LINKS.md).
+The provider’s OAuth endpoint runs in the [Rust worker](../../rust/tonk-host-worker).
 
-This host composes the general [Tonk MCP core](../README.md) with OAuth and an
+## Optional account adapter
+
+[`service.mjs`](service.mjs) composes the general [Tonk MCP core](../README.md) with OAuth and an
 embedded Tonk frontend. It exposes four core/account tools and negotiates optional `tonk_open_space` for
 MCP Apps-capable clients. See the [tested compatibility matrix](COMPATIBILITY.md).
 Queries and evaluations use the ordinary native worker; there is no separate

@@ -48,7 +48,7 @@ claude
    `$PREVIEW/authorize`, which hands off to `/settings/agent`.
 2. Sign in with the passkey. Create or pick the agent, select the space and an
    access level (read, or read and write), and approve. The browser returns to
-   Claude Code's callback and `/mcp` shows the server connected with 4 tools.
+   Claude Code's callback and `/mcp` shows the server connected.
 3. Ask: "List my Tonk spaces." Expect `tonk_list_spaces` to return the agent
    space marked `home: true` and the granted space with its name and access level.
 4. Ask: "In <space>, list the concepts." Expect `tonk_query` with that space

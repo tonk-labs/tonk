@@ -1,5 +1,10 @@
 # Space lifecycle and collaboration
 
+> **Out of date:** the `tonk account` commands (`login`, `logout`, `status`,
+> `sync`, `devices`, `space`) and `tonk link` were removed from the CLI
+> (#982, #1025). Journeys below that use them describe the old flow. For the
+> current CLI, run `tonk help -g`.
+
 ## Summary
 
 A space starts as a local repository registration, an account-owned hosted
@@ -76,7 +81,7 @@ reuses the same ID and original grant. The mail transport uses a stable
 idempotency key with bounded attempts and cooldown. Sending creates no contact
 with a placeholder key.
 
-The emailed page offers **Create Account or Sign In**, using the existing passkey
+The emailed page offers **create account or sign in**, using the existing passkey
 and email-confirmation ceremony. Signup returns to the exact local invitation
 route, including after profile reload. **Join Space** requires the account whose
 confirmed email matches the invitation; a forwarded locator and an unconfirmed

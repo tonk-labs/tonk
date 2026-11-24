@@ -302,8 +302,7 @@ pub(crate) async fn admit_member(
 /// exactly the named member, covers exactly this space, and is
 /// unattenuated — a same-shaped fact from anywhere else cannot forge
 /// that signature. Unparseable fields fail the command.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
     for crate::router::CommandEnv
 {
@@ -343,8 +342,7 @@ impl dialog_capability::Provider<tonk_schema::command::PromoteMember>
 /// transient committed on — so a space can only expel from itself; the
 /// revocation is further gated by the access service refusing one not
 /// minted under a `/` chain.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ExpelMember> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ExpelMember) -> Outcome {
         use tonk_schema::prelude::DidExt as _;

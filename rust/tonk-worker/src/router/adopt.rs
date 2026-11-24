@@ -190,7 +190,7 @@ async fn mount_and_record(
 ) -> Result<(), crate::TonkWorkerError> {
     super::join::mount_replica_with_configuration(tonk, subject, configuration).await?;
     pull_content_on_mount(tonk, subject).await;
-    super::repository::record_initialized_replica_in_profile(tonk, subject)
+    super::repository::record_adopted_replica_in_profile(tonk, subject)
         .await
         .map_err(|error| {
             crate::TonkWorkerError::Internal(format!("record adopted space '{subject}': {error}"))
@@ -219,7 +219,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
         .reactor
         .repository(key)
         .branch(super::repository::CONTENT_BRANCH)
-        .pull()
+        .pull(dialog_repository::Download::MinimalRanges)
         .perform(&tonk.operator)
         .await
     {
@@ -239,8 +239,7 @@ async fn pull_content_on_mount(tonk: &TonkState, subject: &dialog_varsig::Did) {
 ///
 /// Target-agnostic: every host that can mount a space can run this, and
 /// the mount itself is already portable.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ReplicateSpace>
     for crate::router::CommandEnv
 {
@@ -333,7 +332,7 @@ impl SeedUpgrades {
 /// worker to try again. On wasm the task is not tied to the fetch
 /// lifetime, so an idling worker may cut it short — the same next-boot
 /// retry covers that. Native (the single-threaded test and host builds,
-/// same as `spawn_dispatch`) runs it inline instead.
+/// same as `run_commands_detached`) runs it inline instead.
 pub(crate) async fn schedule_seed_upgrade(
     tonk: &TonkState,
     state: crate::router::AppState,
@@ -745,7 +744,9 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        super::super::repository::record_created_space_mount(&tonk, &subject, &configuration, None)
+            .await
+            .unwrap();
 
         // Whether this attempt succeeds or fails is not the point; that
         // no marker survives it is.
@@ -866,9 +867,10 @@ mod tests {
             .acquire(&tonk.operator)
             .await
             .unwrap();
+        let stack = stale.stack().perform(&tonk.operator).await.unwrap();
         cached.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(stale)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(stale, stack)),
         );
         assert!(
             !mounted_configuration_is_current(&tonk, &key, &repository, &configuration)
@@ -1022,9 +1024,10 @@ mod tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
+        let stack = unrelated.stack().perform(&tonk.operator).await.unwrap();
         repo.branches().write().insert(
             "main".into(),
-            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated)),
+            std::sync::Arc::new(dialog_reactor::BranchState::new(unrelated, stack)),
         );
         assert!(!entry.valid(&tonk, &key));
     }
@@ -1073,10 +1076,9 @@ mod tests {
             .unwrap();
         let tonk = state.read().await;
         assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
-        // Re-run the existing adoption path, including its storage/authority
-        // outcome, rather than returning the removed replica's old receipt.
+        // Reopening the old URL must not remount from orphaned configuration.
         let before = tonk.admission.observations.counts();
-        let _lookup = ensure_space_mounted(&tonk, &key).await;
+        assert!(!ensure_space_mounted(&tonk, &key).await.unwrap());
         assert!(tonk.admission.observations.counts().0 > before.0);
         assert!(!tonk.admission.entry(&key).valid(&tonk, &key));
         let other = crate::router::tests::test_state().await;
@@ -1254,7 +1256,9 @@ mod tests {
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(&tonk, &subject, &configuration, None).await;
+        super::super::repository::record_created_space_mount(&tonk, &subject, &configuration, None)
+            .await
+            .unwrap();
         let (entered, release) = pause_next(&tonk, key);
         let leader = async {
             assert!(ensure_space_mounted(&tonk, key).await.unwrap());
@@ -1381,13 +1385,14 @@ mod tests {
             !ensure_space_mounted(&tonk, subject.as_str()).await.unwrap(),
             "an absent record must not become a negative cache entry",
         );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
@@ -1444,13 +1449,14 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
@@ -1508,13 +1514,14 @@ mod tests {
                 "main",
                 super::super::repository::BranchConfiguration::default().upstream("origin", "main"),
             );
-        super::super::repository::record_space_mount(
+        super::super::repository::record_created_space_mount(
             &tonk,
             &subject,
             &configuration,
             Some("Foreign Space"),
         )
-        .await;
+        .await
+        .unwrap();
         assert!(
             !super::super::join::find_replica_for_subject(&tonk, &subject)
                 .await
@@ -1652,7 +1659,7 @@ mod tests {
     /// must still restore the upstream and enter the sync sweep.
     #[dialog_common::test]
     async fn it_recovers_a_mounted_space_from_old_directory_branch_facts() {
-        use dialog_artifacts::Entity;
+        use dialog_corpus::Entity;
         use dialog_repository::SiteAddress;
         use tonk_schema::domain::branch::{Name, Origin, Upstream};
         use tonk_schema::domain::remote::Address;

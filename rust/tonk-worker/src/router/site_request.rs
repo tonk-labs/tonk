@@ -10,7 +10,7 @@
 //! presses the matching control. Overlay facts, so nothing is stored; they
 //! go when the tab navigates or closes, with the rest of its site.
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use tonk_common::log;
 use tonk_schema::invocation::{Done, Failure, Outcome};
 
@@ -37,7 +37,7 @@ async fn ask(env: &CommandEnv, request: &str, time: f64) -> Outcome {
             the: format!("xyz.tonk.site/{name}").parse().ok()?,
             of: site.clone(),
             is,
-            policy: dialog_artifacts::Pick::Last,
+            policy: dialog_corpus::Pick::Last,
         })
     };
     let (Some(request_claim), Some(time_claim)) = (
@@ -68,40 +68,35 @@ async fn ask(env: &CommandEnv, request: &str, time: f64) -> Outcome {
     Done::with(site)
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddAccount> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::AddAccount) -> Outcome {
         ask(self, "account", command.time.0).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ShareLink> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ShareLink) -> Outcome {
         ask(self, "share", command.time.0).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ViewMembers> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ViewMembers) -> Outcome {
         ask(self, "members", command.time.0).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ConnectAgent> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ConnectAgent) -> Outcome {
         ask(self, "agent", command.time.0).await
     }
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ConnectSpace> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::ConnectSpace) -> Outcome {
         ask(self, "connect", command.time.0).await
@@ -111,8 +106,7 @@ impl dialog_capability::Provider<tonk_schema::command::ConnectSpace> for Command
 /// Not one of the bar's controls: the introspection overlay in the frame
 /// whose site this is answers it, and relays a pick to the frames inside,
 /// so the frame that holds the displays is the one that opens.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Inspect> for CommandEnv {
     async fn execute(&self, command: tonk_schema::command::Inspect) -> Outcome {
         ask(self, "inspect", command.time.0).await

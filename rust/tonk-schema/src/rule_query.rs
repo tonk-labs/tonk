@@ -10,7 +10,7 @@
 //! `concept.rs` and `builtin.rs` import these — `rule:` is a
 //! queryable concept dispatched through `concept::QueryPlan`.
 
-use dialog_artifacts::{Entity, Value};
+use dialog_corpus::{Entity, Value};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::{
@@ -265,10 +265,10 @@ pub fn rule_of_rule_descriptor() -> &'static ConceptDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_query::artifact::{Entity as ArtifactsEntity, Type};
     use dialog_query::attribute::{AttributeDescriptor, Cardinality};
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use dialog_query::concept::query::ConceptQuery;
+    use dialog_query::corpus::{Entity as ArtifactsEntity, Type};
     use dialog_query::formula::Formula;
     use dialog_query::formula::math::Sum;
     use dialog_query::parameters::Parameters;

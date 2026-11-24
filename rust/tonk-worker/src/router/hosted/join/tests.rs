@@ -182,9 +182,55 @@ async fn a_link_that_is_not_one_is_refused_before_any_fetch() {
         "ftp://tonk.example/space/x",
         "http://tonk.example/space/x",
     ] {
-        let refused = read_link(link).await.unwrap_err();
+        let refused = read_link(link, None).await.unwrap_err();
         assert!(!refused.contains(link) || link.is_empty(), "{refused}");
     }
+}
+
+/// A `/@/` shortcut on a host that is not Tonk's is refused before it is
+/// fetched, so a pasted link cannot make this service request any URL.
+/// `example.invalid` cannot resolve: if it were fetched, the refusal would
+/// be the fetch failure's, not this one.
+#[dialog_common::test]
+async fn a_shortcut_on_another_host_is_refused_before_any_fetch() {
+    for (link, origin) in [
+        ("https://example.invalid/@/abc#seed", None),
+        (
+            "https://example.invalid/@/abc#seed",
+            Some("https://tonk.network"),
+        ),
+        ("https://tonk.network.example.invalid/@/abc#seed", None),
+        ("https://tonk.network:8443/@/abc#seed", None),
+        ("http://localhost:9/@/abc#seed", None),
+        (
+            "http://localhost:9/@/abc#seed",
+            Some("http://localhost:8787"),
+        ),
+    ] {
+        let refused = read_link(link, origin).await.unwrap_err();
+        assert_eq!(refused, "That is not a Tonk invite link.", "{link}");
+    }
+}
+
+#[dialog_common::test]
+fn shortcuts_expand_only_on_tonk_origins_and_the_served_one() {
+    let url = |link: &str| url::Url::parse(link).unwrap();
+    assert!(shortcut_origin(&url("https://tonk.network/@/a#s"), None));
+    assert!(shortcut_origin(&url("https://tonk.foundation/@/a#s"), None));
+    assert!(shortcut_origin(
+        &url("http://localhost:8787/@/a#s"),
+        Some("http://localhost:8787/")
+    ));
+    assert!(shortcut_origin(
+        &url("https://staging.tonk.example/@/a#s"),
+        Some("https://staging.tonk.example")
+    ));
+    assert!(!shortcut_origin(&url("http://tonk.network/@/a#s"), None));
+    assert!(!shortcut_origin(&url("https://evil.example/@/a#s"), None));
+    assert!(!shortcut_origin(
+        &url("https://evil.example/@/a#s"),
+        Some("https://tonk.network")
+    ));
 }
 
 #[dialog_common::test]
@@ -196,8 +242,52 @@ fn the_join_tool_is_the_models_and_the_accept_tool_the_cards() {
     let accept = tools.iter().find(|tool| tool["name"] == ACCEPT).unwrap();
     assert_eq!(accept["_meta"]["ui"]["visibility"], json!(["app"]));
     assert_eq!(accept["_meta"]["openai/visibility"], "private");
-    let card = read_resource(CARD_URI).unwrap();
+    assert_eq!(accept["annotations"]["readOnlyHint"], false);
+    assert_eq!(accept["annotations"]["destructiveHint"], false);
+    let card = read_resource(CARD_URI, "https://tonk.example").unwrap();
     let text = card["contents"][0]["text"].as_str().unwrap();
     assert!(text.contains(ACCEPT), "the card calls the accept tool");
-    assert!(read_resource("ui://tonk/other").is_none());
+    assert!(read_resource("ui://tonk/other", "https://tonk.example").is_none());
+}
+
+#[dialog_common::test]
+fn it_wears_the_in_agent_stylesheet_and_loads_only_fonts() {
+    let card = read_resource(CARD_URI, "https://tonk.example/").unwrap();
+    let content = &card["contents"][0];
+    let text = content["text"].as_str().unwrap();
+    assert!(!text.contains(super::super::in_agent::MARK));
+    assert!(
+        text.contains("--tonk-text:"),
+        "the shared tokens are inlined"
+    );
+    assert!(text.contains("https://tonk.example/in-agent/fonts/"));
+    assert_eq!(content["_meta"]["ui"]["csp"]["connectDomains"], json!([]));
+    assert_eq!(
+        content["_meta"]["ui"]["csp"]["resourceDomains"],
+        json!(["https://tonk.example"])
+    );
+    assert_eq!(
+        content["_meta"]["openai/widgetCSP"]["resource_domains"],
+        json!(["https://tonk.example"])
+    );
+}
+
+#[dialog_common::test]
+fn it_names_each_disc_and_draws_no_spinner() {
+    let text = CARD;
+    for state in ["saving", "broken"] {
+        assert!(
+            !text.contains(&format!("data-state=\"{state}\"")),
+            "a disc is drawn {state}"
+        );
+    }
+    assert!(!text.contains("@keyframes"), "the card animates a spinner");
+    for disc in text.split("class=\"tonk-disc\"").skip(1) {
+        let tag = disc.split_once('>').unwrap().0;
+        assert!(
+            tag.contains("role=\"img\""),
+            "a disc is not an image: {tag}"
+        );
+        assert!(tag.contains("aria-label="), "a disc is not named: {tag}");
+    }
 }

@@ -30,13 +30,19 @@
   self.__open = self.__open || new Set();
   const one = (the, as) => ({ the, as, cardinality: 'one' });
   self.__one = one;
+  const field = (name, as, optional) => ({
+    the: `xyz.tonk.invocation/${name}`, as, cardinality: 'one', in: 'session:', ...(optional ? { optional: true } : {}) });
+  const optional = [['answered', 'Entity'], ['failed', 'Text'], ['unhandled', 'Boolean'],
+    ['state', 'Entity'], ['output', 'Entity']];
   self.__reader = window.tonk.subscribe({
     predicate: { with: {
-      case: one('xyz.tonk.invocation/case', 'Entity'),
-      started: one('xyz.tonk.invocation/started', 'Float'),
+      invoked: field('invoked', 'Float'),
+      of: field('of', 'Entity'),
+      ...Object.fromEntries(optional.map(([name, as]) => [name, field(name, as, true)])),
     } },
-    terms: { this: { '?': { name: 'this' } }, case: { '?': { name: 'case' } },
-      started: { '?': { name: 'started' } } },
+    terms: { this: { '?': { name: 'this' } }, invoked: { '?': { name: 'invoked' } },
+      of: { '?': { name: 'of' } },
+      ...Object.fromEntries(optional.map(([name]) => [name, { '?': { name } }])) },
   }, { with: branch }).getReader();
   const reader = self.__reader;
   (async () => {

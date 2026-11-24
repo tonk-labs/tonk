@@ -87,6 +87,8 @@ and this contract are delivered together on base `90ba1f90d`.
 
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
+| `log [CONCEPT [ENTITY]] [--revision VERSION]` | `DATA-13` | Revision/change lists; limit; JSON; missing concept or revision; empty history. |
+| `restore --revision VERSION`, `branch`, `switch NAME` | `DATA-13` | Exact retained snapshot; dry-run; no-op; missing snapshot/branch; local checkout without upstream; persistent active branch. |
 | `concept`, `concept --json`, `concept add` | `DATA-01` | Empty/list, typed fields/cardinality, optional description, notation, write modifiers. |
 | `view`, `view --json`, `view add` | `DATA-02` | Detail/directory/label/title, inline/file template, explicit/default anchor and derived entity, entity-like anchor rejection, home, notation, write modifiers. |
 | `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |

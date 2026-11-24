@@ -406,6 +406,17 @@ describe("exact fetch routing", () => {
     assert.equal(await (await landing.response()).text(), "TOOL INSTRUCTIONS");
   });
 
+  test("lets a controlled iframe load the provider's view-frame document", async () => {
+    const { self } = withGlobals();
+    self.clients.get = async () => ({ frameType: "nested" });
+    await loadWith({ wasmHash: "dev" });
+    const request = fetchEvent({
+      method: "GET", mode: "navigate", url: "https://tonk.test/view-frame",
+    }, "controlled-frame");
+    self.onfetch(request.event);
+    assert.equal(request.response(), undefined, "browser should fetch the frame from the provider");
+  });
+
   test("development tool landing uses the server without a stamped manifest", async () => {
     const { self } = withGlobals({
       fetchImpl: async () => new Response("DEV TOOL INSTRUCTIONS"),
@@ -2294,6 +2305,114 @@ describe("session overlay handoff", () => {
     candidateListeners.get("statechange")();
     await turns(20);
     assert.equal(await handoff.match(PENDING), undefined, "a failed successor withdraws it");
+  });
+
+  /** An exclusive Web Lock manager, shared by every worker of an origin. */
+  function fakeLocks() {
+    const held = new Map();
+    return {
+      async request(name, callback) {
+        while (held.has(name)) await held.get(name);
+        let free;
+        held.set(name, new Promise((resolve) => { free = resolve; }));
+        try {
+          return await callback();
+        } finally {
+          held.delete(name);
+          free();
+        }
+      },
+    };
+  }
+
+  test("with Web Locks, activation waits for the predecessor however long it takes", async () => {
+    const { self, caches } = withGlobals();
+    const locks = fakeLocks();
+    self.navigator = { locks };
+    await loadWith({});
+    // The predecessor holds the lock across a retirement slower than the
+    // polling fallback's bound, as one queued behind a state writer is.
+    let release;
+    const holding = new Promise((resolve) => {
+      locks.request("tonk-overlay-handoff", () => {
+        resolve();
+        return new Promise((done) => { release = done; });
+      });
+    });
+    await holding;
+    const handoff = await caches.open(CACHE);
+    await handoff.put(PENDING, new Response("announced"));
+
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(1_500);
+    assert.equal(done(), false, "activation must wait for the predecessor's lock, not a clock");
+
+    await handoff.put(SNAPSHOT, new Response(new Uint8Array([1])));
+    release();
+    await Promise.all(pending);
+    assert.equal(await handoff.match(PENDING), undefined, "the announcement is consumed");
+    assert.ok(await handoff.match(SNAPSHOT), "the snapshot is left for the Rust worker to take");
+  });
+
+  test("with Web Locks, an announcement no live predecessor holds does not wait", async () => {
+    const { self, caches } = withGlobals();
+    self.navigator = { locks: fakeLocks() };
+    await loadWith({});
+    await (await caches.open(CACHE)).put(PENDING, new Response("announced"));
+    const pending = [];
+    self.onactivate({ waitUntil: (promise) => pending.push(promise) });
+    const done = settled(pending);
+    await turns(50);
+    assert.equal(done(), true, "a predecessor that died released its lock");
+  });
+
+  test("the incumbent holds the lock from its announcement until its snapshot is written", async () => {
+    const listeners = new Map();
+    const candidateListeners = new Map();
+    const candidate = {
+      state: "installing",
+      addEventListener: (type, fn) => candidateListeners.set(type, fn),
+      removeEventListener: () => {},
+    };
+    const registration = {
+      active: null,
+      waiting: null,
+      installing: null,
+      addEventListener: (type, fn) => listeners.set(type, fn),
+    };
+    const { self, caches } = withGlobals({
+      registration,
+      fetchImpl: async () => new Response(new Uint8Array([0])),
+    });
+    const locks = fakeLocks();
+    self.navigator = { locks };
+    registration.active = self.serviceWorker;
+    // Retirement writes the snapshot well after the old polling bound.
+    await loadWith({
+      wasmHash: "dev",
+      activateSource: `async () => ({
+        onupdatefound: async () => {
+          await new Promise(resolve => setTimeout(resolve, 1_200));
+          await (await caches.open("${CACHE}")).put("${SNAPSHOT}", new Response("snapshot"));
+        },
+      })`,
+    });
+
+    registration.installing = candidate;
+    listeners.get("updatefound")();
+    await turns(20);
+    const handoff = await caches.open(CACHE);
+    assert.ok(await handoff.match(PENDING), "the incumbent announces the handoff");
+
+    candidate.state = "installed";
+    candidateListeners.get("statechange")();
+    let snapshotWhenGranted = "not granted";
+    await locks.request("tonk-overlay-handoff", async () => {
+      snapshotWhenGranted = await (await handoff.match(SNAPSHOT))?.text();
+    });
+    assert.equal(snapshotWhenGranted, "snapshot", "the lock frees only once the snapshot is written");
   });
 });
 

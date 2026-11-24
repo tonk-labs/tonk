@@ -17,14 +17,16 @@ use crate::tracking_branch::LegacyTrackingBranch;
 use crate::{
     Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
 };
-use dialog_artifacts::{Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
+use dialog_corpus::{Entity, Preload, Speculation};
+use dialog_effects::archive::Load as ArchiveLoad;
 use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::{Attest, Identify};
+use dialog_effects::blob::Load as BlobLoad;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::{EvaluationError, Output as _, Query, Term};
-use dialog_repository::{Branch, CommitError, Hydrate, RemoteSite, SiteAddress};
+use dialog_repository::{Branch, CommitError, RemoteSite, SiteAddress};
 use dialog_varsig::Did;
 
 /// One directory row, as the Hub and the CLI list it.
@@ -113,7 +115,12 @@ where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -123,40 +130,45 @@ where
 {
     let anchor_entity = subject.this();
     let anchor = DirectoryAnchor(anchor_entity.clone());
-    let mut transaction = account
-        .transaction()
-        .assert(Space::new(subject, Replica::initialized_status()));
-    if let Some(name) = name {
-        transaction = transaction.assert(SpaceName::new(subject, name));
-    }
-    let mut remote_concepts: std::collections::HashMap<String, Remote> =
-        std::collections::HashMap::new();
-    for remote in &record.remotes {
-        let concept = Remote::at(
-            &anchor_entity,
-            remote.subject.clone(),
-            RemoteAddress::encode(&remote.address),
-            remote.name.as_str(),
-        );
-        transaction = transaction.assert(concept.clone());
-        if let Some(revocation) = &remote.revocation {
-            transaction = transaction.assert(RemoteExecution::new(&concept, revocation.as_str()));
-        }
-        remote_concepts.insert(remote.name.clone(), concept);
-    }
-    for branch in &record.branches {
-        let local = BranchConcept::new(&anchor, branch.name.as_str());
-        transaction = transaction.assert(local.clone());
-        if let Some((remote_name, upstream_branch)) = &branch.upstream
-            && let Some(remote_concept) = remote_concepts.get(remote_name)
-        {
-            let upstream = BranchConcept::new(remote_concept, upstream_branch.as_str());
-            transaction = transaction
-                .assert(upstream.clone())
-                .assert(TrackingBranch::new(&local, &upstream));
-        }
-    }
-    transaction.commit().publish().perform(env).await?;
+    account
+        .transact(|transaction| {
+            let mut transaction =
+                transaction.assert(Space::new(subject, Replica::initialized_status()));
+            if let Some(name) = name {
+                transaction = transaction.assert(SpaceName::new(subject, name));
+            }
+            let mut remote_concepts: std::collections::HashMap<String, Remote> =
+                std::collections::HashMap::new();
+            for remote in &record.remotes {
+                let concept = Remote::at(
+                    &anchor_entity,
+                    remote.subject.clone(),
+                    RemoteAddress::encode(&remote.address),
+                    remote.name.as_str(),
+                );
+                transaction = transaction.assert(concept.clone());
+                if let Some(revocation) = &remote.revocation {
+                    transaction =
+                        transaction.assert(RemoteExecution::new(&concept, revocation.as_str()));
+                }
+                remote_concepts.insert(remote.name.clone(), concept);
+            }
+            for branch in &record.branches {
+                let local = BranchConcept::new(&anchor, branch.name.as_str());
+                transaction = transaction.assert(local.clone());
+                if let Some((remote_name, upstream_branch)) = &branch.upstream
+                    && let Some(remote_concept) = remote_concepts.get(remote_name)
+                {
+                    let upstream = BranchConcept::new(remote_concept, upstream_branch.as_str());
+                    transaction = transaction
+                        .assert(upstream.clone())
+                        .assert(TrackingBranch::new(&local, &upstream));
+                }
+            }
+            std::future::ready(Ok::<_, CommitError>(transaction))
+        })
+        .perform(env)
+        .await?;
     Ok(())
 }
 
@@ -172,7 +184,12 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -259,7 +276,12 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -290,7 +312,7 @@ where
 }
 
 /// The full mount record for one space, or `None` when the directory
-/// holds no remotes for it.
+/// no longer lists it or holds no remotes for it.
 pub async fn mount_record<Env>(
     account: &Branch,
     subject: &Did,
@@ -303,7 +325,12 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -328,7 +355,12 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -352,7 +384,12 @@ where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
-        + Provider<Hydrate>
+        + Provider<ArchiveLoad>
+        + Provider<dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
+        + Provider<dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>>
+        + Provider<BlobLoad>
+        + dialog_common::Holds
         + Provider<Preload>
         + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
@@ -361,6 +398,21 @@ where
         + 'static,
 {
     let anchor = subject.this();
+    // Remote and branch facts live on derived entities and can outlast a
+    // deletion. Only the listing on the space itself makes them mountable.
+    let listed: Vec<Space> = account
+        .query()
+        .select(Query::<Space> {
+            this: Term::from(anchor.clone()),
+            subject: Term::from(crate::domain::space::Subject(anchor.clone())),
+            status: Term::var("status"),
+        })
+        .perform(env)
+        .try_vec()
+        .await?;
+    if listed.is_empty() {
+        return Ok(None);
+    }
     let remote_rows: Vec<Remote> = account
         .query()
         .select(Query::<Remote> {
@@ -469,7 +521,7 @@ where
     let mut remote_branches: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     for (remote_entity, remote_name) in &remote_names {
-        let Ok(origin) = remote_entity.parse::<dialog_artifacts::Entity>() else {
+        let Ok(origin) = remote_entity.parse::<dialog_corpus::Entity>() else {
             continue;
         };
         let rows: Vec<BranchConcept> = auxiliary(
@@ -613,6 +665,7 @@ mod tests {
         );
         account
             .transaction()
+            .assert(Space::new(&subject, Replica::initialized_status()))
             .assert(remote)
             .assert(local.clone())
             .assert(upstream.clone())
@@ -715,6 +768,15 @@ mod tests {
             .perform(&operator)
             .await
             .unwrap();
+        let space = Space::new(&subject, Replica::initialized_status());
+        branch
+            .transaction()
+            .assert(space.clone())
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
         let record = mount_record_strict(&branch, &subject, &operator)
             .await
             .unwrap()
@@ -725,6 +787,28 @@ mod tests {
         assert_eq!(
             Some(record),
             mount_record(&branch, &subject, &operator).await.unwrap()
+        );
+
+        // Deletion retracts the listing but leaves mount facts on derived entities.
+        branch
+            .transaction()
+            .retract(space)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
+        assert!(
+            mount_record_strict(&branch, &subject, &operator)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mount_record(&branch, &subject, &operator)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 }

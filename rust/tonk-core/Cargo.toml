@@ -15,7 +15,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 base58 = { workspace = true }
-dialog-artifacts = { workspace = true }
+dialog-corpus = { workspace = true }
 dialog-common = { workspace = true }
 dialog-query = { workspace = true }
 indexmap = { workspace = true }

@@ -60,7 +60,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/resolve-release
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
         with:
@@ -111,7 +111,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/resolve-release
-      - uses: wimpysworld/nothing-but-nix@main
+      - uses: wimpysworld/nothing-but-nix@baf7355748bb5651f08b839669d6bb39051b2874 # main before 153c2fb, whose /nix/tmp TMPDIR breaks the Nix installer
         if: runner.os == 'Linux'
       - uses: cachix/install-nix-action@v31
         with:
@@ -154,6 +154,11 @@ jobs:
     needs: ['resolve', 'build-cli', 'build-peer', 'artifact-smoke']
     runs-on: ubuntu-latest
     timeout-minutes: 200
+    # Keep rolling staging publication and its branch pointer in sync when
+    # multiple prerelease tags are released close together.
+    concurrency:
+      group: ${{ needs.resolve.outputs.channel == 'staging' && 'staging-release' || format('stable-release-{0}', github.ref) }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: write
@@ -275,3 +280,9 @@ jobs:
             checksums.txt
             manifest.json
             install.sh
+
+      # Keep the branch users can check out aligned with the rolling staging
+      # release. The tag commit has already been verified as part of main.
+      - name: Move staging branch to the released commit
+        if: needs.resolve.outputs.channel == 'staging'
+        run: git push --force origin "${GITHUB_SHA}:refs/heads/staging"

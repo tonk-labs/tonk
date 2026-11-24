@@ -34,6 +34,7 @@ pub(crate) enum AccountAction {
     CreateAccount,
     LogIn,
     AddPasskey,
+    AddRecoveryPhrase,
     ChangeDisplayName,
     ResendActivation,
     LoadDevices,
@@ -62,6 +63,12 @@ pub(crate) enum AccountAction {
 }
 
 /// Present an internal/browser diagnostic at an account action boundary.
+/// Its callers outside tests (the register dialog, the custody relay) are
+/// browser-only.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 pub(crate) fn diagnostic(action: AccountAction, detail: &str) -> String {
     problem_from_diagnostic(action, detail).message
 }
@@ -100,6 +107,14 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
     if is_custody_handoff_timeout(action, original) {
         return CUSTODY_HANDOFF_RECOVERY.to_owned();
     }
+    // The two refusals adding a way into an account answers before it
+    // asks for anything, worded for the person already.
+    if original == "Activate your account first: open the link in the email we sent you." {
+        return original.to_owned();
+    }
+    if original == "This account already has a recovery phrase, and it cannot be replaced." {
+        return original.to_owned();
+    }
     let detail = detail.to_ascii_lowercase();
     if detail.contains("an account already exists for this email address") {
         return "An account already exists for this email address. Log in instead.".to_owned();
@@ -128,6 +143,7 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
         AccountAction::CreateAccount
             | AccountAction::LogIn
             | AccountAction::AddPasskey
+            | AccountAction::AddRecoveryPhrase
             | AccountAction::LinkCli
             | AccountAction::AuthorizeAgent
             | AccountAction::RevokeAgent
@@ -354,6 +370,9 @@ fn fallback(action: AccountAction) -> &'static str {
         }
         AccountAction::AddPasskey => {
             "We couldn't finish adding the passkey. Reload settings before trying again."
+        }
+        AccountAction::AddRecoveryPhrase => {
+            "We couldn't finish setting up your recovery phrase. Nothing was saved. Reload settings and try again."
         }
         AccountAction::ChangeDisplayName => {
             "We couldn't change your display name. Check your connection and try again."

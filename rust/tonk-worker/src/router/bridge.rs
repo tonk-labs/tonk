@@ -112,6 +112,52 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
+        // The top page's passkey prompt or card ended without the work
+        // (cancelled, or failed, as an authenticator with no PRF does): say
+        // so on the ceremony row the account sheet follows, which would
+        // otherwise wait for a passkey forever. Only the ceremonies that
+        // report there.
+        "custody-ended" => {
+            let ceremony = envelope.get("ceremony").and_then(|v| v.as_str());
+            let detail = match envelope.get("outcome").and_then(|v| v.as_str()) {
+                Some("cancelled") => "cancelled",
+                _ => "the passkey did not finish",
+            };
+            if ceremony == Some(tonk_schema::ceremony::AUTHORIZE_DEVICE) {
+                // The request's own row: cancelled is a refusal the task
+                // page words as the mock's cancel, anything else a failure.
+                let Some(authorization) = envelope
+                    .get("authorization")
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| {
+                        serde_json::from_str::<tonk_worker_api::DeviceAuthorization>(v).ok()
+                    })
+                else {
+                    log!("bridge: a device approval ended with no request to report it on");
+                    return;
+                };
+                let outcome = if detail == "cancelled" {
+                    tonk_schema::ceremony_state::REFUSED
+                } else {
+                    tonk_schema::ceremony_state::FAILED
+                };
+                let tonk = state.read().await;
+                super::ceremony::report_authorization(&tonk, &authorization, outcome, detail).await;
+            } else if let Some(
+                ceremony @ (tonk_schema::ceremony::ADD_PASSKEY
+                | tonk_schema::ceremony::DELETE_ACCOUNT),
+            ) = ceremony
+            {
+                let tonk = state.read().await;
+                super::ceremony::report(
+                    &tonk,
+                    ceremony,
+                    tonk_schema::ceremony_state::FAILED,
+                    detail,
+                )
+                .await;
+            }
+        }
         other => {
             log!(
                 "bridge: SW global received unexpected envelope type '{other}' from {client:?} \
@@ -244,42 +290,11 @@ async fn handle_query(
     };
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
-        // A named query (`tree/*`, `intent/suggest`) is answered by the
-        // reactor, as the HTTP `/query` route answers it.
+        // A query names a concept; a bare name is no query.
         Err(wire) => {
-            let result = {
-                let tonk = state.read().await;
-                match tonk
-                    .reactor
-                    .repository(&binding.repo)
-                    .branch(&binding.branch)
-                    .acquire(&tonk.operator)
-                    .await
-                {
-                    Ok(session) => {
-                        crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
-                            .await
-                            .map_err(|e| e.to_string())
-                    }
-                    Err(e) => Err(format!("reactor acquire: {e}")),
-                }
-            };
-            match result {
-                Ok(rows) => {
-                    send_envelope(
-                        &state,
-                        &client,
-                        serde_json::json!({
-                            "v": 1,
-                            "type": "query-result",
-                            "id": id,
-                            "rows": rows,
-                        }),
-                    )
-                    .await;
-                }
-                Err(e) => send_error(&state, &client, "query-error", &id, &e).await,
-            }
+            let name = wire.formula().unwrap_or_default();
+            let message = format!("a query names a concept, and `{name}` is a name");
+            send_error(&state, &client, "query-error", &id, &message).await;
             return;
         }
     };
@@ -310,8 +325,13 @@ async fn handle_query(
         };
         let terms = query.terms.clone();
         use dialog_query::Output as _;
+        // Through the branch's stack, as the reactor's one-shot query
+        // reads: every layer, among them `session:`, where a provider's
+        // answer to a command lands.
         match session
-            .handle()
+            .state
+            .stack()
+            .query()
             .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(&tonk.operator)
             .try_vec()
@@ -388,20 +408,21 @@ async fn handle_evaluate(
 
     let result = {
         let tonk = state.read().await;
-        crate::router::evaluate::evaluate_body_with_transients(
+        crate::router::evaluate::evaluate_body_with_commands(
             &tonk,
             &binding.repo,
             &binding.branch,
+            Some(client.clone()),
             body,
             transact,
         )
         .await
     };
     match result {
-        Ok((response, transients)) => {
+        Ok((response, commands)) => {
             // Post-commit parity with the HTTP `/evaluate` route: a commit
             // that moved the tree marks the repo dirty for the next sync
-            // push, and the document's transient commands dispatch with
+            // push, and the document's commands run with
             // this guest as the originating client.
             if response.revision_before.as_ref().map(|r| &r.tree)
                 != response.revision_after.as_ref().map(|r| &r.tree)
@@ -421,13 +442,13 @@ async fn handle_evaluate(
                 }),
             )
             .await;
-            if let Some(transients) = transients {
+            if let Some(effect) = commands {
                 let origin = crate::router::CommandOrigin {
                     repo: binding.repo,
                     branch: binding.branch,
                     client: Some(client.clone()),
                 };
-                crate::router::dispatch(&state, origin, transients).await;
+                crate::router::run_commands(&state, origin, Some(effect)).await;
             }
         }
         Err(e) => {
@@ -539,7 +560,8 @@ async fn handle_subscribe(
         }
     };
 
-    let mut receiver = subscriber.receiver;
+    // The pump owns the subscriber: its end drops the dialog reader.
+    let mut receiver = subscriber;
     let pump_state = state.clone();
     let pump_client = client.clone();
     let pump_id = id.clone();

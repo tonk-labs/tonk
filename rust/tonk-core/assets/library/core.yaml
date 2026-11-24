@@ -797,6 +797,35 @@ concept!: &member
       the: xyz.tonk.membership/name
       as: text
 
+# When an invitation was minted. ENTITY: the invitation (`tonk_schema::
+# Invitation`), the same entity its `xyz.tonk.invitation-execution/kind`
+# rides on. Kept apart from that record so invitations minted before mint
+# times were recorded still read; they have no row here.
+concept!: &invitation/minted
+  this: tonk:invitation/minted
+  description: When an invitation to this space was minted.
+  with:
+    minted-at:
+      description: >
+        Unix milliseconds at mint. A space's links list oldest first, so
+        its first open link (its default) stays first as newer ones are made.
+      the: xyz.tonk.invitation-execution/minted-at
+      as: natural:64
+
+# Where an invitation that replaced another lists. ENTITY: the invitation,
+# as for `tonk:invitation/minted`. A reset default passlink takes the place
+# of the one it replaced, so it stays its space's default.
+concept!: &invitation/listed
+  this: tonk:invitation/listed
+  description: Where an invitation that replaced another lists among its space's links.
+  with:
+    listed-at:
+      description: >
+        Unix milliseconds: the place (listed-at, else minted-at) of the
+        link this one replaced. A list orders by it before minted-at.
+      the: xyz.tonk.invitation-execution/listed-at
+      as: natural:64
+
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name
 # (with the DID tail beneath as a fallback id), and a role badge.
@@ -2042,7 +2071,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (`<tonk-inspector>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2144,35 +2173,6 @@ seed/route!:
 seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2710,7 +2710,7 @@ concept!: &intent/action
 # intent, each as a one-field concept on the field's own attribute with the
 # field named after the attribute (`subject` for `…/subject`), scoped to the
 # command (`intent` where `command: <the command>`). `intent/suggest`
-# reads the intents and those values back as readings.
+# reads the intents and those values back as readings, below.
 command!: &intent/interpret
   this: tonk:intent-interpret
   description: Interpret what was typed in the command palette, where it was opened.
@@ -2765,6 +2765,117 @@ concept!: &intent
       the: tonk.dialog.intent/command
       as: entity
 
+# What the line could mean, asked as a command and answered as session
+# facts. The palette asserts `intent/suggest` on each branch it asks (the
+# space's and the profile's) through the transact path, in the same commit
+# as the line's `intent/interpret`. A stack provider answers it after the
+# commit: it reads the branch's palette vocabulary (`intent/action`, the
+# roles on attributes, the `intent`s and what rules derived onto them, the
+# memory) and writes one `intent/reading` per reading, best first, and one
+# `intent/answer` saying how many, into the branch's `session:` layer. The
+# rows name the ask (the command entity the page minted), so the tab that
+# asked reads its own answer and no other's; an answer replaces the
+# previous one for the same asker (its site, else its expression). Nothing
+# is stored, and it goes with the process.
+command!: &intent/suggest
+  this: tonk:intent-suggest
+  description: Ask what a line typed in the command palette could mean.
+  with:
+    now:
+      description: The caller's clock in milliseconds, for arguments that take the moment the command runs.
+      the: tonk.dialog.intent.suggest/now
+      as: float
+  maybe:
+    input:
+      description: What was typed; empty asks what can be done without saying more; absent when `expression` names the interpreted line, whose recorded input stands in.
+      the: tonk.dialog.intent.suggest/input
+      as: text
+    max:
+      description: How many readings at most; a default when absent.
+      the: tonk.dialog.intent.suggest/max
+      as: natural
+    subject:
+      description: The entity the page shows, what "this" means, and the default for an argument it can fill.
+      the: tonk.dialog.intent.suggest/subject
+      as: entity
+    site:
+      description: The tab's site, whose selection is tried in every reading.
+      the: tonk.dialog.intent.suggest/site
+      as: entity
+    expression:
+      description: The palette opening `intent/interpret` recorded; its intents and what rules derived onto them fill the readings.
+      the: tonk.dialog.intent.suggest/expression
+      as: entity
+    memory:
+      description: What was run from the palette, kept on another branch, as JSON with `choices` and `picks`, each a list of rows.
+      the: tonk.dialog.intent.suggest/memory
+      as: text
+
+concept!: &intent/answer
+  description: How an `intent/suggest` was answered. Session facts, one per asker, replaced by the next ask.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.answer/ask
+      as: entity
+    readings:
+      description: How many readings the answer has; none is an answer too.
+      the: tonk.dialog.intent.answer/readings
+      as: natural
+
+concept!: &intent/reading
+  description: One reading of what was typed, as `intent/suggest` answered it. Session facts, best first by rank.
+  with:
+    ask:
+      description: The `intent/suggest` command it answers.
+      the: tonk.dialog.intent.reading/ask
+      as: entity
+    rank:
+      description: Its place among the answer's readings, from 0.
+      the: tonk.dialog.intent.reading/rank
+      as: natural
+    score:
+      description: How well it reads, higher is better.
+      the: tonk.dialog.intent.reading/score
+      as: float
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent.reading/command
+      as: entity
+    text:
+      description: The reading as plain text.
+      the: tonk.dialog.intent.reading/text
+      as: text
+    display:
+      description: Its segments, as JSON.
+      the: tonk.dialog.intent.reading/display
+      as: text
+    nouns:
+      description: Role to kind of thing, as JSON.
+      the: tonk.dialog.intent.reading/nouns
+      as: text
+    listed:
+      description: Whether it is one of the values listed for an argument nothing was typed for.
+      the: tonk.dialog.intent.reading/listed
+      as: boolean
+    entities:
+      description: The entities its arguments are filled with, as JSON.
+      the: tonk.dialog.intent.reading/entities
+      as: text
+  maybe:
+    input:
+      description: The words the reading took for its verb, when it took any.
+      the: tonk.dialog.intent.reading/input
+      as: text
+    completion:
+      description: The input extended by this reading, when it extends it.
+      the: tonk.dialog.intent.reading/completion
+      as: text
+    claim:
+      description: The transact request that runs it, as JSON, once nothing is missing.
+      the: tonk.dialog.intent.reading/claim
+      as: text
+
 # A member as the account `member/expel` wants. A roster row is the
 # membership, derived from (space, account); the command takes the
 # account's DID, which is the row's `member` field. This concept's rows
@@ -2792,9 +2903,11 @@ view!:
       {name}
 
 # The library's components a space can install, each beside the others
-# and beside the space's seed: issue, meta, notebook, prose, table,
-# tasks, version-control (every library file but `core.yaml`, which every space
-# runs, and `profile.yaml`, the profile's). An install is recorded like the seed's and brought up to
+# and beside the space's seed: code-editor, issue, meta, notebook,
+# prose-editor, table, tasks, tree-inspector, version-control (every library file but `core.yaml`,
+# which every space runs, and `profile.yaml`, the profile's). The
+# <code-editor> languages are components too, `language/<id>`, listed by
+# code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
 # date the same way when the space mounts; installing one already there
 # updates it, or does nothing when it is current.
 concept!: &library/component
@@ -2812,6 +2925,10 @@ view!:
       {name}
 
 library/component!:
+  this: tonk:library/code-editor
+  name: "code-editor"
+
+library/component!:
   this: tonk:library/issue
   name: "issue"
 
@@ -2824,12 +2941,16 @@ library/component!:
   name: "notebook"
 
 library/component!:
-  this: tonk:library/prose
-  name: "prose"
+  this: tonk:library/prose-editor
+  name: "prose-editor"
 
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/tree-inspector
+  name: "tree-inspector"
 
 library/component!:
   this: tonk:library/tasks
@@ -2885,75 +3006,156 @@ rule!:
 # invocation-schema:begin
 #
 # Invocations: what became of a command someone ran. Declared identically
-# in `core.yaml` and `profile.yaml`, because a command is committed on a
-# space branch or on the profile and its invocation lives on the branch it
-# was committed on. `rust/tonk-schema/src/invocation.rs` follows this.
+# in `core.yaml` and `profile.yaml`, because a command lands on the branch
+# it was sent to, a space's or the profile's. `rust/tonk-schema/src/
+# invocation.rs` follows this.
 #
-# A command is a transient: its commit sweeps it. An invoker that wants to
-# know how it went (the command palette) stamps the command with
-# `xyz.tonk.command/invoked-at` and `xyz.tonk.command/concept`. The worker
-# then keeps an invocation on the command's own entity, in that branch's
-# session overlay: the command's fields as they were given, where it got
-# to, what it is doing, and what it produced. Overlay only, so nothing here
-# is committed or replicated, and the worker retracts an invocation once it
-# expires.
+# A command lands in its stack's `control:` layer for one tick, and dialog
+# writes each change in its life there as a `dialog.command/*` row of the
+# command's entity, again for one tick: `answered`, `failed` or
+# `unhandled` once the providers ran, and `progress` when a provider
+# reports some. Nothing keeps them. An invoker that wants to follow a
+# command (the command palette) gives it an entity of its own and stamps
+# it with `xyz.tonk.command/invoked-at` and `xyz.tonk.command/concept`; the
+# rules below copy that command's life into the stack's `session:` layer,
+# where it stays for the session. Never committed, never synced.
 
-concept!: &invocation
-  this: tonk:invocation
-  description: |
-    A command someone ran and asked to follow, on the command's own entity,
-    in the session overlay of the branch it ran on.
+# What a followed command carries as it lands: when it was run and which
+# command it is.
+concept!: &command/invoked
+  this: tonk:command/invoked
+  description: A followed command as it lands, in `control:` for one tick.
   with:
-    case:
-      description: |
-        Where it got to: `case:active` while a provider runs it, then
-        `case:done`, `case:failed`, `case:aborted` (the worker running it
-        went away) or `case:unhandled` (nothing took it).
-      the: xyz.tonk.invocation/case
-      as: entity
-    started:
-      description: When the worker took it, in milliseconds since the epoch.
-      the: xyz.tonk.invocation/started
-      as: float:64
-  maybe:
-    invoked:
+    at:
       description: When the invoker ran it, in milliseconds since the epoch, by its own clock.
       the: xyz.tonk.command/invoked-at
       as: float:64
     concept:
-      description: The concept of the command that was run, whose `status` view renders it.
+      description: The concept of the command that was run.
       the: xyz.tonk.command/concept
       as: entity
+
+# dialog's rows for a command's life, each in `control:` for one tick.
+concept!: &command/answered
+  this: tonk:command/answered
+  description: A provider answered the command; dialog's row, for one tick.
+  with:
+    by:
+      description: The concept whose provider answered it.
+      the: dialog.command/answered
+      as: entity
+      pick: :all
+
+concept!: &command/failed
+  this: tonk:command/failed
+  description: A provider failed the command; dialog's row, for one tick.
+  with:
+    reason:
+      description: Why it failed, in the provider's words.
+      the: dialog.command/failed
+      as: text
+      pick: :all
+
+concept!: &command/unhandled
+  this: tonk:command/unhandled
+  description: No provider claimed the command; dialog's row, for one tick.
+  with:
+    unhandled:
+      description: Always true.
+      the: dialog.command/unhandled
+      as: boolean
+
+concept!: &command/progress
+  this: tonk:command/progress
+  description: A provider said what the command is doing; dialog's row, for one tick.
+  with:
     state:
-      description: What it is doing, as its provider last said. An entity with a `status`.
+      description: The state it is in, an entity with a `status`.
+      the: dialog.command/progress
+      as: entity
+
+# The invocation: the followed command's life, kept in `session:`.
+concept!: &invocation
+  this: tonk:invocation
+  description: |
+    A command someone ran and follows, on the command's own entity, kept
+    in the stack's `session:` layer for the session.
+  with:
+    invoked:
+      description: When the invoker ran it, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/invoked
+      as: float:64
+      in: "session:"
+    of:
+      description: The concept of the command that was run, whose `status` view renders it.
+      the: xyz.tonk.invocation/of
+      as: entity
+      in: "session:"
+
+concept!: &invocation/answered
+  this: tonk:invocation/answered
+  description: The invocation's command was answered.
+  with:
+    answered:
+      description: The concept whose provider answered it.
+      the: xyz.tonk.invocation/answered
+      as: entity
+      in: "session:"
+
+concept!: &invocation/failed
+  this: tonk:invocation/failed
+  description: The invocation's command failed.
+  with:
+    failed:
+      description: Why it failed, in words a person can be shown.
+      the: xyz.tonk.invocation/failed
+      as: text
+      in: "session:"
+
+concept!: &invocation/unhandled
+  this: tonk:invocation/unhandled
+  description: |
+    No provider claimed the invocation's command. A command a rule handled
+    as it landed is unhandled too, as dialog sees it, and has an `output`
+    its rule wrote.
+  with:
+    unhandled:
+      description: Always true.
+      the: xyz.tonk.invocation/unhandled
+      as: boolean
+      in: "session:"
+
+concept!: &invocation/state
+  this: tonk:invocation/state
+  description: What the invocation's command is doing, as its provider last said.
+  with:
+    state:
+      description: A state entity with a `status`.
       the: xyz.tonk.invocation/state
       as: entity
+      in: "session:"
+
+concept!: &invocation/output
+  this: tonk:invocation/output
+  description: What the invocation's command produced, written by its provider or the rule that handled it.
+  with:
     output:
-      description: |
-        What it produced: the entity a successful command made or acted on,
-        or, for a failed one, an error entity whose `status` says why.
+      description: The entity the command made or acted on.
       the: xyz.tonk.invocation/output
       as: entity
-    finished:
-      description: When it finished, in milliseconds since the epoch.
-      the: xyz.tonk.invocation/finished
-      as: float:64
-    expires:
-      description: When the worker retracts it, in milliseconds since the epoch.
-      the: xyz.tonk.invocation/expires
-      as: float:64
+      in: "session:"
 
 concept!: &state
   this: tonk:state
   description: |
-    Something an invocation can be in or end with, and the words for it: a
-    provider's progress (`status:minting`) or a failed command's error.
-    Every invocation's `state`, and every error it ends with, has one.
+    Something a command can be doing, and the words for it: a provider's
+    progress, such as `status:creating-space`. Kept in `session:`.
   with:
     status:
       description: What it is, in words a person can be shown.
       the: xyz.tonk.state/status
       as: text
+      in: "session:"
 
 view!:
   this: tonk:state
@@ -2961,21 +3163,69 @@ view!:
     label: |
       {status}
 
-# How a rule says it handled a command at commit time: it concludes this on
-# the command entity, naming what it produced. A command no provider takes
-# and no rule concludes this for is `case:unhandled`. Transient, like every
-# command: read off the commit, never stored.
-command!: &command/completion
-  description: A rule handled the command this is asserted on, producing `output`.
+concept!: &state/reported
+  this: tonk:state/reported
+  description: |
+    The words a provider gave for a state as it reported it, in
+    `control:` for one tick beside the command's `progress`.
   with:
-    output:
-      description: What the command produced or acted on.
-      the: xyz.tonk.command.completion/output
-      as: entity
+    reported:
+      description: What the state is, in words a person can be shown.
+      the: xyz.tonk.state/reported
+      as: text
 
-# A command's `status` view, when it declares one, renders its invocation:
-# the command's own fields are on the invocation, so the view reads them as
-# it would the command's (`view!: this: <command>` with `show: status:`).
-# Whoever lists invocations draws the generic line (case, state, output).
+rule!:
+  description: A followed command that lands starts its invocation.
+  assert!: invocation
+  when:
+    - assert: command/invoked
+      where: { this: ?this, at: ?invoked, concept: ?of }
+
+rule!:
+  description: A followed command a provider answered says so.
+  assert!: invocation/answered
+  when:
+    - assert: command/answered
+      where: { this: ?this, by: ?answered }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command a provider failed says why.
+  assert!: invocation/failed
+  when:
+    - assert: command/failed
+      where: { this: ?this, reason: ?failed }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command no provider claimed says so.
+  assert!: invocation/unhandled
+  when:
+    - assert: command/unhandled
+      where: { this: ?this, unhandled: ?unhandled }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command keeps the state its provider last reported.
+  assert!: invocation/state
+  when:
+    - assert: command/progress
+      where: { this: ?this, state: ?state }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A state a provider reported keeps its words for the session.
+  assert!: state
+  when:
+    - assert: state/reported
+      where: { this: ?this, reported: ?status }
+
+# A command's `status` view, when it declares one, renders its invocation
+# (`view!: this: <command>` with `show: status:`). Whoever lists
+# invocations draws the generic line from the rows above.
 
 # invocation-schema:end

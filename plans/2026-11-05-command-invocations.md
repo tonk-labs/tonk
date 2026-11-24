@@ -1,99 +1,95 @@
 # Command invocations: telling the person what became of a command
 
-Status: implemented on `worker/zen-cerf-5f12ha`.
+Status: implemented on `worker/zen-cerf-5f12ha`, on dialog 0.5 stacks.
 
 ## The problem
 
 A command run from the command palette vanished. The palette transacted
-the command, closed, and never heard back: the transact returns before
-any provider runs, a provider returned `()`, and failures went to `log!`.
-Nothing on any branch said whether the command ran, failed, or matched
-nothing at all.
+the command, closed, and never heard back. Providers returned `()` and
+logged their failures, so no branch said whether the command ran, failed,
+or matched nothing.
 
-## The design we agreed on
+## What dialog 0.5 already gives us
 
-**An invocation is the command's own entity, kept in the session
-overlay of the branch the command ran on.** The overlay is local and
-never replicated, so following a command writes nothing durable.
+A command lands in its stack's `control:` layer for one tick, and dialog
+records its life on the command's entity in `control:`, also for one tick:
 
-**Tracking is the invoker's choice, made per run.** The invoker stamps the
-command with `xyz.tonk.command/invoked-at` (when it was run) and
-`xyz.tonk.command/concept` (which command it is). The timestamp also
-makes each run its own entity: two runs of "rename to Plans" no longer
-collide. A command nobody stamped gets no invocation, so the per-keystroke
-`intent/interpret`, `tonk:load` and `site/select` cost nothing extra.
+- `dialog.command/invoked` when it lands;
+- `dialog.command/answered`, `dialog.command/failed` or
+  `dialog.command/unhandled` once the providers ran;
+- `dialog.command/progress` whenever a provider reports some
+  (`Command::progress`).
 
-**What an invocation holds** (`invocation` in `core.yaml` and
-`profile.yaml`, which keep identical copies; Rust in
-`tonk-schema/src/invocation.rs`):
+A provider answers `Result<Changes, dialog_repository::Failure>`, and dialog
+turns an `Err` into the `failed` row. The first version of this branch
+built all of that by hand on the overlay: a reporter loop, `case`
+bookkeeping, `Commit::conclude` for rule-handled commands, an expiry sweep
+and abort-on-restore. That code is gone. What is left is keeping those
+one-tick rows for a command someone follows.
 
-| attribute | what it is |
+## The design
+
+**Following is the invoker's choice, made per run.** The invoker gives the
+run its own `this` and stamps it with `xyz.tonk.command/invoked-at` (when it
+was run) and `xyz.tonk.command/concept` (which command it is). A command
+nobody stamped gets nothing kept, so the per-keystroke `intent/interpret`
+and `tonk:load` cost nothing extra.
+
+**Rules keep the life of a followed command in `session:`.** The
+`invocation-schema` block, identical in `core.yaml` and `profile.yaml`,
+reads dialog's rows in `control:` and writes them, with inductive rules,
+into the stack's `session:` layer. That layer is the stack's own, kept for
+the process, and never committed or synced.
+
+| attribute (in `session:`) | from |
 | --- | --- |
-| the command's own fields | copied, so the command's own `status` view can render the invocation |
-| `xyz.tonk.invocation/case` | `case:active`, `case:done`, `case:failed`, `case:aborted`, `case:unhandled` |
-| `xyz.tonk.invocation/state` | what the provider says it is doing: an entity with a `xyz.tonk.state/status` |
-| `xyz.tonk.invocation/output` | what it produced; for a failure, an `error:` entity whose status says why |
-| `started`, `finished`, `expires` | the worker's clock, in milliseconds |
+| `xyz.tonk.invocation/invoked` | `xyz.tonk.command/invoked-at` |
+| `xyz.tonk.invocation/of` | `xyz.tonk.command/concept` |
+| `xyz.tonk.invocation/answered` | `dialog.command/answered` |
+| `xyz.tonk.invocation/failed` | `dialog.command/failed` |
+| `xyz.tonk.invocation/unhandled` | `dialog.command/unhandled` |
+| `xyz.tonk.invocation/state` | `dialog.command/progress`, an entity with `xyz.tonk.state/status` |
+| `xyz.tonk.invocation/output` | the provider's `Done`, or the rule that handled the command |
 
-**Providers return an `Outcome`.** `Command::Output` is now
-`Result<Done, Failure>` for every command, and every provider was moved to
-it. Where a provider used to `log!` and return, it now returns `Err` with a
-message a person can read. `Done` can name the entity the command
-produced.
+**Providers return an `Outcome`.** `Command::Output` is
+`Result<Done, Failure>` for every command. The dispatcher maps a `Failure`
+to dialog's, and for a followed command writes `Done`'s output into
+`session:`. Progress goes through `CommandEnv::task().status(state, words)`,
+which invokes `Command::progress` on the stack and writes the state's words
+into `session:`. Both do nothing for a command nobody follows.
 
-**Providers report progress through `CommandEnv::task()`.** That handle
-does nothing for an untracked command. Reports go to one reporter per
-dispatch, which writes at most every 100 ms, in one overlay write and one
-re-evaluation of the branch's subscriptions. A provider never waits on
-subscribers.
+**The case is derived, not stored.** A reader computes it: `failed` if
+there is a failure; otherwise `done` if it was answered or has an output;
+otherwise `unhandled` if dialog said so; otherwise `active`. A command a
+rule handles at commit time (`notebook/retitle`) is unhandled as dialog
+sees it. Its rule writes the output, so it reads as done.
 
-**Commands no provider takes.** A rule that handles a command at commit
-time says so by concluding `command/completion` on the command entity
-(`notebook/retitle` does). The reactor's commit now returns what its
-rules concluded (`Commit::conclude`, from dialog's staged
-`TransactionBatch::induced`), and the dispatcher reads it. No provider and
-no completion means `case:unhandled`.
-
-**Expiry.** A finished invocation gets `expires`: by default 30 s for a
-success and 10 min for anything else, or the account's `command/retention`
-(durable, on the profile; no settings control yet). Expired invocations
-are retracted by a timer started when they finish, by the next tracked
-dispatch on the branch, and when a successor worker restores the overlay.
-On restore, an invocation still `active` becomes `aborted`: the worker
-running it is gone.
-
-**The palette** mints `this: urn:uuid:…` for each run, stamps it, and
-follows its `case` on the branch it ran on. A line in the bar says what
-was run and where it got to; a success clears itself after a few seconds,
-and anything else stays until clicked or replaced.
+**The palette** reads one subscription over the invocation, with every
+field past `invoked` optional, and shows a line in the bar. A success
+clears itself after a few seconds; anything else stays until clicked or
+replaced.
 
 **The console** is an installable component, `tasks`, at
 `/console/tasks`. It lists the space's invocations, newest first. Opening
-one renders it through its command's `status` view.
-
-## Checked along the way
-
-- A transient's facts held in the overlay do not fire the rules that watch
-  it (`a_transient_in_the_session_overlay_fires_no_rule` in
-  `tonk-evaluator`). Without this, copying a rule-handled command into the
-  overlay would replay it on the next commit.
-- `TransactionBatch::induced` is in dialog `v0.4.0-rc.3`, so no dialog
-  change was needed.
+one renders its output.
 
 ## Known gaps
 
+- **Nothing expires.** Invocations live as long as the stack's session.
+  The 30 s / 10 min expiry and the `command/retention` setting went with
+  the overlay. Dialog has no retraction schedule for `session:` rows, so
+  bringing them back needs one there or a sweep here.
+- **No `aborted`.** The session goes with the worker, so a restart forgets
+  the invocation instead of marking it stopped. The page that was
+  following it sees it disappear.
+- **The command's own fields are not kept.** They live one tick in
+  `control:`. A command's `status` view cannot render an invocation from
+  its fields, so the console shows the output instead.
 - **The console sees only its space.** A space's pages cannot read the
-  profile branch, so commands run on the profile (most hub commands, and
-  profile commands from the palette) are not listed at `/console/tasks`.
-  The palette's line shows them. Listing them needs a hub page or a read
-  grant from a space to the profile.
-- **Secrets enter the overlay.** A command field carrying a secret (a join
-  URL's fragment) is copied in plain text. Agreed as a trade-off for now;
-  the follow-up is a sealed `secret` value type.
-- **`/evaluate` does not surface rule conclusions**, so a rule-handled
-  command evaluated through it reads as unhandled. Only the palette
-  tracks commands today, and it uses `/transact`.
+  profile branch, so commands run on the profile are not listed at
+  `/console/tasks`. The palette's line shows them.
+- **Secrets.** A command's fields are no longer copied, so this gap is
+  smaller. A secret still passes through `control:`, as it did before.
 - **Ceremonies.** A passkey command's provider returns once it has asked
-  the page; the rest is still reported through `CeremonyStatus`, not
-  the outcome. Folding `CeremonyStatus` and `EmailStatus` into
-  invocations is a follow-up.
+  the page. The rest is still reported through `CeremonyStatus`, not the
+  outcome.

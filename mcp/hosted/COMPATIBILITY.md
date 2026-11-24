@@ -1,4 +1,4 @@
-> The deployed endpoint now uses [per-call agent links](../AGENT-LINKS.md).
+> The Node host uses [per-call agent links](../AGENT-LINKS.md).
 > The OAuth compatibility information below applies only to the retained optional
 > account adapter. Hosted-client acceptance of the agent-link endpoint is a
 > separate rollout check.

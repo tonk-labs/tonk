@@ -348,8 +348,7 @@ async fn finish(
 
 /// Run `tonk:sign-in-via`: record the request and send the page to the
 /// deployment holding the account. A refusal is reported, not sent.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
     async fn execute(&self, command: SignInVia) -> tonk_schema::invocation::Outcome {
         use tonk_schema::invocation::{Done, Failure};
@@ -377,8 +376,7 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
 }
 
 /// Run `tonk:finish-sign-in-via`: install what came back and go home.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
     async fn execute(&self, command: FinishSignInVia) -> tonk_schema::invocation::Outcome {
         use tonk_schema::invocation::{Done, Failure};

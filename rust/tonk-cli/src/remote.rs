@@ -195,19 +195,18 @@ async fn record_metadata(
     let replica = local_replica(site);
     let remote_concept = replica.remote(name, subject, address);
 
-    let mut transaction = meta
-        .transaction()
-        .assert(replica)
-        .assert(remote_concept.clone());
-    if let Some(revocation_url) = revocation_url {
-        transaction = transaction.assert(RemoteExecution::new(&remote_concept, revocation_url));
-    }
-    transaction
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
+    meta.transact(|transaction| {
+        let mut transaction = transaction
+            .assert(replica.clone())
+            .assert(remote_concept.clone());
+        if let Some(revocation_url) = revocation_url {
+            transaction = transaction.assert(RemoteExecution::new(&remote_concept, revocation_url));
+        }
+        std::future::ready(Ok::<_, dialog_repository::CommitError>(transaction))
+    })
+    .perform(&site.operator)
+    .await
+    .map_err(|e| RemoteError::Io(format!("failed to write meta records: {e}")))?;
     Ok(())
 }
 
@@ -262,7 +261,7 @@ pub async fn record_of(
     }))
 }
 
-/// Set the local `main` branch's upstream to `<remote>/main`,
+/// Set the active local branch's upstream to `<remote>/main`,
 /// writing the corresponding `TrackingBranch` and remote-side
 /// `Branch` concepts on the meta branch.
 pub async fn set_upstream(
@@ -276,7 +275,7 @@ pub async fn set_upstream(
         .ok_or_else(|| RemoteError::UnknownRemote(remote_name.to_owned()))?;
 
     // Dialog side: connect to the remote, open its `main` branch,
-    // wire the local `main` to track it.
+    // wire the active local branch to track it.
     let remote_handle = connect(
         site,
         &SiteAddress::from(UcanAddress::new(&remote_record.endpoint)),
@@ -329,19 +328,21 @@ pub async fn set_upstream(
     let address = SiteAddress::from(UcanAddress::new(&remote_record.endpoint));
     let remote_concept = replica.remote(remote_name, remote_record.subject.clone(), &address);
     let tracked = remote_concept.branch(site::BRANCH_NAME);
-    let tracking = replica.branch(site::BRANCH_NAME).set_upstream(&tracked);
+    let tracking = replica
+        .branch(session.handle().name())
+        .set_upstream(&tracked);
 
-    meta.transaction()
-        .assert(tracked)
-        .assert(tracking)
-        .commit()
-        .publish()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
+    meta.transact(|transaction| {
+        std::future::ready(Ok::<_, dialog_repository::CommitError>(
+            transaction.assert(tracked.clone()).assert(tracking.clone()),
+        ))
+    })
+    .perform(&site.operator)
+    .await
+    .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
 
     Ok(UpstreamOutcome {
-        local_branch: site::BRANCH_NAME.to_owned(),
+        local_branch: session.handle().name().to_owned(),
         remote: remote_name.to_owned(),
         remote_branch: site::BRANCH_NAME.to_owned(),
     })

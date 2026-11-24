@@ -93,8 +93,8 @@ mod view_access;
 pub use agent_link::AgentLinkWorker;
 #[cfg(feature = "volatile-storage")]
 pub use hosted::{
-    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, join as agent_join, mcp,
-    telemetry, view, writer_seed,
+    HostedPeer, NODE_CACHE_BUDGET, SpaceWriter, WriterKey, WriterSession, card,
+    creation as agent_create, join as agent_join, mcp, propose, telemetry, view, writer_seed,
 };
 #[cfg(all(feature = "native-host", not(target_arch = "wasm32")))]
 mod local_peer;
@@ -118,6 +118,9 @@ mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
+
+/// Making a branch a space does not have yet, as a command.
+mod branch;
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
@@ -203,14 +206,16 @@ mod interpret;
 mod navigate;
 mod site_request;
 mod site_select;
+/// `intent/suggest`, answered by a provider on the branch's stack.
+mod suggest;
 
 mod diagnostics;
 
 mod command;
 pub use command::{
-    CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch, dispatch_committed,
+    CommandEnv, CommandOrigin, CommandProviders, Scope, Surface, command_providers, relay_commands,
+    run_commands,
 };
-pub mod invocation;
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod intent;
@@ -433,7 +438,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // body shape.
         .route(
             "/api/repository/{repo}/invite",
-            post(create_invite::create_invite),
+            post(create_invite::create_invite).get(create_invite::share_role),
         )
         .route(
             "/api/repository/{repo}/invites/{target_cid}/revoke",
@@ -3804,42 +3809,8 @@ employee:
         (status, json)
     }
 
-    /// A `tree/node` formula query walks the branch's index tree:
-    /// it reads and decodes the root node, returning a `Conclusion`
-    /// whose `this` is the node hash and whose fields describe the
-    /// node (kind, byte size, child/entry count).
-    #[dialog_common::test]
-    async fn it_resolves_a_tree_node_formula() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula";
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        seed_named_entity(&app, repo).await;
-
-        let (status, body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        assert_eq!(status, StatusCode::OK, "formula query OK: {body}");
-        let arr = body.as_array().expect("array of conclusions");
-        assert_eq!(arr.len(), 1, "a seeded branch has a root node: {body}");
-        let row = &arr[0];
-        assert!(
-            row["this"].as_str().is_some_and(|s| s.starts_with('#')),
-            "this is a base58 node hash: {row}"
-        );
-        let kind = row["fields"]["kind"].as_str().unwrap_or("");
-        assert!(kind == "index" || kind == "segment", "kind set: {row}");
-        assert!(
-            row["fields"]["size"].as_i64().is_some_and(|n| n > 0),
-            "node has a byte size: {row}"
-        );
-        assert!(
-            row["fields"]["count"].as_i64().is_some(),
-            "node has a child/entry count: {row}"
-        );
-    }
-
-    /// An unknown formula name is a 4xx, not a panic or a concept
-    /// fall-through.
+    /// A query whose predicate is a bare name, not a concept, is refused:
+    /// tonk answers concepts only.
     #[dialog_common::test]
     async fn it_rejects_an_unknown_formula() {
         let state = test_state().await;
@@ -3851,186 +3822,6 @@ employee:
 
         let (status, _body) = post_formula_query(&app, repo, "main", "tree/bogus").await;
         assert_ne!(status, StatusCode::OK, "unknown formula must not be OK");
-    }
-
-    /// Run a one-shot formula `/query` with explicit `terms`.
-    async fn post_formula_query_with(
-        app: &Router,
-        repo: &str,
-        branch: &str,
-        formula: &str,
-        terms: serde_json::Value,
-    ) -> (StatusCode, serde_json::Value) {
-        let wire = serde_json::json!({ "predicate": formula, "terms": terms });
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(wire.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-        (status, json)
-    }
-
-    /// `tree/child` walks one level down: given the root node's hash,
-    /// it returns one self-contained row per child — each carrying the
-    /// child's own hash, sibling position, and node fields. (If the
-    /// root is itself a leaf, there are no children and zero rows; the
-    /// query still succeeds.)
-    #[dialog_common::test]
-    async fn it_resolves_tree_children_of_the_root() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula-child";
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        seed_named_entity(&app, repo).await;
-
-        // Find the root and its kind.
-        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        let root = &root_body.as_array().expect("array")[0];
-        let root_hash = root["this"].as_str().expect("root hash").to_string();
-        let root_is_index = root["fields"]["kind"] == "index";
-
-        let (status, body) = post_formula_query_with(
-            &app,
-            repo,
-            "main",
-            "tree/child",
-            serde_json::json!({ "hash": root_hash }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "tree/child OK: {body}");
-        let rows = body.as_array().expect("array of children");
-
-        if root_is_index {
-            assert!(!rows.is_empty(), "an index root has children: {body}");
-            for (i, row) in rows.iter().enumerate() {
-                assert!(
-                    row["fields"]["child"]
-                        .as_str()
-                        .is_some_and(|s| s.starts_with('#')),
-                    "child hash present: {row}"
-                );
-                assert_eq!(row["this"], row["fields"]["child"], "this == child: {row}");
-                assert_eq!(row["fields"]["at"], i as i64, "sibling position: {row}");
-                let kind = row["fields"]["kind"].as_str().unwrap_or("");
-                assert!(
-                    kind == "index" || kind == "segment",
-                    "child kind set: {row}"
-                );
-            }
-        } else {
-            assert!(rows.is_empty(), "a segment root has no children: {body}");
-        }
-    }
-
-    /// A full walk: root → (descend branches to) a leaf → its entries
-    /// → decode one entry's key into components. Exercises tree/node,
-    /// tree/child, tree/entry, and tree/key chained by feeding each
-    /// row's hash into the next query.
-    #[dialog_common::test]
-    async fn it_walks_to_a_leaf_and_decodes_an_entry_key() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-reactor-formula-walk";
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        seed_named_entity(&app, repo).await;
-
-        // Descend from the root to the first segment.
-        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
-        let mut hash = root_body.as_array().unwrap()[0]["this"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut kind = root_body.as_array().unwrap()[0]["fields"]["kind"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut guard = 0;
-        while kind == "index" && guard < 32 {
-            guard += 1;
-            let (_, kids) = post_formula_query_with(
-                &app,
-                repo,
-                "main",
-                "tree/child",
-                serde_json::json!({ "hash": hash }),
-            )
-            .await;
-            let first = &kids.as_array().expect("children")[0];
-            hash = first["fields"]["child"].as_str().unwrap().to_string();
-            kind = first["fields"]["kind"].as_str().unwrap().to_string();
-        }
-        assert_eq!(kind, "segment", "descended to a segment");
-
-        // Read the segment's entries.
-        let (status, entries) = post_formula_query_with(
-            &app,
-            repo,
-            "main",
-            "tree/entry",
-            serde_json::json!({ "hash": hash }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "tree/entry OK: {entries}");
-        let entries = entries.as_array().expect("entries");
-        assert!(!entries.is_empty(), "segment has entries: {entries:?}");
-        let entry = &entries[0];
-        assert!(
-            entry["fields"]["key"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("0x")),
-            "entry carries a hex key: {entry}"
-        );
-        assert!(
-            entry["fields"]["attribute"].as_str().is_some(),
-            "entry carries its decoded datum: {entry}"
-        );
-
-        // Decode that entry's key into components.
-        let entry_key = entry["fields"]["key"].as_str().unwrap().to_string();
-        let (status, decoded) = post_formula_query_with(
-            &app,
-            repo,
-            "main",
-            "tree/key",
-            serde_json::json!({ "key": entry_key }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "tree/key OK: {decoded}");
-        let row = &decoded.as_array().expect("one row")[0];
-        let tag = row["fields"]["tag"].as_str().unwrap_or("");
-        assert!(
-            matches!(tag, "entity" | "attribute" | "value"),
-            "key tag named: {row}"
-        );
-        // The M3 key format is variable-length, so components come back
-        // as a decoded `parts` list rather than the fixed-offset
-        // `entity` / `value-type` fields the old layout could name.
-        let parts = row["fields"]["parts"]
-            .as_array()
-            .unwrap_or_else(|| panic!("key parts present: {row}"));
-        let kinds: Vec<&str> = parts
-            .iter()
-            .filter_map(|part| part["kind"].as_str())
-            .collect();
-        assert!(kinds.contains(&"entity"), "entity component present: {row}");
-        assert!(
-            kinds.contains(&"vtype"),
-            "value-type component present: {row}"
-        );
     }
 
     /// Open an SSE subscription and return the open body so the
@@ -4485,9 +4276,8 @@ employee:
     }
 
     /// Re-polling a subscription whose result didn't change must
-    /// not push another SSE event. The poll path hashes the new
-    /// payload and compares against `last_hash`; equal hashes
-    /// short-circuit.
+    /// not push another SSE event: the stack's poll finds the result set
+    /// unchanged and delivers nothing.
     #[dialog_common::test]
     async fn it_skips_broadcast_when_repoll_is_unchanged() {
         use std::sync::Arc;
@@ -4516,7 +4306,7 @@ employee:
                 .acquire(&guard.operator)
                 .await
                 .expect("acquire");
-            session.state.poll(&guard.operator).await;
+            session.poll(&guard.operator).await;
         }
 
         // Race the next frame against a short sleep. We expect
@@ -4529,14 +4319,14 @@ employee:
         }
     }
 
-    /// When a subscriber's receiver closes (the SSE body is
-    /// dropped), the next change-driven re-poll must evict that
-    /// subscriber. With no subscribers left, the subscription
-    /// itself is removed from the branch's map. Pruning is
-    /// piggy-backed on the send attempt — there is no separate
-    /// reaper — so this test drives a commit to trigger the send.
+    /// A subscription is released when its last client lets go: the
+    /// stack holds a subscription only while a reader of it does, and the
+    /// reader is the SSE body's, so closing the stream drops it at once,
+    /// with no change and no poll needed to notice. (Before the stack
+    /// held the subscriptions, a closed stream was pruned on the next
+    /// change-driven poll's failed send.)
     #[dialog_common::test]
-    async fn it_prunes_dropped_subscriber_on_change() {
+    async fn it_releases_a_subscription_when_its_last_client_drops() {
         use std::sync::Arc;
 
         let tonk = test_state().await;
@@ -4548,14 +4338,6 @@ employee:
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
-        // Subscribe and read the first frame so the subscriber is
-        // registered with `Status::Established`.
-        {
-            let mut body = open_subscription(&app, repo, "main").await;
-            let _snapshot = read_sse_frame(&mut body).await;
-            // body drops here, closing the receiver.
-        }
-
         let session = {
             let guard = app_state.read().await;
             guard
@@ -4566,21 +4348,31 @@ employee:
                 .await
                 .expect("acquire")
         };
+        let held = session.state.subscriptions_held();
+
+        // Two clients of one query share one subscription.
+        let mut first = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut first).await;
+        let mut second = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut second).await;
         assert_eq!(
-            session.state.subscriptions().lock().len(),
-            1,
-            "subscription registered before prune"
+            session.state.subscriptions_held(),
+            held + 1,
+            "two clients of one query read one subscription"
         );
 
-        // Commit a change so the next poll has new bytes to
-        // broadcast. The send to the dead channel fails,
-        // `retain_mut` drops the subscriber, and with the list
-        // empty the subscription itself is removed.
-        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
+        drop(first);
+        assert_eq!(
+            session.state.subscriptions_held(),
+            held + 1,
+            "the subscription stays while a client still reads it"
+        );
 
-        assert!(
-            session.state.subscriptions().lock().is_empty(),
-            "dropped subscriber's subscription must be pruned after a change-driven poll"
+        drop(second);
+        assert_eq!(
+            session.state.subscriptions_held(),
+            held,
+            "the subscription goes with its last client"
         );
     }
 
@@ -4631,31 +4423,39 @@ employee:
         // in the order the branch delivered them. Deeper levels register
         // first (as nested displays can after a reconnect), four per level.
         let (sender, mut receiver) = unbounded_channel();
-        // A query shared across levels is polled at its outermost, even
+        // The connections stay open for the test: each holds its reader.
+        let mut connections = Vec::new();
+        // A query shared across levels is delivered at its outermost, even
         // though its deepest subscriber created it (first of all).
-        session
-            .state
-            .adopt_subscriber(query("shared"), None, 9, sender.clone());
+        connections.push(
+            session
+                .state
+                .connect(query("shared"), None, 9, sender.clone()),
+        );
         let mut expected = Vec::new();
         for level in (0..4u32).rev() {
             for index in 0..4 {
                 let term = format!("l{level}n{index}");
-                session
-                    .state
-                    .adopt_subscriber(query(&term), None, level, sender.clone());
+                connections.push(
+                    session
+                        .state
+                        .connect(query(&term), None, level, sender.clone()),
+                );
                 expected.push((level, term));
             }
         }
-        session
-            .state
-            .adopt_subscriber(query("shared"), None, 0, sender.clone());
+        connections.push(
+            session
+                .state
+                .connect(query("shared"), None, 0, sender.clone()),
+        );
         expected.sort_by_key(|(level, _)| *level);
         let mut expected: Vec<String> = expected.into_iter().map(|(_, term)| term).collect();
         expected.insert(0, "shared".into());
         expected.insert(0, "shared".into());
         let terms = expected.clone();
 
-        session.state.poll(&guard.operator).await;
+        session.poll(&guard.operator).await;
 
         let mut delivered = Vec::new();
         while let Ok(bytes) = receiver.try_recv() {
@@ -4711,14 +4511,7 @@ employee:
             .acquire(&guard.operator)
             .await
             .expect("acquire");
-        let levels: Vec<u32> = session
-            .state
-            .subscriptions()
-            .lock()
-            .values()
-            .flat_map(|subscription| subscription.subscribers.iter().map(|s| s.level))
-            .collect();
-        assert_eq!(levels, vec![3]);
+        assert_eq!(session.state.connection_levels(), vec![3]);
     }
 
     /// A subscription to a branch laid out the way an earlier release wrote

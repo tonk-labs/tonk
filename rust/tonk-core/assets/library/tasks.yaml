@@ -1,16 +1,16 @@
 # tasks — follow the commands run in this space: what is running, what
 # finished, and what failed and why.
 #
-# A command run from the command palette asks the worker to keep its
-# invocation (`invocation`, declared in `core.yaml`): the command's own
-# fields, where it got to, what it is doing, and what it produced. The
-# worker keeps it in the space branch's session overlay, never committed or
-# replicated, and retracts it once it expires. This component lists them.
+# A command run from the command palette is stamped to be followed, and
+# the space's stack keeps its invocation (`invocation`, declared in
+# `core.yaml`) in its `session:` layer: when it ran, which command it was,
+# whether it was answered, failed or went unhandled, what it is doing, and
+# what it produced. Never committed or replicated; it goes with the
+# session. This component lists them.
 #
 # The page lives at `/console/tasks`. `<task-console>` subscribes to the
 # space's invocations and draws one row each, newest first. Opening a row
-# renders the invocation through its command's own `status` view, when the
-# command declares one, or else as the command it was.
+# renders what the command produced, when it produced something.
 #
 # Only this space's commands: a space's pages cannot read the profile, so a
 # command run on the profile (from the hub, or a profile command from the

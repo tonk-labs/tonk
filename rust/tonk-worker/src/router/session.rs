@@ -92,6 +92,14 @@ pub struct WaitingSite {
     anchor: String,
 }
 
+impl WaitingSite {
+    /// Whether this site waits on branch `branch` of `repo`.
+    #[cfg(test)]
+    pub(crate) fn waits_on(&self, repo: &str, branch: &str) -> bool {
+        self.repo == repo && self.branch == branch
+    }
+}
+
 /// Stamp the sites waiting on `repo`, now that the device holds it.
 ///
 /// A stamp that still finds no replica waits again.
@@ -374,7 +382,7 @@ async fn stamp_site_on(
     use tonk_schema::Site;
     use tonk_schema::invocation::{Done, Failure};
 
-    let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
+    let Ok(entity): Result<dialog_corpus::Entity, _> = site.parse() else {
         return Err(Failure::new("The tab's site is not a valid entity."));
     };
 
@@ -405,6 +413,15 @@ async fn stamp_site_on(
             return Done::nothing();
         }
     };
+    // A branch with no head has not been made yet (a tab at
+    // `/space/{branch}@{did}` before `space/create-branch`): nothing on it
+    // routes. Wait for it, so the command that makes it restamps this site.
+    if !profile && state.handle().revision().is_none() {
+        tonk_common::log!("[stamp] {site} WAITING: branch {branch_name} of {repo} has no head");
+        wait_for_space(tonk, &client, profile, waiting).await;
+        // Deferred, as above: the branch's making restamps the site.
+        return Done::nothing();
+    }
 
     let Some(replica) = origin_entity(tonk, &state).await else {
         tonk_common::log!(
@@ -469,7 +486,7 @@ async fn stamp_site_on(
     }
     // Stamp the Level-0-resolved repository + branch on the site too, so a route
     // view can give its content a `<tonk-repository>`/`<tonk-branch>` context.
-    // Repository-context elements (`<tonk-tree>`, `<tonk-inspector>`) resolve
+    // Repository-context elements (`<tonk-inspector>`) resolve
     // repo/branch by walking DOM ancestors, which the sealed guest otherwise
     // lacks. These are `as: text` site fields, hence string-typed raw claims.
     //
@@ -489,6 +506,31 @@ async fn stamp_site_on(
         match site_param_claim(&entity, name, value) {
             Some(claim) => overlay = overlay.assert(claim),
             None => tonk_common::log!("register_site: bad site {name} attribute"),
+        }
+    }
+    // A profile page at `/space/{segment}/…` shows a space it does not route
+    // into itself: the chrome nests a site for it. Stamp which repository and
+    // branch the segment names, read by the same Level 0 grammar the service
+    // worker routes by, so the chrome never re-parses `{branch}@{label}:{id}`
+    // out of the raw `{id}` capture (which carries all three).
+    if profile && let Some((space_repo, space_branch)) = space_target(&percent_decode(path)) {
+        // A branch the space lacks is reported, not made: the chrome offers
+        // to make it (`space/create-branch`). The state rides the same
+        // replace-on-restamp as the rest of the site, so a restamp after the
+        // branch exists drops it.
+        let missing = branch_missing(tonk, &space_repo, &space_branch).await;
+        let mut fields = vec![
+            ("space-repo", space_repo.as_str()),
+            ("space-branch", space_branch.as_str()),
+        ];
+        if missing {
+            fields.push((SPACE_BRANCH_STATE, MISSING_BRANCH));
+        }
+        for (name, value) in fields {
+            match site_param_claim(&entity, name, value) {
+                Some(claim) => overlay = overlay.assert(claim),
+                None => tonk_common::log!("register_site: bad site {name} attribute"),
+            }
         }
     }
     if let Err(e) = overlay.write().perform(&tonk.operator).await {
@@ -589,12 +631,87 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| value.to_owned())
 }
 
+/// The site field saying why the branch a tab's space segment names cannot be
+/// shown (`tonk:space/missing-branch` in `profile.yaml`).
+pub(super) const SPACE_BRANCH_STATE: &str = "space-branch-state";
+
+/// [`SPACE_BRANCH_STATE`] for a branch the space does not have.
+const MISSING_BRANCH: &str = "missing";
+
+/// Whether `branch` is one `repo` lacks: the space is on this device, its
+/// default branch has a head, and `branch` has none.
+///
+/// A space still arriving (no head on its default branch either) is not
+/// missing a branch, it is missing altogether, which the chrome already
+/// tells apart from the directory row. Reads storage only: no branch is
+/// opened through the reactor, so asking does not cache an empty session.
+pub(super) async fn branch_missing(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> bool {
+    use dialog_repository::RepositoryExt as _;
+
+    if branch == super::DEFAULT_BRANCH {
+        return false;
+    }
+    let Ok(repository) = tonk
+        .profile
+        .space(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    else {
+        return false;
+    };
+    let has_head = |name: &str| {
+        let reference = repository.branch(name);
+        async move { reference.load().perform(&tonk.operator).await.is_ok() }
+    };
+    has_head(super::DEFAULT_BRANCH).await && !has_head(branch).await
+}
+
+/// Drop the missing-branch state from `site` on the profile branch
+/// `profile_branch`, once the branch it named exists: the chrome's panel
+/// goes, and the nested site, restamped by [`stamp_waiting_sites`], shows
+/// the branch.
+pub(super) async fn clear_missing_branch(
+    tonk: &crate::worker::TonkState,
+    profile_branch: &str,
+    site: &dialog_corpus::Entity,
+) {
+    let Some(claim) = site_param_claim(site, SPACE_BRANCH_STATE, MISSING_BRANCH) else {
+        return;
+    };
+    let write = tonk
+        .reactor
+        .profile_repository()
+        .branch(profile_branch)
+        .overlay()
+        .retract(claim)
+        .write()
+        .perform(&tonk.operator)
+        .await;
+    if let Err(error) = write {
+        tonk_common::log!("clear_missing_branch: overlay write failed for {site}: {error}");
+    }
+}
+
+/// The repository and branch a `/space/{segment}/…` path addresses, by the
+/// Level 0 grammar ([`tonk_schema::resolve_path`]); `None` for any other path.
+pub(super) fn space_target(path: &str) -> Option<(String, String)> {
+    match tonk_schema::resolve_path(path)? {
+        tonk_schema::RouteTarget::Space { space, .. } => Some((space.name, space.branch)),
+        tonk_schema::RouteTarget::Profile => None,
+    }
+}
+
 fn site_param_claim(
-    site: &dialog_artifacts::Entity,
+    site: &dialog_corpus::Entity,
     name: &str,
     value: &str,
 ) -> Option<crate::router::claim::RawClaim> {
-    use dialog_artifacts::{Entity, Value};
+    use dialog_corpus::{Entity, Value};
 
     let attribute = format!("xyz.tonk.site/{name}").parse().ok()?;
     let is = match name {
@@ -609,7 +726,7 @@ fn site_param_claim(
         the: attribute,
         of: site.clone(),
         is,
-        policy: dialog_artifacts::Pick::Last,
+        policy: dialog_corpus::Pick::Last,
     })
 }
 
@@ -625,8 +742,7 @@ fn site_param_claim(
 /// table and stamping the `tonk:site` (+ captured params) onto `this` in the
 /// branch overlay. A profile-branch commit carries an empty `origin.repo` (see
 /// `transact_profile`), which is exactly the `profile` flag `stamp_site_on` wants.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::CommandEnv {
     async fn execute(
         &self,
@@ -695,7 +811,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
 pub(super) async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
-) -> Option<dialog_artifacts::Entity> {
+) -> Option<dialog_corpus::Entity> {
     use dialog_query::{Output as _, Query, Term};
     use dialog_repository::schema::replica::{Peer, Subject};
     use dialog_repository::schema::{DidExt as _, Replica};
@@ -723,9 +839,9 @@ pub(super) async fn origin_entity(
 /// params captured from the path (`{model}`, `{entity}`, `{view}`, …).
 struct MatchedRoute {
     /// The route-table entry's entity.
-    route: dialog_artifacts::Entity,
+    route: dialog_corpus::Entity,
     /// The route model to mount.
-    concept: dialog_artifacts::Entity,
+    concept: dialog_corpus::Entity,
     /// The captured path params, by name.
     params: tonk_router::Params,
 }
@@ -830,7 +946,7 @@ pub(super) async fn matched_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
     rest: &str,
-) -> Option<dialog_artifacts::Entity> {
+) -> Option<dialog_corpus::Entity> {
     match_route(tonk, state, rest)
         .await
         .map(|matched| matched.route)
@@ -919,8 +1035,8 @@ mod route_order_tests {
     /// A route row at `uri` matching `path`. The concept is irrelevant to
     /// ordering, so every row shares one.
     fn route(uri: &str, path: &str) -> Route {
-        let entity: dialog_artifacts::Entity = uri.parse().expect("route uri parses");
-        let concept: dialog_artifacts::Entity = "tonk:model".parse().expect("concept uri parses");
+        let entity: dialog_corpus::Entity = uri.parse().expect("route uri parses");
+        let concept: dialog_corpus::Entity = "tonk:model".parse().expect("concept uri parses");
         Route {
             this: entity,
             path: RouteTablePath(path.to_string()),
@@ -1045,7 +1161,7 @@ mod tests {
             crate::router::evaluate::evaluate_profile_body(
                 &tonk,
                 "main",
-                PROFILE_LIBRARY.to_owned(),
+                crate::router::library::inline_includes(PROFILE_LIBRARY),
                 true,
             )
             .await
@@ -1163,15 +1279,13 @@ mod tests {
             // The profile library first (it declares the shared `view` /
             // `route` concepts), then the notebook on top — the install a
             // author performs to get a notebook onto their profile.
-            for library in [PROFILE_LIBRARY, NOTEBOOK_LIBRARY] {
-                crate::router::evaluate::evaluate_profile_body(
-                    &tonk,
-                    "main",
-                    library.to_owned(),
-                    true,
-                )
-                .await
-                .expect("the library installs on the profile");
+            for library in [
+                crate::router::library::inline_includes(PROFILE_LIBRARY),
+                NOTEBOOK_LIBRARY.to_owned(),
+            ] {
+                crate::router::evaluate::evaluate_profile_body(&tonk, "main", library, true)
+                    .await
+                    .expect("the library installs on the profile");
             }
         }
 

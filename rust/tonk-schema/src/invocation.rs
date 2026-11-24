@@ -1,190 +1,126 @@
 // The `#[derive(Concept)]` and `#[derive(Attribute)]` macros generate
 // helper types without doc comments; suppress `missing_docs` here.
 #![allow(missing_docs)]
+// `#[derive(Attribute)]` names a constructor after the attribute, so
+// `Of`'s is `of`, its own name lowercased.
+#![allow(clippy::self_named_constructors)]
 
 //! Invocations: what became of a command someone ran.
 //!
-//! A command is a transient, so it is gone once its commit lands. An
-//! invoker that wants to know how it went stamps the command with
-//! [`command::InvokedAt`] (the moment it was run, which also keeps two runs of the
-//! same command apart) and the [`command::Concept`] it is an
-//! instance of. The worker then keeps an *invocation* on the command's own
-//! entity, in the session overlay of the branch the command was committed
-//! on: the command's fields as they were given, a [`case`] saying where it
-//! got to, a [`State`] a provider reports while it works, and an
-//! [`Output`] once it is done. Nothing about an invocation is ever
-//! committed or replicated, and it is retracted once it [`Expires`].
+//! A command lands in its stack's `control:` layer for one tick, and dialog
+//! writes each change in its life there as a `dialog.command/*` row of the
+//! command's entity, again for one tick: `invoked` when it lands, then
+//! `answered`, `failed` or `unhandled` once the providers ran, and
+//! `progress` whenever a provider reports some. Nothing keeps them.
 //!
-//! The vocabulary is declared in `core.yaml` and `profile.yaml`
-//! (`invocation`, `state`, `command/completion`, `command/retention`);
-//! these types follow it.
+//! An invoker that wants to follow a command stamps it with
+//! [`command::InvokedAt`] (when it was run) and [`command::Concept`] (which
+//! command it is), and gives it an entity of its own. Rules in `core.yaml`
+//! and `profile.yaml` (`invocation` and the concepts beside it) then copy
+//! that command's lifecycle rows into the stack's `session:` layer, where
+//! the invocation stays for the session: [`Invoked`], [`Of`], and in time
+//! [`Answered`], [`Failed`] or [`Unhandled`], with the [`State`] its
+//! provider last reported. A provider's [`Done`] output is written there
+//! too, as [`Output`]. Nothing about an invocation is committed or
+//! replicated; it goes with the session.
+//!
+//! An untracked command (a keystroke's `intent/interpret`, a page's
+//! `tonk:load`) leaves nothing behind: the rules and the provider wrapper
+//! act only on stamped commands.
 
-use dialog_artifacts::Entity;
-use dialog_query::{Attribute, Concept};
+use dialog_corpus::Entity;
+use dialog_query::Attribute;
 
-/// What the invoker stamps on the command it runs.
+/// What the invoker stamps on the command it runs, beside the command's
+/// own fields, in `control:`.
 pub mod command {
     use super::{Attribute, Entity};
 
     /// When the command was run, in milliseconds since the epoch, by the
-    /// invoker's clock. Stamped by the invoker on the command entity; its
-    /// presence is what asks the worker to keep an invocation.
+    /// invoker's clock. Its presence is what asks for the command to be
+    /// followed.
     #[derive(Attribute, Clone, PartialEq, PartialOrd)]
     #[domain("xyz.tonk.command")]
     #[pick(last)]
     pub struct InvokedAt(pub f64);
 
     /// The concept of the command that was run, so a view can render the
-    /// invocation through that command's own `status` view. Stamped by the
-    /// invoker, which knows what it ran; the worker only knows Rust types.
+    /// invocation through that command's own `status` view.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     #[pick(last)]
     pub struct Concept(pub Entity);
 }
 
-/// Where the invocation got to: one of the [`case`] entities.
+/// When the followed command was run, copied from its
+/// [`command::InvokedAt`]: what makes an entity of `session:` an
+/// invocation.
+#[derive(Attribute, Clone, PartialEq, PartialOrd)]
+#[domain("xyz.tonk.invocation")]
+#[pick(last)]
+pub struct Invoked(pub f64);
+
+/// The concept of the command, copied from its [`command::Concept`].
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("xyz.tonk.invocation")]
 #[pick(last)]
-pub struct Case(pub Entity);
+pub struct Of(pub Entity);
 
-/// What the invocation is doing, as the provider last reported it. An
-/// entity that has a [`Status`].
+/// The concept whose provider answered the command, copied from
+/// `dialog.command/answered`.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.invocation")]
+#[pick(last)]
+pub struct Answered(pub Entity);
+
+/// Why the command failed, copied from `dialog.command/failed`.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.invocation")]
+#[pick(last)]
+pub struct Failed(pub String);
+
+/// That no provider claimed the command, copied from
+/// `dialog.command/unhandled`. A command a rule handled at commit time is
+/// unhandled too, as dialog sees it, and has an [`Output`] its rule wrote.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.invocation")]
+#[pick(last)]
+pub struct Unhandled(pub bool);
+
+/// What the command is doing, as its provider last reported it, copied
+/// from `dialog.command/progress`: an entity with a [`Status`].
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("xyz.tonk.invocation")]
 #[pick(last)]
 pub struct State(pub Entity);
 
-/// What the invocation produced: the entity a successful command made or
-/// acted on, or, for a failed one, an error entity whose [`Status`] says
-/// why.
+/// What the command produced: the entity it made or acted on, written by
+/// its provider's [`Done`] or by the rule that handled it.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("xyz.tonk.invocation")]
 #[pick(last)]
 pub struct Output(pub Entity);
 
-/// When the worker started the command, in milliseconds since the epoch.
-#[derive(Attribute, Clone, PartialEq, PartialOrd)]
-#[domain("xyz.tonk.invocation")]
-#[pick(last)]
-pub struct Started(pub f64);
-
-/// When the command finished, in milliseconds since the epoch.
-#[derive(Attribute, Clone, PartialEq, PartialOrd)]
-#[domain("xyz.tonk.invocation")]
-#[pick(last)]
-pub struct Finished(pub f64);
-
-/// When the invocation is retracted from the overlay, in milliseconds
-/// since the epoch. Set once it has finished.
-#[derive(Attribute, Clone, PartialEq, PartialOrd)]
-#[domain("xyz.tonk.invocation")]
-#[pick(last)]
-pub struct Expires(pub f64);
-
-/// The text that says what a state or an error is. Every [`State`] and
-/// every error [`Output`] has one, so a generic view can always render
-/// something.
+/// The words for a [`State`]: what a generic view shows when the
+/// command's own view says nothing.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("xyz.tonk.state")]
 #[pick(last)]
 pub struct Status(pub String);
 
-/// An invocation as the overlay holds it: where it got to and when it
-/// started. Its optional parts ([`State`], [`Output`], [`Finished`],
-/// [`Expires`]) are read and written attribute by attribute.
-#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
-pub struct Invocation {
-    /// The command entity.
-    pub this: Entity,
-    /// One of the [`case`] entities.
-    pub case: Case,
-    /// When the worker started it.
-    pub started: Started,
-}
+/// The words for a [`State`] as its provider reported it, beside the
+/// command's progress in `control:` for one tick; a rule keeps them as the
+/// state's [`Status`].
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.state")]
+#[pick(last)]
+pub struct Reported(pub String);
 
-/// A state or error entity and the text that says what it is.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StateStatus {
-    /// The state entity.
-    pub this: Entity,
-    /// What it says.
-    pub status: Status,
-}
-
-/// The `case:` entities an invocation's [`Case`] names.
-pub mod case {
-    use dialog_artifacts::Entity;
-
-    /// A provider is running the command.
-    pub const ACTIVE: &str = "case:active";
-    /// The command did what it does.
-    pub const DONE: &str = "case:done";
-    /// The command ran and failed; its output says why.
-    pub const FAILED: &str = "case:failed";
-    /// The worker running the command went away before it finished.
-    pub const ABORTED: &str = "case:aborted";
-    /// Nothing handled the command: no provider matched it, and no rule
-    /// concluded a completion for it.
-    pub const UNHANDLED: &str = "case:unhandled";
-
-    /// Every case, for readers that list them.
-    pub const ALL: [&str; 5] = [ACTIVE, DONE, FAILED, ABORTED, UNHANDLED];
-
-    /// The entity for `case`.
-    pub fn entity(case: &str) -> Entity {
-        case.parse().expect("a case is a valid entity URI")
-    }
-
-    /// Whether `case` is one an invocation stays in for good.
-    pub fn is_final(case: &str) -> bool {
-        case != ACTIVE
-    }
-}
-
-/// What a rule concludes about a command it handled at commit time.
-///
-/// A command with no provider is handled, if at all, by a rule that
-/// fires on it inside the commit. Such a rule says so by concluding a
-/// `command/completion` on the command entity, naming what it produced.
-/// The concept is transient: the conclusion is read off the commit and
-/// never stored.
-pub mod completion {
-    use super::{Attribute, Entity};
-
-    /// What the rule-handled command produced.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.command.completion")]
-    #[pick(last)]
-    pub struct Output(pub Entity);
-}
-
-/// How long finished invocations are kept: the account's
-/// `command/retention`, or these defaults.
-pub mod retention {
-    use super::Attribute;
-
-    /// A successful invocation, by default: long enough for the palette
-    /// to show it.
-    pub const DONE_SECONDS: f64 = 30.0;
-    /// A failed, aborted or unhandled one, by default: long enough to go
-    /// and find it.
-    pub const FAILED_SECONDS: f64 = 600.0;
-
-    /// How long a successful invocation is kept after it finishes, in
-    /// seconds.
-    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-    #[domain("xyz.tonk.command.retention")]
-    #[pick(last)]
-    pub struct Done(pub f64);
-
-    /// How long a failed, aborted or unhandled invocation is kept after
-    /// it finishes, in seconds.
-    #[derive(Attribute, Clone, PartialEq, PartialOrd)]
-    #[domain("xyz.tonk.command.retention")]
-    #[pick(last)]
-    pub struct Failed(pub f64);
+/// Whether the command whose rows are `rows` is followed: whether its
+/// invoker stamped it with [`command::InvokedAt`].
+pub fn followed<'a>(rows: impl IntoIterator<Item = &'a dialog_corpus::Fact>) -> bool {
+    let stamp = command::InvokedAt::the().to_string();
+    rows.into_iter().any(|row| row.the.to_string() == stamp)
 }
 
 /// What a command's provider says came of it.
@@ -263,25 +199,18 @@ mod tests {
             command::Concept::the().to_string(),
             "xyz.tonk.command/concept"
         );
-        assert_eq!(Case::the().to_string(), "xyz.tonk.invocation/case");
+        assert_eq!(Invoked::the().to_string(), "xyz.tonk.invocation/invoked");
+        assert_eq!(Of::the().to_string(), "xyz.tonk.invocation/of");
+        assert_eq!(Answered::the().to_string(), "xyz.tonk.invocation/answered");
+        assert_eq!(Failed::the().to_string(), "xyz.tonk.invocation/failed");
+        assert_eq!(
+            Unhandled::the().to_string(),
+            "xyz.tonk.invocation/unhandled"
+        );
         assert_eq!(State::the().to_string(), "xyz.tonk.invocation/state");
         assert_eq!(Output::the().to_string(), "xyz.tonk.invocation/output");
-        assert_eq!(Started::the().to_string(), "xyz.tonk.invocation/started");
-        assert_eq!(Finished::the().to_string(), "xyz.tonk.invocation/finished");
-        assert_eq!(Expires::the().to_string(), "xyz.tonk.invocation/expires");
         assert_eq!(Status::the().to_string(), "xyz.tonk.state/status");
-        assert_eq!(
-            completion::Output::the().to_string(),
-            "xyz.tonk.command.completion/output"
-        );
-        assert_eq!(
-            retention::Done::the().to_string(),
-            "xyz.tonk.command.retention/done"
-        );
-        assert_eq!(
-            retention::Failed::the().to_string(),
-            "xyz.tonk.command.retention/failed"
-        );
+        assert_eq!(Reported::the().to_string(), "xyz.tonk.state/reported");
     }
 
     /// The invocation block of a library document, between its markers.
@@ -303,48 +232,58 @@ mod tests {
         assert_eq!(
             block(CORE),
             block(PROFILE),
-            "an invocation lives on whichever branch its command ran on, so \
-             core.yaml and profile.yaml declare it alike"
+            "a command lands on whichever branch it ran on, so core.yaml and \
+             profile.yaml follow it alike"
         );
     }
 
     #[dialog_common::test]
-    fn the_library_declares_every_attribute_written_here() {
+    fn the_library_declares_every_attribute_named_here() {
         let declared = block(CORE);
         for the in [
             command::InvokedAt::the().to_string(),
             command::Concept::the().to_string(),
-            Case::the().to_string(),
+            Invoked::the().to_string(),
+            Of::the().to_string(),
+            Answered::the().to_string(),
+            Failed::the().to_string(),
+            Unhandled::the().to_string(),
             State::the().to_string(),
             Output::the().to_string(),
-            Started::the().to_string(),
-            Finished::the().to_string(),
-            Expires::the().to_string(),
             Status::the().to_string(),
-            completion::Output::the().to_string(),
+            Reported::the().to_string(),
         ] {
             assert!(
                 declared.contains(&format!("the: {the}\n")),
-                "{the} is written by the worker but not declared in core.yaml"
-            );
-        }
-        for the in [
-            retention::Done::the().to_string(),
-            retention::Failed::the().to_string(),
-        ] {
-            assert!(
-                PROFILE.contains(&format!("the: {the}\n")),
-                "{the} is read by the worker but not declared in profile.yaml"
+                "{the} is named here but not declared in core.yaml"
             );
         }
     }
 
     #[dialog_common::test]
-    fn every_case_but_active_is_final() {
-        for name in case::ALL {
-            assert_eq!(case::is_final(name), name != case::ACTIVE, "{name}");
-            let _ = case::entity(name);
-        }
+    fn a_command_is_followed_only_when_stamped() {
+        let of: Entity = "urn:uuid:run".parse().unwrap();
+        let fact = |the: &str, is: dialog_corpus::Value| dialog_corpus::Fact {
+            the: the.parse().unwrap(),
+            of: of.clone(),
+            is,
+            cause: None,
+        };
+        let stamped = [
+            fact(
+                "xyz.tonk.command.rename/name",
+                dialog_corpus::Value::String("Plans".into()),
+            ),
+            fact(
+                "xyz.tonk.command/invoked-at",
+                dialog_corpus::Value::Float(1.0),
+            ),
+        ];
+        assert!(followed(&stamped));
+        assert!(
+            !followed(&stamped[..1]),
+            "a command nobody stamped is not followed"
+        );
     }
 
     #[dialog_common::test]

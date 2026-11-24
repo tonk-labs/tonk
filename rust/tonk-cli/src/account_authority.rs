@@ -291,7 +291,7 @@ impl dialog_varsig::Principal for AccountBoundOperator {
 
 macro_rules! forward {
     ($command:ty) => {
-        #[async_trait::async_trait]
+        #[dialog_capability::provider]
         impl Provider<$command> for AccountBoundOperator
         where
             Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
@@ -320,8 +320,59 @@ forward!(dialog_effects::blob::Import);
 forward!(dialog_effects::blob::Size);
 forward!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward!(dialog_effects::credential::Save<dialog_effects::credential::Secret>);
-forward!(dialog_effects::memory::Resolve);
-forward!(dialog_effects::memory::Publish);
+// Keep complete signed heads as they are observed or published. Dialog's
+// in-tree log deliberately omits their tree roots; native checkout needs them.
+#[dialog_capability::provider]
+impl Provider<dialog_effects::memory::Resolve> for AccountBoundOperator {
+    async fn execute(
+        &self,
+        input: Capability<dialog_effects::memory::Resolve>,
+    ) -> Result<Option<dialog_effects::memory::Edition<Vec<u8>>>, dialog_effects::memory::MemoryError>
+    {
+        use dialog_effects::memory::prelude::ResolveExt as _;
+        let subject = Subject::from(input.subject().clone());
+        let head = input.space().starts_with("branch/") && input.cell() == "revision";
+        let result = input.perform(&self.inner).await?;
+        if head && let Some(edition) = &result {
+            self.remember_head(subject, &edition.content).await;
+        }
+        Ok(result)
+    }
+}
+
+#[dialog_capability::provider]
+impl Provider<dialog_effects::memory::Publish> for AccountBoundOperator {
+    async fn execute(
+        &self,
+        input: Capability<dialog_effects::memory::Publish>,
+    ) -> Result<dialog_effects::memory::Version, dialog_effects::memory::MemoryError> {
+        use dialog_effects::memory::prelude::PublishExt as _;
+        let subject = Subject::from(input.subject().clone());
+        let head = input.space().starts_with("branch/") && input.cell() == "revision";
+        let bytes = head.then(|| input.content().to_vec());
+        let version = input.perform(&self.inner).await?;
+        if let Some(bytes) = bytes {
+            self.remember_head(subject, &bytes).await;
+        }
+        Ok(version)
+    }
+}
+
+impl AccountBoundOperator {
+    async fn remember_head(&self, subject: Subject, bytes: &[u8]) {
+        // Legacy/unsigned heads still need to reach the existing migration and
+        // validation paths. They cannot become checkout targets.
+        if let Ok(revision) = serde_ipld_dagcbor::from_slice::<dialog_repository::Revision>(bytes)
+            && revision.verify().is_ok()
+            && let Err(error) = crate::revisions::remember(subject, bytes, &self.inner).await
+        {
+            eprintln!("warning: could not retain revision for checkout: {error}");
+        }
+    }
+}
+
+forward!(dialog_effects::branch::Create);
+forward!(dialog_effects::branch::Switch);
 forward!(dialog_effects::memory::Retract);
 forward!(dialog_effects::memory::List);
 forward!(dialog_effects::credential::Retract<dialog_effects::credential::Secret>);
@@ -333,14 +384,19 @@ forward!(dialog_effects::peer::RemoveAddress);
 forward!(dialog_effects::peer::RemoveName);
 forward!(dialog_did_web::Discover);
 forward!(dialog_repository::Hydrate);
-forward!(dialog_artifacts::Preload);
-forward!(dialog_artifacts::Speculation);
+forward!(dialog_effects::archive::Load);
+forward!(dialog_effects::blob::Load);
+forward!(dialog_corpus::Preload);
+forward!(dialog_corpus::Speculation);
+forward!(dialog_search_tree::nodes::Read<dialog_corpus::tree::CorpusNode>);
+forward!(dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>);
+forward!(dialog_search_tree::nodes::Write<dialog_corpus::tree::CorpusNode>);
 forward!(dialog_effects::space::Load);
 forward!(dialog_effects::space::Create);
 forward!(Prove<Ucan>);
 forward!(Retain<Ucan>);
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl Provider<Authorize<Ucan>> for AccountBoundOperator {
     async fn execute(
         &self,
@@ -363,7 +419,7 @@ struct Guarded<'a> {
     guard: Option<&'a AccountSessionReadGuard>,
 }
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<'a> Provider<Identify> for Guarded<'a> {
     async fn execute(&self, input: <Identify as Command>::Input) -> <Identify as Command>::Output {
         <Peer<NativeSpace, Session> as Provider<Identify>>::execute(&self.operator.inner, input)
@@ -373,7 +429,7 @@ impl<'a> Provider<Identify> for Guarded<'a> {
 
 macro_rules! forward_guarded {
     ($command:ty) => {
-        #[async_trait::async_trait]
+        #[dialog_capability::provider]
         impl<'a> Provider<$command> for Guarded<'a>
         where
             Peer<NativeSpace, Session>: Provider<$command> + ConditionalSync,
@@ -397,7 +453,7 @@ macro_rules! forward_guarded {
 forward_guarded!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward_guarded!(Prove<Ucan>);
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<'a> Provider<Authorize<Ucan>> for Guarded<'a> {
     async fn execute(
         &self,
@@ -423,7 +479,7 @@ impl<T, E: From<AuthorizeError>> FromAuthError for std::result::Result<T, E> {
     }
 }
 
-#[async_trait::async_trait]
+#[dialog_capability::provider]
 impl<At, Fx> Provider<Fork<At, Fx>> for AccountBoundOperator
 where
     At: Site,

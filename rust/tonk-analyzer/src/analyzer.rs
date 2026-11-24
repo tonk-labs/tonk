@@ -78,7 +78,7 @@ use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
 
 use assertion::build_assertion_application;
-use dialog_artifacts::Entity;
+use dialog_corpus::Entity;
 use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
@@ -645,7 +645,7 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
 /// existing query are skipped: the user query will pick them up.
 fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
     use crate::analysis::SynthesizedQuery;
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
     use dialog_query::Term;
 
     let statements = document.statements();
@@ -808,7 +808,7 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
 /// constant). Used to detect when an `Application`'s `this:` slot
 /// has been resolved to a known entity at analysis time.
 fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<Entity> {
-    use dialog_artifacts::Value;
+    use dialog_corpus::Value;
     use dialog_query::Term;
     match term {
         Term::Constant(Value::Entity(e)) => Some(e.clone()),
@@ -819,7 +819,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dialog_artifacts::{Entity, Value};
+    use dialog_corpus::{Entity, Value};
     use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
@@ -1280,6 +1280,50 @@ concept!: &job
                 AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"all:\"")
             ),
             "a pick quoted as its entity is refused: {error:?}"
+        );
+    }
+
+    /// `in:` places an attribute's writes in a layer. A layer is not part
+    /// of an attribute's identity, so the stored attribute does not
+    /// carry it: it travels in the descriptor a rule's head writes
+    /// through, which is where a write is routed from. A value that is
+    /// no entity is refused.
+    #[dialog_common::test]
+    async fn it_places_an_attribute_in_a_layer() {
+        let document = |layer: &str| {
+            format!(
+                "command!: &touch\n  description: \"Touch a thing.\"\n  with:\n    thing:\n      description: \"The thing.\"\n      the: x.touch/thing\n      as: entity\n\n\
+                 concept!: &touched\n  description: \"A thing touched this session.\"\n  with:\n    at:\n      description: \"When.\"\n      the: x.y/touched\n      as: entity\n      in: {layer}\n\n\
+                 rule!:\n  description: \"A touch is kept in the session.\"\n  assert!: touched\n  when:\n    - assert: touch\n      where: {{ this: ?at, thing: ?this }}\n"
+            )
+        };
+        let syntax = must_parse(&document("\"session:\""));
+        let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
+        let rule = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Rule { rule, .. }) => Some(rule),
+                _ => None,
+            })
+            .expect("the rule lowers");
+        let layers: Vec<String> = rule
+            .conclusion()
+            .with()
+            .iter()
+            .filter_map(|(_, field)| field.descriptor().layer().map(|layer| format!("{layer:?}")))
+            .collect();
+        assert!(
+            layers.iter().any(|layer| layer.contains("session:")),
+            "the rule's head writes into the session: {layers:?}"
+        );
+
+        let syntax = must_parse(&document("\"not a layer\""));
+        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert!(
+            matches!(&error.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("`in:`")),
+            "a layer that is no entity is refused: {error:?}"
         );
     }
 
@@ -4035,9 +4079,9 @@ view!:
     #[dialog_common::test]
     async fn it_converges_wire_path_for_pinned_concept_when_this_is_carried() {
         use dialog_query::AttributeDescriptor;
-        use dialog_query::artifact::Type;
         use dialog_query::attribute::Cardinality as DialogCardinality;
         use dialog_query::concept::descriptor::ConceptDescriptor as DialogConceptDescriptor;
+        use dialog_query::corpus::Type;
         use tonk_core::claim::{ConceptDescriptor as WireDescriptor, SourceApplication, ValueMap};
         use tonk_schema::transact::{
             ApplicationPlan, application_plan_from_predicate, derive_this,
@@ -5828,14 +5872,22 @@ mod library_analysis_tests {
         // concepts, which says nothing about the file. `profile.yaml`
         // declares its own copies of the shared concepts, so it analyzes
         // standalone.
-        let chained: [(&str, &str); 3] = [
+        let chained: [(&str, &str); 5] = [
+            (
+                "code-editor.yaml",
+                include_str!("../../tonk-core/assets/library/code-editor.yaml"),
+            ),
+            (
+                "language/python.yaml",
+                include_str!("../../tonk-core/assets/library/language/python.yaml"),
+            ),
             (
                 "notebook.yaml",
                 include_str!("../../tonk-core/assets/library/notebook.yaml"),
             ),
             (
-                "prose.yaml",
-                include_str!("../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor.yaml",
+                include_str!("../../tonk-core/assets/library/prose-editor.yaml"),
             ),
             (
                 "table.yaml",
@@ -5961,8 +6013,8 @@ seed/installed!:
                 include_str!("../../tonk-core/assets/library/table.yaml"),
             ),
             (
-                "prose.yaml",
-                include_str!("../../tonk-core/assets/library/prose.yaml"),
+                "prose-editor.yaml",
+                include_str!("../../tonk-core/assets/library/prose-editor.yaml"),
             ),
         ] {
             let inlined = inlined_declarations(name, &format!("{core}\n{body}"));
@@ -6002,7 +6054,7 @@ seed/installed!:
         let core = include_str!("../../tonk-core/assets/library/core.yaml");
         let notebook = include_str!("../../tonk-core/assets/library/notebook.yaml");
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
-        let prose = include_str!("../../tonk-core/assets/library/prose.yaml");
+        let prose = include_str!("../../tonk-core/assets/library/prose-editor.yaml");
         let table = include_str!("../../tonk-core/assets/library/table.yaml");
 
         for (name, prelude, target, from, to, expected) in [
@@ -6027,7 +6079,7 @@ seed/installed!:
             // property path. The rest read `.detail.*` / `.currentTarget.*`,
             // which this check does not look at.
             (
-                "prose.yaml event source",
+                "prose-editor.yaml event source",
                 core,
                 prose,
                 "subject: \"{this}\"",
@@ -6064,10 +6116,7 @@ seed/installed!:
                 "{name} no longer contains {from:?}; point this gate at a live interpolation",
             );
             let source = format!("{prelude}\n{broken}");
-            let parsed = tonk_notation::parse(&source);
-            let syntax = parsed
-                .syntax
-                .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+            let syntax = parse_library(name, &source);
             let error = analyze_local(&syntax)
                 .err()
                 .unwrap_or_else(|| panic!("{name} with {to:?} must not lower"));
@@ -6077,13 +6126,10 @@ seed/installed!:
 
     /// Every `event!:` declaration name the document's views inlined.
     fn inlined_declarations(name: &str, source: &str) -> Vec<String> {
-        use dialog_artifacts::Value as ArtifactValue;
+        use dialog_corpus::Value as ArtifactValue;
         use dialog_query::Term as QueryTerm;
 
-        let parsed = tonk_notation::parse(source);
-        let syntax = parsed
-            .syntax
-            .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
+        let syntax = parse_library(name, source);
         let tree =
             analyze_local(&syntax).unwrap_or_else(|error| panic!("{name} must analyze: {error:?}"));
         let mut out = Vec::new();
@@ -6106,16 +6152,43 @@ seed/installed!:
     }
 
     fn assert_analyzes(name: &str, source: &str) {
-        let parsed = tonk_notation::parse(source);
+        let syntax = parse_library(name, source);
+        let result = analyze_local(&syntax);
+        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
+    }
+
+    /// Parse a library document where the bundled library lives and
+    /// inline what it `!include`s, as seeding does. Every library document
+    /// sits in the one directory, so the file name only labels failures.
+    fn parse_library(name: &str, source: &str) -> tonk_notation::Syntax {
+        let parsed = tonk_notation::parse_at(tonk_library::location("document.yaml"), source);
         assert!(
             parsed.diagnostics.is_empty(),
             "{name} must parse: {:#?}",
             parsed.diagnostics
         );
-        let syntax = parsed
+        let mut syntax = parsed
             .syntax
             .unwrap_or_else(|| panic!("{name} yields a syntax tree"));
-        let result = analyze_local(&syntax);
-        assert!(result.is_ok(), "{name} must analyze: {:?}", result.err());
+        // The bundled loader answers without waiting, so one poll settles
+        // the expansion and these tests stay synchronous.
+        let unexpanded = {
+            let expansion =
+                std::pin::pin!(tonk_notation::expand(&mut syntax, &tonk_library::Bundled));
+            match std::future::Future::poll(
+                expansion,
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            ) {
+                std::task::Poll::Ready(unexpanded) => unexpanded,
+                std::task::Poll::Pending => {
+                    panic!("{name}: bundled includes load without waiting")
+                }
+            }
+        };
+        assert!(
+            unexpanded.is_empty(),
+            "{name} includes must resolve: {unexpanded:#?}"
+        );
+        syntax
     }
 }

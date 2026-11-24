@@ -20,7 +20,7 @@ pub(crate) async fn report(tonk: &TonkState, ceremony: &str, state: &str, detail
 }
 
 async fn report_to(tonk: &TonkState, entity: &str, ceremony: &str, state: &str, detail: &str) {
-    let Ok(this) = entity.parse::<dialog_artifacts::Entity>() else {
+    let Ok(this) = entity.parse::<dialog_corpus::Entity>() else {
         return;
     };
     // The successful authorization detail is a callback carrying a grant.
@@ -132,7 +132,7 @@ pub(crate) async fn ask_for_passkey(
             "no page asked for this, so no passkey can be asked for",
         ));
     };
-    let credential_id = {
+    let (credential_id, phrase_only) = {
         let tonk = env.state().read().await;
         report_to(
             &tonk,
@@ -147,7 +147,8 @@ pub(crate) async fn ask_for_passkey(
         // another enrolled provider (for example 1Password) from offering its
         // passkey. The authorization handler verifies the recovered root DID
         // against this profile before minting the device grant.
-        if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+        let credential_id = if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_))
+        {
             None
         } else {
             super::identity::local_root(&tonk)
@@ -155,13 +156,18 @@ pub(crate) async fn ask_for_passkey(
                 .ok()
                 .map(|root| root.credential_id)
                 .filter(|id| !id.is_empty())
-        }
+        };
+        (
+            credential_id,
+            super::identity::signed_in_with_phrase(&tonk).await,
+        )
     };
-    if let Err(error) = super::navigate::request_webauthn_with(
+    if let Err(error) = super::navigate::request_webauthn_for(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(intent),
         credential_id,
+        phrase_only,
     )
     .await
     {
@@ -181,9 +187,13 @@ pub(crate) async fn ask_for_passkey(
     Done::nothing()
 }
 
+/// What a ceremony that adds a way into the account says when the
+/// account is not activated yet.
+pub(crate) const ACTIVATE_FIRST: &str =
+    "Activate your account first: open the link in the email we sent you.";
+
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
     async fn execute(&self, _command: tonk_schema::command::AddPasskey) -> Outcome {
         let addition = {
@@ -208,9 +218,23 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
                 .await;
                 return Err(Failure::new("the sync service is unknown"));
             };
+            // A passkey added before the account is activated could not
+            // be provisioned, so it would open the account only on this
+            // device. Refused before the passkey is asked for.
+            if !super::customer::is_active(&tonk).await {
+                report(
+                    &tonk,
+                    ceremony::ADD_PASSKEY,
+                    ceremony_state::REFUSED,
+                    ACTIVATE_FIRST,
+                )
+                .await;
+                return Err(Failure::new(ACTIVATE_FIRST));
+            }
             tonk_worker_api::PasskeyAddition {
                 account_did: root.root_did.to_string(),
                 endpoint: format!("{}ucan/", origin),
+                created_on: None,
             }
         };
         // The new passkey is sealed in the custody reply, which reports
@@ -224,16 +248,84 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
     }
 }
 
+/// Why this account may not set up a recovery phrase, or `None` when it
+/// may: it must be active, and must not have one already. Checked before
+/// anything else, so the person is told what to do about their account
+/// rather than about the environment.
+pub(crate) async fn recovery_phrase_refusal(
+    tonk: &crate::worker::TonkState,
+) -> Option<&'static str> {
+    if !super::customer::is_active(tonk).await {
+        return Some(ACTIVATE_FIRST);
+    }
+    match super::account_state::recovery_phrase(tonk).await {
+        Ok(None) => None,
+        Ok(Some(_)) => {
+            Some("This account already has a recovery phrase, and it cannot be replaced.")
+        }
+        Err(_) => Some("the account's recovery phrase could not be checked"),
+    }
+}
+
+/// What setting up a recovery phrase needs, or why it is refused.
+async fn recovery_phrase_addition(
+    tonk: &crate::worker::TonkState,
+) -> Result<tonk_worker_api::RecoveryPhraseAddition, &'static str> {
+    let root = super::identity::local_root(tonk)
+        .await
+        .map_err(|_| "no account is signed in on this profile")?;
+    if let Some(refusal) = recovery_phrase_refusal(tonk).await {
+        return Err(refusal);
+    }
+    let origin = super::customer::service_origin().map_err(|_| "the sync service is unknown")?;
+    Ok(tonk_worker_api::RecoveryPhraseAddition {
+        account_did: root.root_did.to_string(),
+        endpoint: format!("{}ucan/", origin),
+    })
+}
+
+/// Run `tonk:add-recovery-phrase`: seal the account under the phrase the
+/// page staged. Refused, before the passkey is asked for, for an account
+/// that is not active or already has a phrase.
+#[dialog_capability::provider]
+impl dialog_capability::Provider<tonk_schema::command::AddRecoveryPhrase>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::AddRecoveryPhrase) -> Outcome {
+        let addition = {
+            let tonk = self.state().read().await;
+            match recovery_phrase_addition(&tonk).await {
+                Ok(addition) => addition,
+                Err(reason) => {
+                    report(
+                        &tonk,
+                        ceremony::ADD_RECOVERY_PHRASE,
+                        ceremony_state::REFUSED,
+                        reason,
+                    )
+                    .await;
+                    return Err(Failure::new(reason));
+                }
+            }
+        };
+        // Sealing runs in the custody reply, which reports through
+        // `CeremonyStatus`, not this outcome.
+        ask_for_passkey(
+            self,
+            ceremony::ADD_RECOVERY_PHRASE,
+            tonk_worker_api::CustodyIntent::AddRecoveryPhrase(addition),
+        )
+        .await
+    }
+}
+
 /// Decode optional account constraints without accepting malformed constraints.
 pub(crate) struct AuthorizeDeviceRequest(tonk_worker_api::DeviceAuthorization);
 impl crate::reactor::Decode for AuthorizeDeviceRequest {
-    fn trigger_attributes() -> Vec<String> {
-        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::trigger_attributes()
+    fn concepts() -> Vec<&'static dialog_query::ConceptDescriptor> {
+        <tonk_schema::command::AuthorizeDevice as crate::reactor::Decode>::concepts()
     }
-    fn decode(
-        _entity: dialog_artifacts::Entity,
-        facts: &crate::reactor::EntityFacts,
-    ) -> Option<Self> {
+    fn decode(_entity: dialog_corpus::Entity, facts: &[dialog_corpus::Fact]) -> Option<Self> {
         decode_authorization(facts).map(Self)
     }
 }
@@ -243,7 +335,7 @@ impl dialog_capability::Command for AuthorizeDeviceRequest {
 }
 
 fn decode_authorization(
-    facts: &crate::reactor::EntityFacts,
+    facts: &[dialog_corpus::Fact],
 ) -> Option<tonk_worker_api::DeviceAuthorization> {
     use crate::reactor::Decode as _;
     let entity = facts.first()?.of.clone();
@@ -279,8 +371,7 @@ fn decode_authorization(
 /// Run `tonk:authorize-device`: delegate the account to a waiting
 /// process. Unparseable audience/callback/name skip with a log; an
 /// undeliverable callback is refused before anyone touches a passkey.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[dialog_capability::provider]
 impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::CommandEnv {
     async fn execute(&self, command: AuthorizeDeviceRequest) -> Outcome {
         let authorization = command.0;
@@ -438,17 +529,50 @@ async fn authorize_device_inner(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(payload)
     };
-    let redirect = format!("{origin}settings");
+    // Back to the task page, which says the device is connected.
+    let redirect = connected_return(&origin, &authorization.name);
     tonk_worker_api::callback::delivery_url(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],
     )
 }
 
+/// Where a device's callback sends the browser once it has the grant: the
+/// device task page, carrying the device's name so "device connected" can
+/// name it. The callback adds the outcome (`link=ok`) to this address.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn connected_return(origin: &url::Url, name: &str) -> String {
+    let mut page = origin.clone();
+    page.set_path("/settings/link");
+    page.set_query(None);
+    page.set_fragment(None);
+    page.query_pairs_mut().append_pair("name", name);
+    page.to_string()
+}
+
+#[cfg(test)]
+mod connected_return_tests {
+    use super::connected_return;
+
+    #[dialog_common::test]
+    fn it_carries_the_device_name_back_to_the_task_page() {
+        assert_eq!(
+            connected_return(
+                &url::Url::parse("https://tonk.example/").unwrap(),
+                "Jack’s laptop & co"
+            ),
+            "https://tonk.example/settings/link?name=Jack%E2%80%99s+laptop+%26+co"
+        );
+    }
+}
+
 #[cfg(test)]
 mod authorization_tests {
     use super::decode_authorization;
-    use dialog_artifacts::{Artifact, Value};
+    use dialog_corpus::{Fact, Value};
 
     // WEB-10: progress from the custody message path must reach the page
     // without a later HTTP request, sync heartbeat, or visibility event.
@@ -473,7 +597,7 @@ mod authorization_tests {
             .perform(&tonk.operator)
             .await
             .unwrap();
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         for state in [
             ceremony_state::PENDING_CEREMONY,
             ceremony_state::WORKING,
@@ -482,7 +606,6 @@ mod authorization_tests {
         ] {
             super::report_authorization(&tonk, &request, state, "").await;
             let frame = subscription
-                .receiver
                 .try_recv()
                 .expect("a ceremony report must broadcast before returning");
             let frame = String::from_utf8_lossy(&frame);
@@ -521,13 +644,12 @@ mod authorization_tests {
                 .await
                 .unwrap()
         };
-        while subscription.receiver.try_recv().is_ok() {}
+        while subscription.try_recv().is_ok() {}
         {
             let tonk = state.read().await;
             super::report_working(&state, &tonk, &request).await;
         }
         let frame = subscription
-            .receiver
             .recv()
             .await
             .expect("the detached refresh broadcasts the progress");
@@ -609,7 +731,7 @@ mod authorization_tests {
             entity,
             "urn:tonk:approval:q5ieDH7i7UxzSkRNRGzuyDmYp5EvkdFMK3Xbzs7kzj2N354oyxRSb5xCqx2pBRNmmPRTa3UCjAE5Byv"
         );
-        assert!(entity.parse::<dialog_artifacts::Entity>().is_ok());
+        assert!(entity.parse::<dialog_corpus::Entity>().is_ok());
         request.callback.push('2');
         assert_ne!(entity, super::authorization_entity(&request));
         request.callback.pop();
@@ -629,7 +751,7 @@ mod authorization_tests {
             ("name", Value::String("terminal".into())),
         ]
         .into_iter()
-        .map(|(field, value)| Artifact {
+        .map(|(field, value)| Fact {
             the: format!("xyz.tonk.authorize-device/{field}")
                 .parse()
                 .unwrap(),
@@ -639,7 +761,7 @@ mod authorization_tests {
         })
         .collect::<Vec<_>>();
         assert_eq!(decode_authorization(&facts).unwrap().expected_account, None);
-        facts.push(Artifact {
+        facts.push(Fact {
             the: "xyz.tonk.authorize-device/expected-account"
                 .parse()
                 .unwrap(),

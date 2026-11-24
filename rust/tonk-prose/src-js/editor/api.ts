@@ -16,6 +16,9 @@ export type EditorOptions = {
   /** Called after every user edit with the markdown serialization
    *  of the new document. Not called for programmatic writes. */
   onChange: (markdown: string) => void;
+  /** The custom element code blocks embed, `tonk-code` when omitted.
+   *  Until it is defined they are plain editable `<pre>`s. */
+  code?: string;
   /** Turn the leading heading into a document switcher.
    *
    *  Opt-in per editor, and deliberately not a runtime condition: on an
