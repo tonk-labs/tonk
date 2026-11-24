@@ -726,7 +726,7 @@ fn site_param_claim(
         the: attribute,
         of: site.clone(),
         is,
-        policy: dialog_corpus::Pick::Last,
+        policy: dialog_corpus::Cardinality::One,
     })
 }
 

@@ -16,7 +16,7 @@
 
 use dialog_corpus::{Entity, Value};
 use dialog_notation::live::{Live, Reader, Watched as Driven};
-use dialog_notation::view::tree::Slot;
+use dialog_notation::view::Slot;
 use dialog_notation::{
     Analyzer, Content, Patch, Plan, Rendered, Shown, Step, compile, parse, read,
 };
@@ -250,12 +250,14 @@ impl Watched {
 
     /// How many times each layer's subscription evaluated its query
     /// whole, so far.
+    #[cfg(feature = "inspect")]
     pub fn recomputes(&self) -> Vec<usize> {
         self.driven.recomputes()
     }
 
     /// How many rows each layer delivered at the last poll, come and
     /// gone.
+    #[cfg(feature = "inspect")]
     pub fn delivered(&self) -> Vec<usize> {
         self.driven.delivered().to_vec()
     }

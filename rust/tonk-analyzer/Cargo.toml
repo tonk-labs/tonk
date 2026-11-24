@@ -8,6 +8,9 @@ edition.workspace = true
 
 [features]
 integration-tests = []
+# What a watched view counts (`Watched::recomputes`, `Watched::delivered`),
+# for tests that measure the driver.
+inspect = ["dialog-notation/inspect"]
 web-integration-tests = []
 
 [lints.rust]

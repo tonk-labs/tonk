@@ -43,7 +43,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dialog_corpus::{Change, Changes, Entity, Fact, Pick, Relation, Update as _};
+use dialog_corpus::{Change, Changes, Entity, Fact, Cardinality, Relation, Update as _};
 use dialog_query::Value;
 use dialog_repository::{Branch, session_layer};
 use futures_util::TryStreamExt as _;
@@ -293,7 +293,7 @@ pub fn answer(ask: &Ask, readings: &[Reading], held: &Changes) -> Changes {
     };
     let mut put = |of: &Entity, the: String, is: Value| {
         if let Ok(the) = the.parse::<Relation>() {
-            changes.associate_in(layer.clone(), the, of.clone(), is, Pick::Last);
+            changes.associate_in(layer.clone(), the, of.clone(), is, Cardinality::One);
         }
     };
     put(

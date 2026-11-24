@@ -363,8 +363,7 @@ pub fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<()
             .map_err(|error| format!("{error}"))?,
         is: Value::Entity(this),
         cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
+        cardinality: Some(dialog_query::Cardinality::One),
     }
     .assert(changes);
     Ok(())

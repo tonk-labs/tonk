@@ -687,14 +687,13 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
             }
         };
         if assert {
-            // A write follows the field's policy: `all` appends, and a
-            // choosing policy (`last`, `max`, `min`, `top`) succeeds the
-            // claim it elects, which dialog resolves at commit.
+            // A write follows the attribute's cardinality: many adds a
+            // claim, one succeeds the newest.
             update.associate(
                 the,
                 this_entity.clone(),
                 value.clone(),
-                attribute.descriptor().pick().clone(),
+                attribute.descriptor().cardinality(),
             );
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
@@ -881,7 +880,7 @@ mod tests {
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()
-            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_corpus::Pick::All) if a.the == meta_name));
+            .any(|inst| matches!(inst, Instruction::Assert(a, dialog_corpus::Cardinality::Many) if a.the == meta_name));
         assert!(
             !saw_meta_name,
             "anonymous bindings should not emit any db.meta/name claim"

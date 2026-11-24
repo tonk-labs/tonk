@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dialog_corpus::{
-    Entity, Fact, Pick, Relation as CorpusRelation, Selector, Statement, Update, Value,
+    Entity, Fact, Cardinality, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
@@ -330,7 +330,7 @@ async fn plan<Env: QueryEnv>(
                 the: claim.the.clone(),
                 of: claim.of.clone(),
                 is: follow(&claim.is),
-                pick: Pick::All,
+                pick: Cardinality::Many,
             }));
         }
         let about = select(branch, env, Selector::new().of(earlier.clone())).await?;
@@ -346,9 +346,9 @@ async fn plan<Env: QueryEnv>(
         }
         for claims in by_relation.into_values() {
             let pick = if claims.len() == 1 {
-                Pick::Last
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
                 writes.push(Write::retract(&claim));
@@ -461,7 +461,7 @@ impl Write {
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            pick: Pick::All,
+            pick: Cardinality::Many,
         })
     }
 }
@@ -473,7 +473,7 @@ struct Raw {
     the: CorpusRelation,
     of: Entity,
     is: Value,
-    pick: Pick,
+    pick: Cardinality,
 }
 
 impl Statement for Raw {
@@ -494,7 +494,7 @@ mod tests {
     use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
     use tonk_core::meta::{Name, name};
 
-    fn raw(the: &str, of: &Entity, is: Value, pick: Pick) -> anyhow::Result<Raw> {
+    fn raw(the: &str, of: &Entity, is: Value, pick: Cardinality) -> anyhow::Result<Raw> {
         Ok(Raw {
             the: the.parse()?,
             of: of.clone(),
@@ -543,13 +543,13 @@ mod tests {
                     Value::String(attribute.description().into()),
                 ),
             ] {
-                transaction = transaction.assert(raw(the, &earlier, is, Pick::Last)?);
+                transaction = transaction.assert(raw(the, &earlier, is, Cardinality::One)?);
             }
             transaction = transaction.assert(raw(
                 &format!("db.concept.with/{field}"),
                 &earlier_concept,
                 Value::Entity(earlier),
-                Pick::All,
+                Cardinality::Many,
             )?);
         }
         transaction = transaction
@@ -557,13 +557,13 @@ mod tests {
                 "db.meta/concept",
                 &earlier_concept,
                 Value::Entity("db:concept".parse()?),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(raw(
                 "xyz.tonk.view/ui",
                 &earlier_concept,
                 Value::String("<p>{title}</p>".into()),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(Name {
                 this: "id:note".parse()?,

@@ -33,7 +33,7 @@
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //! [`Stack::assert`]: dialog_repository::Stack::assert
 
-use dialog_corpus::{Changes, Pick, Relation, Statement, Update as _, Value};
+use dialog_corpus::{Changes, Cardinality, Relation, Statement, Update as _, Value};
 use dialog_repository::{Effect, Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
@@ -166,7 +166,7 @@ impl<'a> TransactionBuilder<'a> {
 /// a caller that invokes commands through the stack itself.
 pub fn stamp(changes: &mut Changes, the: Relation, is: Value) {
     let mut row = Changes::new();
-    row.associate(the, control_layer(), is, Pick::All);
+    row.associate(the, control_layer(), is, Cardinality::Many);
     row.at(control_layer()).assert(changes);
 }
 

@@ -845,10 +845,15 @@ pub(crate) fn attribute_application(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
-    // The pick the attribute reads under, as the entity dialog names
-    // it (`all:`), and the values its `as:` lists as a JSON list, best
-    // first: a reader reconstructing the descriptor needs both.
-    if let Ok(pick) = descriptor.pick().uri().parse::<Entity>() {
+    // The attribute's cardinality, as the entity tonk's meta vocabulary
+    // names it (`last:` for one, `all:` for many), and the values its
+    // `as:` lists as a JSON list: a reader reconstructing the descriptor
+    // needs both.
+    let pick = match descriptor.cardinality() {
+        dialog_query::Cardinality::One => tonk_notation::Pick::Last,
+        dialog_query::Cardinality::Many => tonk_notation::Pick::All,
+    };
+    if let Ok(pick) = pick.uri().parse::<Entity>() {
         terms.insert("pick".into(), Term::Constant(Value::Entity(pick)));
     }
     if !descriptor.among().is_empty()

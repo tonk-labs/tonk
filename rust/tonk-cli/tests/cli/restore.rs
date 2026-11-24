@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dialog_corpus::{Changes, Pick, Update, Value};
+use dialog_corpus::{Changes, Cardinality, Update, Value};
 use dialog_repository::Revision;
 use tonk_cli::{
     branches, log,
@@ -181,7 +181,7 @@ async fn it_restores_many_valued_claims_without_reconstructing_their_history() -
             "test.tag/value".parse()?,
             "id:tags".parse()?,
             Value::String(value.into()),
-            Pick::All,
+            Cardinality::Many,
         );
     }
     let target = session

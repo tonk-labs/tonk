@@ -784,7 +784,7 @@ struct RawClaim {
 
 impl dialog_corpus::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_corpus::Update) {
-        update.associate(self.the, self.of, self.is, dialog_corpus::Pick::All);
+        update.associate(self.the, self.of, self.is, dialog_corpus::Cardinality::Many);
     }
     fn retract(self, update: &mut impl dialog_corpus::Update) {
         update.dissociate(self.the, self.of, self.is);

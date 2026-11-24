@@ -480,7 +480,7 @@ fn record_claims(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 },
             ),
             dialog_corpus::Instruction::Retract(artifact) => (
@@ -489,7 +489,7 @@ fn record_claims(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 },
             ),
         })
@@ -894,7 +894,7 @@ async fn evaluate_on_branch_with<'a>(
                     the: found.the,
                     of: found.of,
                     is: found.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 };
                 if !kept.contains(&identity(&stale)) {
                     txn = txn.retract(stale);
@@ -1070,7 +1070,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_corpus::Value::String("advanced".to_owned()),
-                        policy: dialog_corpus::Pick::All,
+                        policy: dialog_corpus::Cardinality::Many,
                     })
                     .commit()
                     .perform(&tonk_state.operator)

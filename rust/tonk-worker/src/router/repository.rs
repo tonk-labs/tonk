@@ -3515,7 +3515,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             });
         }
     }
@@ -3546,7 +3546,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     if !found {
@@ -3647,13 +3647,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     let revision = here
@@ -4647,7 +4647,7 @@ async fn live_install_records_in(
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }),
             _ => None,
         })
@@ -5371,14 +5371,14 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 })
             }
             dialog_corpus::Instruction::Retract(artifact) => last.retract(super::claim::RawClaim {
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }),
         };
     }
@@ -5447,7 +5447,7 @@ async fn rekey_sites(
                 the: dialog_query::the!("xyz.tonk.site/concept").into(),
                 of: site.this,
                 is: dialog_corpus::Value::Entity(now.clone()),
-                policy: dialog_corpus::Pick::Last,
+                policy: dialog_corpus::Cardinality::One,
             });
         }
     }
@@ -5667,7 +5667,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             });
         }
     }
@@ -5702,14 +5702,14 @@ pub(super) fn repository_name_claims(
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
         is: dialog_corpus::Value::String(display_name.to_owned()),
-        policy: dialog_corpus::Pick::Last,
+        policy: dialog_corpus::Cardinality::One,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
             is: dialog_corpus::Value::String(description.to_owned()),
-            policy: dialog_corpus::Pick::Last,
+            policy: dialog_corpus::Cardinality::One,
         });
     }
     Ok(claims)
@@ -5802,7 +5802,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     Ok(claims)
@@ -7764,7 +7764,7 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }
         })
         .collect()
@@ -11686,13 +11686,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
                 is: dialog_corpus::Value::String("stale account writer".to_owned()),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             })
             .commit()
             .publish()
@@ -11744,7 +11744,7 @@ route!: &foreign-profile-route
                 is: dialog_corpus::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             };
             let session = tonk
                 .reactor
@@ -11757,7 +11757,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        policy: dialog_corpus::Pick::All,
+                        policy: dialog_corpus::Cardinality::Many,
                         ..expected.clone()
                     },
                 );

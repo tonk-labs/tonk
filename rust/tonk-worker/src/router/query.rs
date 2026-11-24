@@ -662,7 +662,7 @@ mod tests {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[dialog_common::test]
     async fn the_first_read_of_a_branch_re_installs_rules_stored_the_earlier_way() {
-        use dialog_corpus::{Entity, Pick, Selector, Value};
+        use dialog_corpus::{Entity, Selector, Value};
         use dialog_query::rule::DeductiveRuleDescriptor;
         use dialog_query::rule::statement::source_attr;
         use dialog_query::{AttributeStatement, Cardinality};
@@ -692,7 +692,6 @@ mod tests {
                 is: Value::Bytes(rule.encode()),
                 cause: None,
                 cardinality: Some(Cardinality::Many),
-                pick: Some(Pick::All),
             })
             .commit()
             .perform(&tonk.operator)

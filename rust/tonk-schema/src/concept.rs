@@ -548,8 +548,7 @@ pub fn attribute_statements(
         of: entity.clone(),
         is: value,
         cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
+        cardinality: Some(dialog_query::Cardinality::One),
     };
     let mut statements = vec![claim(
         the!("db.attribute/id"),
@@ -562,10 +561,13 @@ pub fn attribute_statements(
             .map_err(|e| format!("type is no entity: {e}"))?;
         statements.push(claim(the!("db.attribute/as"), Value::Entity(kind)));
     }
-    let pick: Entity = descriptor
-        .pick()
-        .uri()
-        .parse()
+    // Tonk's meta vocabulary keeps the entity a 0.5 pick was named by:
+    // `last:` for cardinality one, `all:` for many.
+    let pick: Entity = match descriptor.cardinality() {
+        dialog_query::Cardinality::One => "last:",
+        dialog_query::Cardinality::Many => "all:",
+    }
+    .parse()
         .map_err(|e| format!("pick is no entity: {e}"))?;
     statements.push(claim(the!("db.attribute/pick"), Value::Entity(pick)));
     if !descriptor.among().is_empty() {
@@ -685,7 +687,7 @@ impl Statement for AnonymousConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many),
         );
     }
     fn retract(self, update: &mut impl Update) {
@@ -788,7 +790,7 @@ impl Statement for TransientConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many),
         );
         dialog_repository::Transient(self.this).assert(update);
     }
