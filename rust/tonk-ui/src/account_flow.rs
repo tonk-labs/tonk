@@ -2163,6 +2163,241 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Signing in on a browser that has never seen the account, the
+    /// spaces take as long as the account's sync to arrive, and the Hub
+    /// says they are on their way (BUG-351). A person who clicks back to
+    /// their spaces meanwhile sees that notice, never "No spaces yet",
+    /// and never the page's default view: that click used to land the
+    /// tab on a notation dump of its site, because the browser had
+    /// withdrawn its own library ahead of the account's and drew the
+    /// half-made branch. Once the spaces arrive, the notice goes.
+    ///
+    /// The second browser's service worker is throttled to a slow 3G
+    /// link, so the sync takes long enough to click during it, as it does
+    /// for an account with real content.
+    #[dialog_common::test]
+    async fn it_shows_the_account_arriving_after_a_first_sign_in(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "account-arriving@example.com";
+        const SPACES: usize = 3;
+
+        let first = driver_with_prf(&env).await?;
+        sign_up(&first, &env, EMAIL).await?;
+        for index in 0..SPACES {
+            create_space_awaiting_remote(&first, &format!("Arriving {index}"), true).await?;
+        }
+        let words = set_up_recovery_phrase(&first, &env).await?;
+
+        let second = env.driver().await?;
+        wait_for_service_worker(&second).await?;
+        raise_cluster_from_hub(&second, &env).await?;
+        click(&second, "#tonk-register-phrase-switch").await?;
+        wait_for_displayed(&second, "#tonk-register-phrase")
+            .await?
+            .send_keys(words.join(" "))
+            .await?;
+        throttle_service_workers(&second).await?;
+        click(&second, "#tonk-register-phrase-login").await?;
+
+        // What the Hub shows, read afresh on every look: the guest is
+        // re-entered each time, as a navigation may replace it. A look
+        // that cannot read the guest (mid-navigation) reads as
+        // `unreadable` and is waited through; the default view drawn is
+        // the one failure.
+        let look = async |driver: &WebDriver| -> Result<serde_json::Value> {
+            let read = async {
+                enter_guest(driver).await?;
+                anyhow::Ok(
+                    driver
+                        .execute(
+                            r#"const shown = (el) => !!el && el.checkVisibility();
+                               return {
+                                 path: location.pathname,
+                                 dump: !!document.querySelector('[data-tonk-display-default-notice], tonk-notation'),
+                                 notice: shown(document.querySelector('[data-account-linking]')),
+                                 empty: [...document.querySelectorAll('[data-spaces-sheet] .hub-empty:not(.hub-failed)')].some(shown),
+                                 spaces: document.querySelectorAll('[data-spaces-sheet] [data-id]').length,
+                                 close: shown(document.querySelector('[data-return-spaces]')),
+                               };"#,
+                            Vec::new(),
+                        )
+                        .await?
+                        .json()
+                        .clone(),
+                )
+            };
+            let seen = match read.await {
+                Ok(seen) => seen,
+                Err(error) => return Ok(serde_json::json!({ "unreadable": error.to_string() })),
+            };
+            anyhow::ensure!(
+                seen["dump"] == false,
+                "the page drew its default view while the account arrived: {seen}"
+            );
+            Ok(seen)
+        };
+        let until = |seconds| tokio::time::Instant::now() + Duration::from_secs(seconds);
+
+        // Signed in, the account is on its way: the notice says so.
+        let deadline = until(60);
+        loop {
+            let seen = look(&second).await?;
+            if seen["notice"] == true && seen["close"] == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the Hub never said the account was arriving: {seen}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Back to your spaces while they are still on their way: the
+        // click the bug report made.
+        click(&second, "[data-return-spaces]").await?;
+        let mut waited = false;
+        let deadline = until(120);
+        loop {
+            let seen = look(&second).await?;
+            if seen["spaces"].as_u64() == Some(SPACES as u64) {
+                break;
+            }
+            if seen["path"] == "/" {
+                anyhow::ensure!(
+                    seen["notice"] == true && seen["empty"] == false,
+                    "with the spaces on their way the Hub says so, and not that there are none: {seen}"
+                );
+                waited = true;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the account's spaces never arrived: {seen}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::ensure!(
+            waited,
+            "the sync ended before the click landed, so the waiting Hub was never seen"
+        );
+
+        // They are here: the notice goes.
+        let deadline = until(30);
+        loop {
+            let seen = look(&second).await?;
+            if seen["notice"] == false {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the arriving notice stayed after the spaces arrived: {seen}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        first.quit().await?;
+        second.quit().await?;
+        Ok(())
+    }
+
+    /// Set up a recovery phrase from settings and return its twelve words,
+    /// the way `it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser`
+    /// does without its checks on the dialog itself.
+    async fn set_up_recovery_phrase(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+    ) -> Result<Vec<String>> {
+        open_hub_settings(driver, env).await?;
+        click(driver, ".recovery-ack span").await?;
+        click(driver, "[data-add-recovery-phrase]").await?;
+        driver.enter_default_frame().await?;
+        wait_for_displayed(driver, "#tonk-phrase-words").await?;
+        let words: Vec<String> = driver
+            .execute(
+                "return [...document.querySelectorAll('#tonk-phrase-words li')]
+                   .map((li) => li.textContent.replace(/^\\s*\\d+\\.\\s*/, '').trim());",
+                Vec::new(),
+            )
+            .await?
+            .convert()?;
+        anyhow::ensure!(
+            words.len() == 12,
+            "a recovery phrase is twelve words: {words:?}"
+        );
+        click(driver, "#tonk-phrase-written").await?;
+        wait_for_displayed(driver, "#tonk-phrase-check-0").await?;
+        driver
+            .execute(
+                "const words = arguments[0];
+                 for (const label of document.querySelectorAll('#tonk-phrase-checks label')) {
+                   const position = Number(label.textContent.match(/word (\\d+)/)[1]);
+                   const input = label.querySelector('input');
+                   input.value = words[position - 1];
+                   input.dispatchEvent(new Event('input', { bubbles: true }));
+                 }",
+                vec![serde_json::json!(words)],
+            )
+            .await?;
+        click(driver, "#tonk-custody-continue").await?;
+        wait_for_text_containing(driver, "#tonk-custody-text", "recovery phrase is saved").await?;
+        Ok(words)
+    }
+
+    /// Throttle every service worker the browser runs to a slow 3G link.
+    ///
+    /// Throttling the page does not reach its service worker, which is
+    /// what syncs the account, so each worker target is attached from the
+    /// page's DevTools session and throttled through it.
+    async fn throttle_service_workers(driver: &WebDriver) -> Result<()> {
+        let devtools = ChromeDevTools::new(driver.handle.clone());
+        let targets = devtools.execute_cdp("Target.getTargets").await?;
+        let workers: Vec<String> = targets["targetInfos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|target| target["type"] == "service_worker")
+            .filter_map(|target| target["targetId"].as_str().map(str::to_owned))
+            .collect();
+        anyhow::ensure!(
+            !workers.is_empty(),
+            "no service worker to throttle: {targets}"
+        );
+        for target in workers {
+            let attached = devtools
+                .execute_cdp_with_params(
+                    "Target.attachToTarget",
+                    serde_json::json!({ "targetId": target, "flatten": false }),
+                )
+                .await?;
+            let session = attached["sessionId"]
+                .as_str()
+                .context("attaching a service worker named no session")?
+                .to_owned();
+            let commands = [
+                serde_json::json!({ "id": 1, "method": "Network.enable", "params": {} }),
+                serde_json::json!({
+                    "id": 2,
+                    "method": "Network.emulateNetworkConditions",
+                    "params": {
+                        "offline": false,
+                        "latency": 563,
+                        "downloadThroughput": 180 * 1024,
+                        "uploadThroughput": 84 * 1024,
+                    },
+                }),
+            ];
+            for command in commands {
+                devtools
+                    .execute_cdp_with_params(
+                        "Target.sendMessageToTarget",
+                        serde_json::json!({ "sessionId": session, "message": command.to_string() }),
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// A passkey added from settings opens the account on its own
     /// (BUG-346): the worker adds it with one `/custody/add`, which
     /// writes its custody cell and provisions its custody space, so a

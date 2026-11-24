@@ -928,6 +928,16 @@ view!:
       .account-email-notice .resend-status { max-width:32ch; padding:0 10px; color:var(--tonk-text-soft);
         font:400 var(--tonk-size-hint)/var(--tonk-leading-sentence) var(--tonk-font-sentence); }
       .account-email-notice .resend-status:empty { display:none; }
+      /* Signing in on a browser new to the account: the account's spaces
+         are still on their way, so say so, and do not claim there are none. */
+      .account-linking-notice { display:none; align-items:center; gap:12px;
+        margin:0 0 16px; padding:10px 16px; border-radius:var(--tonk-radius-sheet);
+        background:var(--tonk-sheet); color:var(--tonk-text); box-shadow:var(--tonk-shadow);
+        font:400 var(--tonk-size-label)/var(--tonk-leading-label) var(--tonk-font-label); }
+      /* A view keeps its last render when its rows go, so the display's
+         own state says whether the link is still running. */
+      tonk-display[model="tonk:account/linking"][data-state="ready"] .account-linking-notice { display:flex; }
+      .hub-page:has(tonk-display[model="tonk:account/linking"][data-state="ready"]) [data-spaces-sheet] .hub-empty:not(.hub-failed) { display:none; }
       .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
         overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
       @media (max-width:600px) {
@@ -3605,6 +3615,9 @@ view!:
         <!-- An account still to be activated says so in a line of its own
              above your spaces, in the page: never a toast over the rows. -->
         <tonk-display model="tonk:account/status" view="notice"></tonk-display>
+        <!-- While this browser brings the account's spaces in after a
+             sign-in, a line says so in place of an empty list. -->
+        <tonk-display model="tonk:account/linking" view="notice"><span slot="empty"></span></tonk-display>
         <hub-discover data-spaces-view collection="spaces">
           <!-- One page for `/` and `/settings`: the sheet and the panel
                are both here, and the bar's `path` picks the one that
@@ -4830,6 +4843,17 @@ concept!: &account/linking
       description: Always true while the link runs; dropped when it settles.
       the: xyz.tonk.account/linking
       as: boolean
+
+# What the Hub says in that window, above the spaces: they are on their
+# way. `role="status"` so a screen reader hears it once, not on every frame.
+view!:
+  this: tonk:account/linking
+  show:
+    notice: |
+      <aside class="account-linking-notice" role="status" aria-label="account sync" data-account-linking>
+        <span class="tonk-pulse" aria-hidden="true"></span>
+        <span>Bringing your spaces from your account…</span>
+      </aside>
 
 # Whether THIS DEVICE holds the account's authority on this branch.
 # Overlay-only, published by the worker: the facts on a branch describe
