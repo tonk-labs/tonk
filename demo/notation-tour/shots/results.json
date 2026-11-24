@@ -1,0 +1,758 @@
+[
+  {
+    "source": "; A thing to do.\n(concept (todo ?t title: ?title state: ?state list: ?list)\n  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one)\n  (tour.todo/state of: ?t is: ?state as: [:open :done] cardinality: :one)\n  (tour.todo/list of: ?t is: ?list as: :entity cardinality: :one))\n\n; A list of things to do.\n(concept (list ?l name: ?name)\n  (tour.list/name of: ?l is: ?name as: :text cardinality: :one))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares todo with list: state: title:",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares list with name:",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(assert (list list:home name: \"Home\"))\n(assert (list list:work name: \"Work\"))\n(assert (list list:garden name: \"Garden\"))\n(assert (todo todo:milk title: \"Buy milk\" state: :open list: list:home))\n(assert (todo todo:mum title: \"Call mum\" state: :done list: list:home))\n(assert (todo todo:deck title: \"Write the deck\" state: :open list: list:work))\n(assert (todo todo:seeds title: \"Sow the seeds\" state: :done list: list:garden))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(select (todo ?t title: ?title state: ?state list: ?list))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 4 answer(s)",
+        "rows": 4,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(select (tour.open ?t title: ?title list: ?name)\n  (todo ?t title: ?title state: :open list: ?l)\n  (list ?l name: ?name))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(select (tour.clear ?l name: ?name)\n  (list ?l name: ?name)\n  (unless (todo _ state: :open list: ?l ...)))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 1 answer(s)",
+        "rows": 1,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(concept (estimate ?t hours: ?h)\n  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))\n\n(assert (estimate todo:milk hours: 1))\n(assert (estimate todo:mum hours: 1))\n(assert (estimate todo:deck hours: 3))\n(assert (estimate todo:seeds hours: 2))\n\n(select (tour.quick ?t title: ?title hours: ?h)\n  (todo ?t title: ?title ...)\n  (estimate ?t hours: ?h)\n  (< ?h : 2))\n\n(select (tour.morning ?a with: ?b)\n  (estimate ?a hours: ?p)\n  (estimate ?b hours: ?q)\n  (< ?p : ?q)\n  (<= (+ ?p : ?q) : 3))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares estimate with hours:",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(query (list/summary ?l is: ?summary)\n  (list ?l name: ?name)\n  (todo (distinct ?t) list: ?l ...)\n  (is ?summary {:name ?name :todos (count ?t)}))\n\n(select (list/summary ?l is: ?summary))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "query",
+        "outcome": "ok",
+        "head": "query defines the query list/summary",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 3 answer(s)",
+        "rows": 3,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; A list is busy while something on it is open.\n(rule (tour.busy ?l name: ?name)\n  (list ?l name: ?name)\n  (todo _ state: :open list: ?l ...))\n\n(select (tour.busy ?l name: ?name))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "deductive rule",
+        "outcome": "ok",
+        "head": "deductive rule kept the comment above it as its description, installed a deductive rule on the branch",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(assert (tour.blocks todo:seeds then: todo:deck))\n(assert (tour.blocks todo:deck then: todo:milk))\n\n(rule (tour.before ?a then: ?b) (tour.blocks ?a then: ?b))\n(rule (tour.before ?a then: ?c) (tour.blocks ?a then: ?b) (tour.before ?b then: ?c))\n\n(select (tour.before ?a then: todo:milk))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "deductive rule",
+        "outcome": "ok",
+        "head": "deductive rule installed a deductive rule on the branch",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "deductive rule",
+        "outcome": "ok",
+        "head": "deductive rule installed a deductive rule on the branch",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control))\n\n; Completing a to-do makes it done.\n(rule (assert (tour.todo ?t state: (:last (:entity :done))))\n  (todo/complete todo: ?t))\n\n; And takes back the state it had.\n(rule (retract (tour.todo ?t state: ?was))\n  (todo/complete todo: ?t)\n  (tour.todo ?t state: ?was))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares the command todo/complete",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "inductive rule",
+        "outcome": "ok",
+        "head": "inductive rule kept the comment above it as its description, installed an inductive rule: it fires when a commit lands",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "inductive rule",
+        "outcome": "ok",
+        "head": "inductive rule kept the comment above it as its description, installed an inductive rule: it fires when a commit lands",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(assert (todo/complete todo: todo:milk))\n\n(select (todo todo:milk title: ?title state: ?state list: ?l))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert issued 1 command(s), held one tick",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 1 answer(s)",
+        "rows": 1,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(concept (tagged ?t tag: ?tag)\n  (tour.todo/tag of: ?t is: ?tag as: :text cardinality: :many))\n\n(assert (tagged todo:deck tag: \"work\"))\n(assert (tagged todo:deck tag: \"writing\"))\n(assert (tagged todo:milk tag: \"errand\"))\n\n(select (tagged ?t tag: ?tag))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares tagged with tag:",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 3 answer(s)",
+        "rows": 3,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(assert (tour.note note:1 about: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true}))\n(assert (tour.note note:2 about: {:author \"Grace\"}))\n\n(select (tour.note ?n about: {:author ?who}))\n\n(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 1 answer(s)",
+        "rows": 1,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "query",
+        "outcome": "ok",
+        "head": "query defines the view todo/item",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "query",
+        "outcome": "ok",
+        "head": "query defines the view list/card",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select rendered 1 instance(s) of the view",
+        "rows": 0,
+        "printed": 1,
+        "html": true,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; Shorthand for an open to-do.\n(rule (syntax (assert (todo ?t title: ?x state: :open list: ?l)))\n  (expand [todo! ?t ?x ?l]))\n\n[todo! todo:bread \"Bake bread\" list:home]\n\n(select (todo todo:bread title: ?title state: ?state list: ?l))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "macro",
+        "outcome": "ok",
+        "head": "macro defines a macro: a rule over syntax the analyzer runs",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "macro use",
+        "outcome": "ok",
+        "head": "macro use asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 1 answer(s)",
+        "rows": 1,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: warning\n(rule (warning \"a to-do written as done already: is that what you meant?\")\n  (expand (todo ?t title: ?x state: :done list: ?l) in: :head))\n\n(assert (todo todo:bill title: \"Pay the bill\" state: :done list: list:home))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "check",
+        "outcome": "ok",
+        "head": "check defines a check: a rule over syntax that warns",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 1
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(select (syntax.meta ?rule description: ?text))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 3 answer(s)",
+        "rows": 3,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(select (tour.rule ?f head: ?name)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /rule}\n                       :operand {:items [{:operator {:name ?name}} ... ?premises]}}))\n\n(select (tour.assert ?f to-do: ?t)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /assert}\n                       :operand {:items [{:type :application\n                                          :operator {:type :reference :name /todo}\n                                          :operand {:items [{:type :constant :value ?t}]}}]}}))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 7 answer(s)",
+        "rows": 7,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 5 answer(s)",
+        "rows": 5,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "deductive rule",
+        "outcome": "refused",
+        "head": "deductive rule refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "refused",
+        "head": "assert refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 1
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: refused\n(rule (all (assert (tour.todo ?t list: ?to)) (retract (tour.todo ?t list: ?from)))\n  (tour.move ?t to: ?to)\n  (tour.todo ?t list: ?from))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "deductive rule",
+        "outcome": "refused",
+        "head": "deductive rule refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  }
+]

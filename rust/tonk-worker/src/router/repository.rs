@@ -17584,7 +17584,7 @@ concept!: &writer-app
         let notebook = embedded_standard_library("/library/notebook.clj").expect("notebook.clj");
         let views =
             embedded_standard_library("/library/notebook-views.clj").expect("notebook-views.clj");
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let view = View::compile(&[&core, &notebook, &views], "(notebook/ui ?n is: ?ui)")
             .expect("the notebook's page compiles");
         println!("compile notebook/ui: {:?}", started.elapsed());
@@ -17626,7 +17626,7 @@ concept!: &writer-app
                     "notebook/block!:\n  this: id:probe/{at}\n  notebook: {NOTEBOOK}\n  source: \"item {at}\"\n\n"
                 ));
             }
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             author(&tonk, &key, &document).await;
             let created = started.elapsed();
 
@@ -17642,7 +17642,7 @@ concept!: &writer-app
                 .watch(session.handle(), Some(entity))
                 .expect("the page is watched");
 
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let first = page.poll(&tonk.operator).await.expect("the first poll");
             let rendered = started.elapsed();
             assert_eq!(first.len(), 1, "the first poll inserts the page whole");
@@ -17659,7 +17659,7 @@ concept!: &writer-app
                 "an order item for each block"
             );
 
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             assert!(
                 page.poll(&tonk.operator)
                     .await
@@ -17670,7 +17670,7 @@ concept!: &writer-app
             let quiet = started.elapsed();
             let before = page.recomputes();
 
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             author(
                 &tonk,
                 &key,
@@ -17678,7 +17678,7 @@ concept!: &writer-app
             )
             .await;
             let command = started.elapsed();
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let patches = page.poll(&tonk.operator).await.expect("the poll after");
             let changed = started.elapsed();
             assert!(
@@ -17709,7 +17709,7 @@ concept!: &writer-app
             )
             .await;
             let block = text(&rows[0], "this");
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             author(
                 &tonk,
                 &key,
@@ -17719,7 +17719,7 @@ concept!: &writer-app
             )
             .await;
             let edit_command = started.elapsed();
-            let started = std::time::Instant::now();
+            let started = web_time::Instant::now();
             let edited = page
                 .poll(&tonk.operator)
                 .await

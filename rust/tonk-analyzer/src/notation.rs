@@ -12,6 +12,8 @@
 //! nowhere else.
 
 pub mod live;
+/// Demo (notation tour): one notebook cell in the notation, evaluated.
+pub mod tour;
 
 pub use dialog_notation::{Declaration, parse_written};
 
