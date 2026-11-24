@@ -105,9 +105,18 @@
     ]
   },
   {
-    "source": "(select (todo ?t title: ?title state: ?state list: ?list))",
+    "source": "(select (todo ?t title: ?title state: ?state list: ?list))\n\n(select (todo ?t title: ?title ...))",
     "state": "ran",
     "forms": [
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 4 answer(s)",
+        "rows": 4,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
       {
         "kind": "select",
         "outcome": "ok",
@@ -168,7 +177,7 @@
     ]
   },
   {
-    "source": "(concept (estimate ?t hours: ?h)\n  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))\n\n(assert (estimate todo:milk hours: 1))\n(assert (estimate todo:mum hours: 1))\n(assert (estimate todo:deck hours: 3))\n(assert (estimate todo:seeds hours: 2))\n\n(select (tour.quick ?t title: ?title hours: ?h)\n  (todo ?t title: ?title ...)\n  (estimate ?t hours: ?h)\n  (< ?h : 2))\n\n(select (tour.morning ?a with: ?b)\n  (estimate ?a hours: ?p)\n  (estimate ?b hours: ?q)\n  (< ?p : ?q)\n  (<= (+ ?p : ?q) : 3))",
+    "source": "(concept (estimate ?t hours: ?h)\n  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))\n\n(assert (estimate todo:milk hours: 1))\n(assert (estimate todo:mum hours: 1))\n(assert (estimate todo:deck hours: 3))\n(assert (estimate todo:seeds hours: 2))\n\n(select (tour.quick ?t title: ?title hours: ?h)\n  (todo ?t title: ?title ...)\n  (estimate ?t hours: ?h)\n  (< ?h : 2))\n\n(select (tour.morning ?a with: ?b total: (+ ?p : ?q))\n  (estimate ?a hours: ?p)\n  (estimate ?b hours: ?q)\n  (< ?p : ?q)\n  (<= (+ ?p : ?q) : 3))",
     "state": "ran",
     "forms": [
       {
@@ -243,7 +252,7 @@
     ]
   },
   {
-    "source": "(query (list/summary ?l is: ?summary)\n  (list ?l name: ?name)\n  (todo (distinct ?t) list: ?l ...)\n  (is ?summary {:name ?name :todos (count ?t)}))\n\n(select (list/summary ?l is: ?summary))",
+    "source": "(query (list/summary ?l is: ?summary)\n  (list ?l name: ?name)\n  (todo (collect ?t) list: ?l ...)\n  (is ?summary {:name ?name :todos (count ?t)}))\n\n(select (list/summary ?l is: ?summary))",
     "state": "ran",
     "forms": [
       {
@@ -360,7 +369,7 @@
     ]
   },
   {
-    "source": "(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control))\n\n; Completing a to-do makes it done.\n(rule (assert (tour.todo ?t state: (:last (:entity :done))))\n  (todo/complete todo: ?t))\n\n; And takes back the state it had.\n(rule (retract (tour.todo ?t state: ?was))\n  (todo/complete todo: ?t)\n  (tour.todo ?t state: ?was))",
+    "source": "(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))\n\n; Completing a to-do takes back the record as it was.\n(rule (retract (todo ?t title: ?title state: :open list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n\n; And asserts it done.\n(rule (assert (todo ?t title: ?title state: :done list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))",
     "state": "ran",
     "forms": [
       {
@@ -486,6 +495,72 @@
     ]
   },
   {
+    "source": "(concept (urgency ?t level: (max ?u))\n  (tour.todo/urgency of: ?t is: ?u as: [:low :normal :high] cardinality: :many))\n\n(assert (urgency todo:deck level: :normal))\n(assert (urgency todo:deck level: :high))\n(assert (urgency todo:deck level: :low))\n(assert (urgency todo:seeds level: :low))\n\n(select (urgency ?t level: ?level))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "ok",
+        "head": "concept declares urgency with level:",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 2 answer(s)",
+        "rows": 2,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
     "source": "(assert (tour.note note:1 about: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true}))\n(assert (tour.note note:2 about: {:author \"Grace\"}))\n\n(select (tour.note ?n about: {:author ?who}))\n\n(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))",
     "state": "ran",
     "forms": [
@@ -534,7 +609,37 @@
     ]
   },
   {
-    "source": "(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))",
+    "source": "(assert (tour.note note:3 about: {:author \"Lin\" :tags {:}}))\n\n(select (tour.note ?n about: {:author ?who :tags {:}}))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "select",
+        "outcome": "ok",
+        "head": "select 1 answer(s)",
+        "rows": 1,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (collect ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))",
     "state": "ran",
     "forms": [
       {
@@ -714,6 +819,69 @@
     ]
   },
   {
+    "source": "; expect: refused\n(concept (tour.flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "refused",
+        "head": "concept refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: refused\n(select (todo ?t title: ?title))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "select",
+        "outcome": "refused",
+        "head": "select refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: refused\n(concept (tour.rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))",
+    "state": "refused",
+    "forms": [
+      {
+        "kind": "concept",
+        "outcome": "refused",
+        "head": "concept refused",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
     "source": "; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))",
     "state": "refused",
     "forms": [
@@ -724,7 +892,7 @@
         "rows": 0,
         "printed": 0,
         "html": false,
-        "warnings": 1
+        "warnings": 0
       }
     ],
     "stages": [

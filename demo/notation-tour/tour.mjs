@@ -160,7 +160,8 @@ try {
       check(live.frames === 1 && live.items > 0, `the view is watched live: ${live.items} item(s) in its first frame`);
     }
     const expected = outcome.source.includes('; expect: refused') ? 'refused' : 'ran';
-    const answered = outcome.forms
+    // A refused cell answers nothing, a refused select included.
+    const answered = expected === 'refused' || outcome.forms
       .filter((f) => f.kind === 'select' || f.kind === 'query')
       .every((f) => f.rows + f.printed + (f.html ? 1 : 0) > 0 || f.kind === 'query');
     const warned = !outcome.source.includes('; expect: warning') || outcome.forms.some((f) => f.warnings > 0);
