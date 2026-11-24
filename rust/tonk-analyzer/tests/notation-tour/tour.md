@@ -20,7 +20,7 @@ A concept names a shape of facts. This one is a to-do: a title, a state that is 
   (tour.list/name of: ?l is: ?name as: :text cardinality: :one))
 ```
 
-Asserting through a concept writes one fact per line. A write says every field.
+Asserting through a concept writes one fact per line. A write through a concept says every field, or the entity alone; one field is written through the attribute's relation.
 
 ```notation
 (assert (list list:home name: "Home"))

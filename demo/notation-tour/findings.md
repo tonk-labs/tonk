@@ -3,7 +3,8 @@
 Kept as history. Status at the revision the branch pins now,
 `b423dd7893ee297cbf4f3e27f1645c3171852c90` (dialog-db `feat/notation-poc`):
 finding 1 is fixed (the head formula answers one total per pair, and the
-tour shows it in the plain form); finding 2 still reproduces exactly as
+tour shows it in the plain form); finding 2 is still open at b423dd78
+(fixed by dialog-db/dialog-db#863 once pinned) and reproduces exactly as
 written below, and the tour no longer needs its workaround, since
 completing a to-do now writes the concept again with its state done and
 the cardinality-one state succeeds the open one, with no retract.

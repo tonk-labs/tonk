@@ -3684,7 +3684,7 @@ view!:
                     <h3 class="hub-help-h"><button type="button" class="hub-help-toggle" aria-expanded="false" aria-controls="help-without"><svg class="hub-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>can I use tonk without an agent?</span></button></h3>
                     <div class="hub-fold" inert id="help-without"><div class="hub-fold-in"><div class="hub-help-a">
                       <p>Yes. Open a passlink in your browser. The link determines whether you can read or edit the space.</p>
-                      <p>You can also <button type="button" class="hub-btn" data-start-create>make a space</button> in this browser. See the <a href="https://github.com/tonk-labs/tonk/blob/stable/README.md">guide to building spaces</a>.</p>
+                      <p>You can also <button type="button" class="hub-btn" data-start-create>make a space</button> in this browser. Or <a href="/seed/%2Flibrary%2Fnotation-tour.yaml">start from the notation tour</a>, a notebook that walks through the Dialog notation. See the <a href="https://github.com/tonk-labs/tonk/blob/stable/README.md">guide to building spaces</a>.</p>
                     </div></div></div>
                   </div>
                 </div></div></div>
@@ -3728,7 +3728,7 @@ view!:
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
               </ul>
-              <div slot="empty" class="hub-empty"><p>No spaces yet.</p></div>
+              <div slot="empty" class="hub-empty"><p>No spaces yet.</p><p>Or <a href="/seed/%2Flibrary%2Fnotation-tour.yaml">start from the notation tour</a>, a notebook that walks through the Dialog notation.</p></div>
               <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
             </tonk-display>
           </section>

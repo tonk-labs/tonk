@@ -6,7 +6,7 @@
 //   ln -sf "$(npm root -g)" node_modules   # Playwright is installed globally
 //   node tour.mjs
 //
-// It opens the seed link for the tour, creates the "Notation tour" space,
+// It follows the hub's link to the tour's seed page, creates the "Notation tour" space,
 // waits for the tour notebook, runs every ```notation cell in order and
 // checks each one's outcome against what the tour says it should be (ran,
 // or refused for a cell marked `; expect: refused`), edits one cell and
@@ -19,7 +19,6 @@ import path from 'node:path';
 
 const BASE = process.env.BASE || 'http://localhost:8080';
 const SHOTS = process.env.SHOTS || path.join(path.dirname(new URL(import.meta.url).pathname), 'shots');
-const SEED = `${BASE}/library/notation-tour.yaml`;
 fs.mkdirSync(SHOTS, { recursive: true });
 
 const log = (...args) => console.log(new Date().toISOString().slice(11, 19), ...args);
@@ -66,8 +65,27 @@ try {
   await page.goto(BASE);
   await page.waitForTimeout(30000);
 
-  log('opening the seed link', SEED);
-  await page.goto(`${BASE}/seed/${SEED}`);
+  // Reach the tour by clicking, as a person on the preview would: the hub
+  // links to it from its empty list, and from its troubleshooting fold
+  // beside `make a space`.
+  log('opening the hub and following its link to the notation tour');
+  await page.goto(`${BASE}/`);
+  const hub = await frameWith(page, () => !!document.querySelector('a[href*="notation-tour"]'));
+  const via = await hub.evaluate(() => {
+    const links = [...document.querySelectorAll('a[href*="notation-tour"]')];
+    const shown = links.find((link) => link.getClientRects().length);
+    if (shown) {
+      shown.click();
+      return 'the empty list';
+    }
+    document.querySelector('[aria-controls="help-body"]')?.click();
+    document.querySelector('[aria-controls="help-without"]')?.click();
+    const folded = document.querySelector('#help-without a[href*="notation-tour"]');
+    folded?.click();
+    return folded ? 'the troubleshooting fold' : 'nothing';
+  });
+  log('followed the link in', via);
+  check(via !== 'nothing', 'the hub links to the notation tour');
   const dialog = await frameWith(page, () => !!document.querySelector('space-create[autoopen] input[name=name]'));
   await dialog.fill('space-create[autoopen] input[name=name]', 'Notation tour');
   await page.screenshot({ path: path.join(SHOTS, '00-create.png') });
