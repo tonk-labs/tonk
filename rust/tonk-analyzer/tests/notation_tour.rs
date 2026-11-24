@@ -192,7 +192,8 @@ fn tour_seed(notebook: &str, tour: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let mut doc = vec![
-        "# GENERATED from notebook.yaml and rust/tonk-analyzer/tests/notation-tour/tour.md by".to_owned(),
+        "# GENERATED from notebook.yaml and rust/tonk-analyzer/tests/notation-tour/tour.md by"
+            .to_owned(),
         "# rust/tonk-analyzer/tests/notation_tour.rs. Do not edit; edit those and run".to_owned(),
         "# TONK_TOUR_WRITE_SEED=1 cargo test -p tonk-analyzer --test notation_tour".to_owned(),
         "#".to_owned(),
