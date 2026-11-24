@@ -213,9 +213,18 @@ pub struct SpaceWriter {
     pulled_for: AtomicU64,
     /// The most one read answers.
     caps: ReadCaps,
+    /// Changes proposed in this writer's session, until the person
+    /// answers (see [`super::propose`]).
+    proposals: super::propose::Proposals,
     /// Fail the next push before it is sent, as a refusing remote would.
     #[cfg(test)]
     refuse_push: AtomicBool,
+}
+
+/// Only a consumed sharing proposal can select the passlink operation.
+enum WriteOperation {
+    Request(Box<Request<Body>>),
+    Passlink,
 }
 
 impl SpaceWriter {
@@ -257,6 +266,7 @@ impl SpaceWriter {
             reads: AtomicU64::new(0),
             pulled_for: AtomicU64::new(0),
             caps: ReadCaps::default(),
+            proposals: super::propose::Proposals::default(),
             #[cfg(test)]
             refuse_push: AtomicBool::new(false),
         })
@@ -296,14 +306,25 @@ impl SpaceWriter {
     /// Every answer carries the time of each step in `Server-Timing`:
     /// `lock` (waiting for the write before it), `reopen`, `pull`, `eval`,
     /// `push` and `landed`, each when it ran.
+    ///
+    /// An `/evaluate` that runs a [key command](super::propose::KEY_COMMANDS)
+    /// is refused before it commits (`403` `KEY_COMMAND_NOT_CONFIRMED`):
+    /// only [`Self::apply`] runs one, once the person confirmed it.
     pub async fn write(&self, request: Request<Body>) -> Response<Body> {
+        self.write_any(refusing_key_commands(request)).await
+    }
+
+    /// [`Self::write`], key commands included: for a confirmed one.
+    async fn write_any(&self, request: Request<Body>) -> Response<Body> {
         let mut steps = Steps::start();
-        let mut response = self.write_timed(request, &mut steps).await;
+        let mut response = self
+            .write_timed(WriteOperation::Request(Box::new(request)), &mut steps)
+            .await;
         steps.insert(response.headers_mut());
         response
     }
 
-    async fn write_timed(&self, request: Request<Body>, steps: &mut Steps) -> Response<Body> {
+    async fn write_timed(&self, operation: WriteOperation, steps: &mut Steps) -> Response<Body> {
         let _turn = self.lock.lock().await;
         steps.lap("lock");
         if self.stale.load(Ordering::SeqCst) {
@@ -324,7 +345,23 @@ impl SpaceWriter {
         if let Err(error) = pulled {
             return error.answer("PULL_FAILED");
         }
-        let response = peer.call(self.on_branch(request)).await;
+        let response = match operation {
+            WriteOperation::Request(request) => peer.call(self.on_branch(*request)).await,
+            WriteOperation::Passlink => {
+                let tonk = peer.state.read().await.clone();
+                match super::super::create_invite::hosted_passlink(
+                    &tonk,
+                    &self.space,
+                    &self.agent,
+                    &self.remote,
+                )
+                .await
+                {
+                    Ok(url) => json_answer(serde_json::json!({"passlink":url})),
+                    Err(error) => return axum::response::IntoResponse::into_response(error),
+                }
+            }
+        };
         if !response.status().is_success() {
             steps.lap("eval");
             return response;
@@ -416,6 +453,219 @@ impl SpaceWriter {
         };
         steps.lap("eval");
         response
+    }
+
+    /// Preview `document` as a read does (`transact=false&preview=true`:
+    /// what it would change, nothing committed), and hold it, with the
+    /// revision it was previewed at, to apply later only if it would
+    /// write something. Answers [`super::propose::held`]; a document that
+    /// does not evaluate is answered as its read is, and not held.
+    ///
+    /// A document that runs a command is not held (its effects are not in
+    /// the preview, and a revision-checked write refuses commands), unless
+    /// the command is a [key command](super::propose::KEY_COMMANDS) and
+    /// the document does nothing else: the person confirms that command
+    /// and its spelled-out inputs. Beside other changes, a key command is
+    /// refused (`KEY_COMMAND_NOT_ALONE`).
+    pub async fn propose(&self, document: String) -> Response<Body> {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/evaluate?transact=false&preview=true")
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(document.clone()))
+            .expect("static request");
+        let response = self.read(request).await;
+        if !response.status().is_success() {
+            return response;
+        }
+        let evaluation: serde_json::Value = match response.into_body().collect().await {
+            Ok(body) => serde_json::from_slice(&body.to_bytes()).unwrap_or_default(),
+            Err(error) => {
+                return failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DRY_RUN_UNREADABLE",
+                    &error.to_string(),
+                );
+            }
+        };
+        if evaluation["commits"]["claims"].as_u64().unwrap_or(0) == 0
+            || super::propose::changed(&evaluation).is_empty()
+        {
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "NOTHING_TO_PROPOSE",
+                "this document writes nothing, so there is nothing to confirm: only a \
+                 `concept!:` head (with `!`) or a command writes",
+            );
+        }
+        let runs_a_command = evaluation["matches_after"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["results"].as_array())
+            .flatten()
+            .any(|result| result["transient"].as_bool().unwrap_or(false));
+        if runs_a_command {
+            let Some(key) = super::propose::key_command(&evaluation) else {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "COMMAND_NOT_CONFIRMABLE",
+                    "this document runs a command, whose effects a preview cannot show, so it \
+                     cannot be confirmed first: write it without confirm",
+                );
+            };
+            // The command must be the document's one expression: no query
+            // beside it can bind its inputs to other values by the time
+            // the person answers, and no write beside it can come along.
+            let alone = matches!(
+                evaluation["matches_after"].as_array().map(Vec::as_slice),
+                Some([block]) if block["results"].as_array().is_some_and(|results| results.len() == 1)
+            );
+            if !alone {
+                return failure(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KEY_COMMAND_NOT_ALONE",
+                    &format!(
+                        "this document runs {}, which the person confirms on its own: send it \
+                         alone, and the other changes in a write of their own",
+                        key.name
+                    ),
+                );
+            }
+            // Notation and the named MCP tool use the same connection-bound share card.
+            if key.name == "tonk/invite" {
+                return json_answer(serde_json::json!({"request_passlink":true}));
+            }
+        }
+        let revision = evaluation["revision_before"].clone();
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let seen = super::propose::seen(&evaluation);
+        let effect = if runs_a_command {
+            super::propose::Effect::Command
+        } else {
+            super::propose::Effect::Document
+        };
+        let (id, expires) = self.proposals.hold(document, revision, seen, effect, now);
+        json_answer(super::propose::held(&id, expires, evaluation))
+    }
+
+    /// Hold a dedicated passlink request without depending on the space's notation library.
+    pub fn propose_passlink(&self) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(
+            String::new(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            super::propose::Effect::Passlink,
+            now,
+        );
+        json_answer(serde_json::json!({"proposal":{"id":id,"expires":expires}}))
+    }
+
+    /// Write the change held as `id`, once, as [`Self::write`] does, and
+    /// only onto the revision it was previewed at: the person confirmed
+    /// what the preview showed, so a space that has moved since is
+    /// previewed again: unchanged for what the person saw, it is applied
+    /// at the new head; otherwise it is refused (`412`) and nothing is
+    /// written. The `412` carries the same change held afresh at the new
+    /// head (`proposal`, `evaluation`), when it still previews, for the
+    /// person to choose. The id is spent before the
+    /// write runs, so a second answer finds nothing whatever the first
+    /// one's outcome.
+    pub async fn apply(&self, id: &str) -> Response<Body> {
+        self.apply_held(id, true).await
+    }
+
+    /// [`Self::apply`]; with `again`, a space that moved is previewed
+    /// afresh, and when the fresh preview shows exactly what the person
+    /// saw, the change is applied at the new head once more. Only a
+    /// change that would now do something else is answered `412`.
+    async fn apply_held(&self, id: &str, again: bool) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let Ok(taken) = self.proposals.take(id, now) else {
+            return proposal_gone();
+        };
+        if taken.effect == super::propose::Effect::Leave {
+            let Ok(space) = taken.document.parse::<Did>() else {
+                return failure(StatusCode::BAD_REQUEST, "BAD_LEAVE", "not a space");
+            };
+            return match self.leave(&space).await {
+                Ok(dropped) => json_answer(serde_json::json!({
+                    "left": space.to_string(),
+                    "grants": dropped,
+                })),
+                Err(error) => failure(StatusCode::BAD_GATEWAY, "LEAVE_FAILED", &error),
+            };
+        }
+        if taken.effect == super::propose::Effect::Passlink {
+            return self
+                .write_timed(WriteOperation::Passlink, &mut Steps::start())
+                .await;
+        }
+        if taken.effect == super::propose::Effect::Command {
+            // A key command alone: what the person confirmed is the command
+            // and its inputs, which a moved space does not change.
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/evaluate?transact=true")
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(taken.document))
+                .expect("static request");
+            return self.write_any(request).await;
+        }
+        let body = serde_json::json!({
+            "document": taken.document,
+            "expected_revision": taken.revision,
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/evaluate/conditional")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("static request");
+        let response = self.write(request).await;
+        if response.status() != StatusCode::PRECONDITION_FAILED {
+            return response;
+        }
+        // The space moved: hold the same change afresh at its new head.
+        let held = self.propose(taken.document).await;
+        let held = if held.status().is_success() {
+            match held.into_body().collect().await {
+                Ok(body) => serde_json::from_slice::<serde_json::Value>(&body.to_bytes()).ok(),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        if let Some(held) = &held
+            && again
+            && super::propose::seen(&held["evaluation"]) == taken.seen
+            && let Some(id) = held["proposal"]["id"].as_str()
+        {
+            // What moved is elsewhere in the space: the change does what
+            // the person confirmed.
+            return Box::pin(self.apply_held(id, false)).await;
+        }
+        let mut moved = serde_json::json!({
+            "error": "the space changed after the preview; nothing was written",
+            "code": "CHANGED_SINCE",
+        });
+        if let Some(held) = held {
+            moved["proposal"] = held["proposal"].clone();
+            moved["evaluation"] = held["evaluation"].clone();
+        }
+        let mut response = json_answer(moved);
+        *response.status_mut() = StatusCode::PRECONDITION_FAILED;
+        response
+    }
+
+    /// Drop the change held as `id`.
+    pub fn dismiss(&self, id: &str) -> Response<Body> {
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        match self.proposals.take(id, now) {
+            Ok(_) => json_answer(serde_json::json!({ "dismissed": true })),
+            Err(_) => proposal_gone(),
+        }
     }
 
     /// The views `route` mounts in this writer's space (its home when
@@ -793,6 +1043,40 @@ fn is_read(method: &Method, uri: &Uri) -> bool {
     }
 }
 
+/// The answer for a proposal no writer holds any more.
+fn proposal_gone() -> Response<Body> {
+    failure(
+        StatusCode::GONE,
+        "PROPOSAL_GONE",
+        "no such proposal: it was answered, it lapsed, or another session made it",
+    )
+}
+
+fn json_answer(value: serde_json::Value) -> Response<Body> {
+    let mut response = Response::new(Body::from(value.to_string()));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+/// `request` with `refuse_key_commands=true` when it is an `/evaluate`
+/// that may commit, so the worker refuses a key command it runs.
+fn refusing_key_commands(mut request: Request<Body>) -> Request<Body> {
+    if request.uri().path() != "/evaluate" {
+        return request;
+    }
+    let refusing = match request.uri().query() {
+        Some(query) => format!("/evaluate?{query}&refuse_key_commands=true"),
+        None => "/evaluate?refuse_key_commands=true".to_owned(),
+    };
+    if let Ok(uri) = refusing.parse() {
+        *request.uri_mut() = uri;
+    }
+    request
+}
+
 fn failure(status: StatusCode, code: &str, message: &str) -> Response<Body> {
     let body = serde_json::json!({ "error": message, "code": code }).to_string();
     let mut response = Response::new(Body::from(body));
@@ -902,6 +1186,114 @@ impl SpaceWriter {
         self.retain_grants(chains, directory).await
     }
 
+    /// Hold leaving `space` (`body` is `{"space"}`) for the person to
+    /// confirm, answering the held proposal's id. Only the agent space's
+    /// own writer holds it, and the agent space itself cannot be left.
+    pub fn propose_leave(&self, body: &[u8]) -> Response<Body> {
+        if self.space != self.agent {
+            return failure(
+                StatusCode::FORBIDDEN,
+                "NOT_THE_AGENT_SPACE",
+                "only the agent space's own writer leaves spaces",
+            );
+        }
+        let space = serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|body| {
+                body["space"]
+                    .as_str()
+                    .and_then(|space| space.parse::<Did>().ok())
+            });
+        let Some(space) = space else {
+            return failure(
+                StatusCode::BAD_REQUEST,
+                "BAD_LEAVE",
+                "name the space to leave",
+            );
+        };
+        if space == self.agent {
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "CANNOT_LEAVE_HOME",
+                "the agent's own space cannot be left",
+            );
+        }
+        let now = dialog_ucan_core::time::Timestamp::now().to_unix();
+        let (id, expires) = self.proposals.hold(
+            space.to_string(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            super::propose::Effect::Leave,
+            now,
+        );
+        json_answer(serde_json::json!({ "proposal": { "id": id, "expires": expires } }))
+    }
+
+    /// Leave `space`: drop every grant the agent space holds for it, in
+    /// force or lapsed, under the lock, and push. Answers how many were
+    /// dropped. The access service is not told (only the agent space's own
+    /// key could disclaim a grant there), so the agent space no longer
+    /// holds a chain to the space: the agent cannot reach it, and the
+    /// person's list of their agents stops naming it.
+    pub(crate) async fn leave(&self, space: &Did) -> Result<usize, String> {
+        if self.space != self.agent {
+            return Err("only the agent space's writer leaves spaces".into());
+        }
+        let _turn = self.lock.lock().await;
+        let peer = self.peer();
+        self.sync(&peer, "pull").await?;
+        let dropped = {
+            let state = peer.state.read().await;
+            let session = state
+                .reactor
+                .repository(self.space.as_ref())
+                .branch("main")
+                .acquire(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            let held = session
+                .handle()
+                .delegations()
+                .issued_to(self.agent.clone())
+                .perform(&state.operator)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut dropped = 0;
+            for leaf in held {
+                if leaf.0.subject() != Some(space) {
+                    continue;
+                }
+                session
+                    .handle()
+                    .delegations()
+                    .retract(leaf)
+                    .perform(&state.operator)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                dropped += 1;
+            }
+            dropped
+        };
+        if dropped == 0 {
+            return Err("this agent holds no access to that space".into());
+        }
+        // A leave whose push failed must not take effect later: unless it
+        // landed, discard it by reopening, as a failed write does.
+        if let Err(error) = self.push(&peer).await {
+            if self.landed(&peer).await {
+                return Ok(dropped);
+            }
+            if let Err(reopen) = self.reopen().await {
+                self.stale.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "{error}; the writer reopens before its next write: {reopen}"
+                ));
+            }
+            return Err(error.into());
+        }
+        Ok(dropped)
+    }
+
     /// Drop `chains` from the agent space and push, as revoking a grant
     /// joined from a share link does (see `agents::revoke`): the access
     /// service is never told, so only the agent space says it is gone.
@@ -938,3 +1330,171 @@ impl SpaceWriter {
 
 #[cfg(test)]
 mod tests;
+
+impl SpaceWriter {
+    async fn initialize_created_space(
+        &self,
+        space: &Did,
+        name: &str,
+        provider: &url::Url,
+    ) -> anyhow::Result<()> {
+        use super::super::repository;
+        use tonk_schema::prelude::DidExt as _;
+        // The directory entry is already visible. Another peer may write to the
+        // new space during seeding, so give the initializer its own origin.
+        let initializer = WriterKey::derive(&WriterSession {
+            seed: self.key.seed.clone(),
+            powerline: self.key.chain.clone(),
+            mcp_session: space.to_string(),
+            home: self.home.clone(),
+        })
+        .await?;
+        let peer = open_peer(
+            &initializer,
+            &format!("{}/create-{space}", self.root),
+            space,
+            provider,
+            (&self.agent, &self.home),
+        )
+        .await?;
+        let initialized = async {
+            let state = peer.state.read().await;
+            let own = repository::repository_name_claims(space, name, None)?;
+            let library = include_str!("../../../../tonk-core/assets/library/core.yaml");
+            repository::install_fresh_seed(&state, space.repo_key(), BRANCH, library, &own).await?;
+            drop(state);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/repository/{space}/branch/{BRANCH}/sync/push"))
+                .body(Body::empty())?;
+            let response = peer.call(request).await;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "push returned {}",
+                response.status()
+            );
+            Ok(())
+        }
+        .await;
+        peer.close().await;
+        initialized
+    }
+
+    /// Handle a proposal on the session writer that owns its confirmation.
+    pub async fn create_space(
+        &self,
+        provider: &url::Url,
+        decision: super::creation::CreationDecision,
+    ) -> anyhow::Result<serde_json::Value> {
+        use super::card::{Agent, Card, Look, Place, Role};
+        use super::creation::{CONFIRM, CreationDecision};
+        use dialog_ucan_core::promise::Promised;
+        use serde_json::json;
+        use tonk_identity::created_space::{self, Handoff};
+        anyhow::ensure!(
+            self.space == self.agent,
+            "only an agent's own writer can create a space"
+        );
+        let agent = Agent {
+            did: self.agent.to_string(),
+            name: None,
+        };
+        let result = |text: String, card: Card, space: Option<String>| json!({"content":[{"type":"text","text":text}],"structuredContent":{"card":card.to_value(),"space":space},"isError":false});
+        match decision {
+            CreationDecision::Ask { id, name } => {
+                let say = format!(
+                    "Create {name}? You will own it. This agent will have read and write access until you revoke it or its grant expires."
+                );
+                let card = Card::ask(
+                    Place {
+                        did: String::new(),
+                        name: Some(name),
+                        item: None,
+                    },
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                )
+                .answer(
+                    "Cancel",
+                    Look::Link,
+                    CONFIRM,
+                    json!({"id":id,"approve":false}),
+                )
+                .answer(
+                    "Create space",
+                    Look::Main,
+                    CONFIRM,
+                    json!({"id":id,"approve":true}),
+                );
+                Ok(result(say, card, None))
+            }
+            CreationDecision::Cancel => Ok(result(
+                "Cancelled".into(),
+                Card::strip(None, None, "Cancelled", agent),
+                None,
+            )),
+            CreationDecision::Approve { name, permission } => {
+                let bytes = hex::decode(permission)?;
+                let permission = DelegationChain::try_from(bytes.as_slice())?;
+                anyhow::ensure!(
+                    permission.audience() == &self.agent
+                        && permission.ability() == "/provider/create-space",
+                    "invalid creation permission"
+                );
+                anyhow::ensure!(
+                    tonk_invite::home_address(&permission)?.as_ref() == Some(provider),
+                    "creation permission is for another service"
+                );
+                let owner = permission.issuer().clone();
+                let receipt = created_space::mint(&owner, &self.agent, &name, provider).await?;
+                let encoded = hex::encode(receipt.to_bytes()?);
+                let handoff = Handoff::read(receipt, &owner).await?;
+                let mut chain = permission;
+                for proof in self.key.chain.proofs() {
+                    chain = chain.push(proof.clone())?;
+                }
+                let key = Ed25519Signer::import(&*self.key.seed)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                let invocation = tonk_identity::request::build_device_invocation(
+                    key,
+                    &chain,
+                    created_space::CREATE.map(str::to_string).to_vec(),
+                    [("handoff".into(), Promised::String(encoded))]
+                        .into_iter()
+                        .collect(),
+                )
+                .await?;
+                super::super::http::post_cbor(provider, &invocation).await?;
+                let space = handoff.subject.to_string();
+                let entry = super::access::DirectoryEntry {
+                    space: handoff.subject.clone(),
+                    name: Some(name.clone()),
+                    address: Some(provider.to_string()),
+                };
+                self.retain_grants(&handoff.grants,&[entry]).await.map_err(|e|anyhow::anyhow!("Space {space} was provisioned for its owner, but saving the agent grants failed: {e}"))?;
+                self.initialize_created_space(&handoff.subject, &name, provider)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("Created {space}, but initializing its library failed: {e}")
+                    })?;
+                let say = format!(
+                    "Created {}. You own it and the agent has read and write access.",
+                    name
+                );
+                let card = Card::strip(
+                    Some(Place {
+                        did: space.clone(),
+                        name: Some(name),
+                        item: None,
+                    }),
+                    Some(Role::Write),
+                    say.clone(),
+                    agent,
+                );
+                Ok(result(say, card, Some(space)))
+            }
+        }
+    }
+}

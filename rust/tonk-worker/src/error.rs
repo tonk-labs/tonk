@@ -34,6 +34,11 @@ pub enum TonkWorkerError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    /// A write that must not run a key command ran one: it is the
+    /// person's to confirm first (`KEY_COMMAND_NOT_CONFIRMED`).
+    #[error("Key command not confirmed: {0}")]
+    KeyCommandUnconfirmed(String),
+
     /// A typed non-success response from an upstream service.
     #[error("Upstream service returned HTTP {status}: {message}")]
     Upstream {
@@ -126,7 +131,9 @@ impl TonkWorkerError {
             TonkWorkerError::NotFound(_) => "not_found",
             TonkWorkerError::Conflict(_) => "conflict",
             TonkWorkerError::PreconditionFailed(_) => "precondition_failed",
-            TonkWorkerError::Forbidden(_) => "forbidden",
+            TonkWorkerError::Forbidden(_) | TonkWorkerError::KeyCommandUnconfirmed(_) => {
+                "forbidden"
+            }
             TonkWorkerError::Upstream { .. } => "upstream",
             TonkWorkerError::RootRequired => "conflict",
             TonkWorkerError::AccountStateUnavailable(_) => "account_state_unavailable",
@@ -142,6 +149,7 @@ impl TonkWorkerError {
             | TonkWorkerError::Conflict(m)
             | TonkWorkerError::PreconditionFailed(m)
             | TonkWorkerError::Forbidden(m)
+            | TonkWorkerError::KeyCommandUnconfirmed(m)
             | TonkWorkerError::AccountStateUnavailable(m) => m.clone(),
             TonkWorkerError::RootRequired => "a local passkey root is required".to_string(),
             TonkWorkerError::Upstream { message, .. } => message.clone(),
@@ -178,7 +186,9 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             TonkWorkerError::Conflict(_) | TonkWorkerError::RootRequired => StatusCode::CONFLICT,
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
-            TonkWorkerError::Forbidden(_) => StatusCode::FORBIDDEN,
+            TonkWorkerError::Forbidden(_) | TonkWorkerError::KeyCommandUnconfirmed(_) => {
+                StatusCode::FORBIDDEN
+            }
             TonkWorkerError::Upstream { status, .. } => StatusCode::from_u16(*status)
                 .ok()
                 .filter(|status| status.is_client_error() || status.is_server_error())
@@ -188,6 +198,9 @@ impl IntoResponse for TonkWorkerError {
         let (code, range) = match &self {
             TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
             TonkWorkerError::RootRequired => (Some("ROOT_REQUIRED".to_string()), None),
+            TonkWorkerError::KeyCommandUnconfirmed(_) => {
+                (Some("KEY_COMMAND_NOT_CONFIRMED".to_string()), None)
+            }
             TonkWorkerError::Upstream { code, .. } => (code.clone(), None),
             _ => (None, None),
         };

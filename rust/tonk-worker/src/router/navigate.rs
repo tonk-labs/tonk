@@ -382,6 +382,19 @@ pub(crate) async fn request_webauthn_with(
     intent: Option<tonk_worker_api::CustodyIntent>,
     credential_id: Option<String>,
 ) -> Result<(), crate::TonkWorkerError> {
+    request_webauthn_for(client, request, intent, credential_id, false).await
+}
+
+/// [`request_webauthn_with`], saying whether this browser signed in with
+/// the account's recovery phrase and so holds no passkey for it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn request_webauthn_for(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
+    phrase_only: bool,
+) -> Result<(), crate::TonkWorkerError> {
     use crate::TonkWorkerError;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -406,6 +419,7 @@ pub(crate) async fn request_webauthn_with(
         request,
         intent,
         credential_id,
+        phrase_only,
     };
     let message = serde_wasm_bindgen::to_value(&message)
         .map_err(|error| TonkWorkerError::Internal(format!("serialize request: {error}")))?;
@@ -489,10 +503,58 @@ pub(crate) async fn request_webauthn_with(
     ))
 }
 
+/// [`request_webauthn_with`], saying whether this browser signed in with
+/// the account's recovery phrase; refused on this host just the same.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) async fn request_webauthn_for(
+    client: &crate::router::ClientId,
+    request: tonk_worker_api::WebAuthnKind,
+    intent: Option<tonk_worker_api::CustodyIntent>,
+    credential_id: Option<String>,
+    phrase_only: bool,
+) -> Result<(), crate::TonkWorkerError> {
+    let _ = phrase_only;
+    request_webauthn_with(client, request, intent, credential_id).await
+}
+
 /// Go home: send the page that asked back to the hub.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::Home> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::Home) {
+    async fn execute(
+        &self,
+        _command: tonk_schema::command::Home,
+    ) -> tonk_schema::invocation::Outcome {
         notify_navigate(self.client(), "/");
+        // Going home is all this command does, so with no page to send
+        // there it did nothing, and says so. Whether a page that is known
+        // received the message is not: the post is fire-and-forget and
+        // reports nothing back.
+        if self.client().is_none() {
+            return Err(tonk_schema::invocation::Failure::new(
+                "there is no page to send home",
+            ));
+        }
+        tonk_schema::invocation::Done::nothing()
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod tests {
+    use crate::router::command::tests::native::test_state;
+    use crate::router::{CommandEnv, CommandOrigin};
+
+    /// `home` with no page to send home did nothing, and its outcome says
+    /// so rather than reporting success.
+    #[dialog_common::test]
+    async fn it_fails_home_when_no_page_asked() {
+        let state = test_state().await;
+        let env = CommandEnv::new(state, CommandOrigin::default());
+        let command = tonk_schema::command::Home {
+            this: "id:home".parse().unwrap(),
+            time: tonk_schema::domain::command::current::home::Time(0.0),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::Home>::execute(&env, command).await;
+        assert!(matches!(&outcome, Err(failure) if failure.0.contains("no page")));
     }
 }

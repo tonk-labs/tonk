@@ -2231,7 +2231,7 @@ fn origin_class(origin: Origin) -> &'static str {
 /// - a command **changes state**, which is exactly what the palette
 ///   reserves the alarm for.
 ///
-/// Read through `--tonk-*` with literal fallbacks, as `tonk-tree`
+/// Read through `--tonk-*` with literal fallbacks, as other elements
 /// does: the overlay lives in a shadow root inside a guest and cannot
 /// assume the sheet defining them was injected there. Corners are
 /// square, per `--tonk-code-radius: 0`.

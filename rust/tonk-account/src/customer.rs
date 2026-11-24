@@ -134,6 +134,59 @@ impl Effect for Add {
     type Output = Result<ConsumerReceipt, RegistrationError>;
 }
 
+/// Ability segment `/custody`: acts a customer takes on the custody
+/// spaces that hold its sealed account secret. Distinct from `/provider`
+/// so a delegate that may provision spaces cannot add a way into the
+/// account, and the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Custody;
+
+impl Attenuation for Custody {
+    type Of = Subject;
+}
+
+/// `/custody/add` — add a custodian to an active account: provision its
+/// custody space under the invoking customer AND write the sealed
+/// account secret into that space's cell, as one command.
+///
+/// The invocation's subject is the customer DID. The carried material is
+/// the custodian's own, so the service can perform the write but never
+/// choose it: a `/use/put/memory/cell` invocation self-issued by the
+/// custody key, checksumming the sealed envelope that travels beside it,
+/// and the custody space's consent to being provided by this customer.
+/// The consent's audience is what binds the write to this account, so
+/// material lifted from one account's request cannot be replayed under
+/// another.
+///
+/// The cell is written before the subscription row, so a refusal or a
+/// failed write leaves nothing provisioned. Retrying after a partial
+/// success is safe: a custody space this customer already provides
+/// answers success without writing again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Attenuate)]
+pub struct AddCustodian {
+    /// The custodian's custody space.
+    pub custody: Did,
+    /// The custody key's `/use/put/memory/cell` invocation, by CID.
+    pub recovery: Cid,
+    /// The custody space's consent to being provided by the customer, by
+    /// CID.
+    pub consent: Cid,
+    /// The sealed envelope [`Self::recovery`] checksums, by CID.
+    pub sealed: Cid,
+}
+
+impl Attenuation for AddCustodian {
+    type Of = Custody;
+
+    fn attenuation() -> &'static str {
+        "add"
+    }
+}
+
+impl Effect for AddCustodian {
+    type Output = Result<ConsumerReceipt, RegistrationError>;
+}
+
 /// `/provider/remove` — deprovision a hosted consumer space: the
 /// reverse of [`Add`], and how a hosted space is deleted. The
 /// invocation's subject is the owning customer DID; the service purges

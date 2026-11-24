@@ -43,9 +43,10 @@
 //! ## Why the byte path stays
 //!
 //! Native targets (the CLI, native tests) have no `crypto.subtle` at
-//! all, and `KekMethod::Phrase` derives from a recovery phrase through
-//! Argon2id rather than from a passkey — reserved today, but not a
-//! passkey ceremony when it lands.
+//! all, and `KekMethod::Phrase` derives from a recovery phrase typed
+//! into the page rather than from a passkey (see [`crate::phrase`]),
+//! so there is no authenticator boundary for a handle to keep it
+//! behind.
 //!
 //! So this is an addition, never a migration.
 //!

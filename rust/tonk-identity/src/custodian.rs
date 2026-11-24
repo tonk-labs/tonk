@@ -15,8 +15,8 @@
 use dialog_credentials::Signer;
 
 use crate::clearance::Recovery;
-use crate::envelope::Kek;
 use crate::envelope::capability::{Opening, Sealing};
+use crate::envelope::{Kek, KekMethod};
 
 /// Whatever holds the account: a passkey, or a key on this device.
 #[derive(Clone)]
@@ -31,6 +31,12 @@ pub enum Custodian {
     /// A passkey, reached through the two handles its PRF evaluates to.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     Passkey(crate::webcrypto_kek::Custodian),
+
+    /// A recovery phrase, which derives what a passkey's PRF would (see
+    /// [`crate::phrase`]). Works everywhere: it needs no authenticator.
+    ///
+    /// Boxed for the same reason as [`Self::Native`].
+    Phrase(Box<crate::phrase::custodian::Custodian>),
 }
 
 impl Custodian {
@@ -48,6 +54,7 @@ impl Custodian {
             Self::Native(custodian) => custodian.signer().await,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Self::Passkey(custodian) => custodian.signer().await,
+            Self::Phrase(custodian) => custodian.signer().await,
         }
     }
 
@@ -60,6 +67,7 @@ impl Custodian {
                 .opener()
                 .await
                 .map_err(|error| anyhow::anyhow!("deriving the opener failed: {error:?}")),
+            Self::Phrase(custodian) => custodian.opener().await,
         }
     }
 
@@ -68,9 +76,23 @@ impl Custodian {
     /// from a list.
     pub fn credential_id(&self) -> Option<&[u8]> {
         match self {
-            Self::Native(_) => None,
+            Self::Native(_) | Self::Phrase(_) => None,
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Self::Passkey(custodian) => Some(&custodian.credential_id),
+        }
+    }
+
+    /// How an envelope sealed under this custodian records its KEK.
+    ///
+    /// A native custodian writes [`KekMethod::Passkey`], as it always
+    /// has: the method is bound into every envelope's associated data,
+    /// and changing what one already writes would gain nothing.
+    pub fn method(&self) -> KekMethod {
+        match self {
+            Self::Native(_) => KekMethod::Passkey,
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Self::Passkey(_) => KekMethod::Passkey,
+            Self::Phrase(_) => KekMethod::Phrase,
         }
     }
 
@@ -95,6 +117,7 @@ impl Custodian {
                 .sealer()
                 .await
                 .map_err(|error| anyhow::anyhow!("deriving the sealer failed: {error:?}")),
+            Self::Phrase(custodian) => custodian.sealer().await,
         }
     }
 }

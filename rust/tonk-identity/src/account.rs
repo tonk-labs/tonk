@@ -238,7 +238,7 @@ async fn seal_under(custodian: &Custodian, secret: AccountSecret) -> anyhow::Res
         .sealer()
         .await
         .map_err(|error| anyhow::anyhow!("deriving the sealer failed: {error:?}"))?;
-    let envelope = seal(&sealer, &secret.material(), KekMethod::Passkey).await?;
+    let envelope = seal(&sealer, &secret.material(), custodian.method()).await?;
     Ok(Account::new(secret, envelope))
 }
 

@@ -241,12 +241,12 @@ window.STORYBOOK_DATA = {
       "variants": "Ready/unhydrated/revoked; Enter/blur; same/different value."
     },
     {
-      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration.",
-      "gaps": "Whole ceremony matrix, duplicate credential, fact/publish failure, reload and retry.",
+      "evidence": "Partial custody browser coverage plus presenter unit tests for cancellation, unsupported security capability, and unavailable browser integration. Worker: an added passkey is one /custody/add: the service writes its custody cell and then provisions its custody DID under the account, so a failed write leaves nothing provisioned and a new device can open the account with it; an account that is not activated is refused before the passkey is asked for, and nothing is queued.",
+      "gaps": "Whole-browser proof that the added passkey alone opens the account on a fresh browser, duplicate credential, fact/publish failure, reload and retry.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B14",
       "title": "Add another passkey.",
-      "variants": "Active customer; missing/legacy passkey metadata; PRF/cancel/error."
+      "variants": "Active customer; customer not yet activated; missing/legacy passkey metadata; PRF/cancel/error."
     },
     {
       "evidence": "Partial DOM rendering.",
@@ -255,6 +255,22 @@ window.STORYBOOK_DATA = {
       "id": "ACCT-B15",
       "title": "Inspect account summary and passkey facts.",
       "variants": "Service online/offline; metadata present/legacy; account unhydrated."
+    },
+    {
+      "evidence": "Whole real-browser flow (it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser) and the activation gate (it_offers_no_recovery_phrase_before_activation); worker authority tests refuse an unactivated account and a second phrase with nothing written, and the command refuses both before the passkey is asked for; access-service test provisions and publishes a phrase's cell and reads it back; identity tests for the BIP-39 encoding and the phrase custodian.",
+      "gaps": "Passkey cancel and failure on the card, provisioning or publish failure after the words were shown, reload mid-card, the settings card after sync to another device.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B16",
+      "title": "Set up the account's recovery phrase from settings: acknowledge it can never be revoked, write down (or copy) the 12 words the top document shows once in a centred dialog, enter three back, confirm with the passkey.",
+      "variants": "Active customer with no phrase; customer not yet activated; a phrase already set up; passkey cancel/error."
+    },
+    {
+      "evidence": "Whole real-browser sign-in reaching the same account root (it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser); identity tests refuse a wrong word count, an unknown word and a bad checksum before anything is fetched; approval refuses a phrase that opens another account.",
+      "gaps": "Whole-browser agent approval with the phrase, a phrase of another account at sign-in, sign-in before the phrase's cell is published.",
+      "group": "Accounts: browser lifecycle",
+      "id": "ACCT-B17",
+      "title": "Sign in on a fresh browser with only the recovery phrase (\"use a recovery phrase instead\" under \"log in with passkey\", which widens the dialog and gives the words a field sized for twelve), and approve an agent, remove one or delete the account with the phrase on a browser holding no passkey.",
+      "variants": "Fresh browser with no passkey; mistyped, unknown or reordered words; a phrase of another account; service offline."
     },
     {
       "evidence": "Partial unit/integration coverage.",
@@ -745,6 +761,14 @@ window.STORYBOOK_DATA = {
       "variants": "List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags."
     },
     {
+      "evidence": "Log and restore integration tests; process journey history_checkout_persists_selection_and_keeps_main_intact covers dry-run, persistent selection, query/write/export/status, preserved main and rejected switch.",
+      "gaps": "Termination between branch creation and selection; disk-full retention; concurrent switch after planning.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-13",
+      "title": "Inspect history and check out a saved revision on a new local branch.",
+      "variants": "Revision/concept/entity filters; JSON; dry-run; saved/missing snapshot; current revision; branch list/switch; restart."
+    },
+    {
       "evidence": "Parser/unit and process coverage.",
       "gaps": "Snapshot of every help route, width/color/broken pipe, hidden-command discoverability.",
       "group": "CLI setup and maintenance",
@@ -847,6 +871,14 @@ window.STORYBOOK_DATA = {
       "id": "UI-05",
       "title": "Recover from service-worker or deployment failure; inspect /doctor and copy an agent debug bundle.",
       "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard."
+    },
+    {
+      "evidence": "Route tests through /transact + /query with the palette's claim shape: a followed rename is answered, a refused one fails with why, a later command keeps the first, an unstamped command leaves no invocation; schema tests that core.yaml and profile.yaml declare the same invocation block and every attribute; markup test for the bar's status slot; library lowering test for tasks.yaml; a manual Playwright run against the PR preview (WEB-19).",
+      "gaps": "No committed real-browser test drives the palette's status line or /console/tasks; invocations never expire and a worker restart forgets them rather than marking them aborted; commands run on the profile are not listed in a space's console.",
+      "group": "Browser shell and runtime",
+      "id": "UI-06",
+      "title": "Run a command from the command palette and see what became of it: the bar says it is working, then done, failed with why, or that nothing handled it; a space with the tasks component lists its recent commands at /console/tasks.",
+      "variants": "Provider succeeds/fails/reports progress; rule-handled (notebook retitle); nothing handles it; palette on a space page or the hub."
     }
   ],
   "schemaVersion": 1,
@@ -1029,7 +1061,8 @@ window.STORYBOOK_DATA = {
         "ACCT-B02",
         "ACCT-B05",
         "ACCT-B06",
-        "ACCT-B07"
+        "ACCT-B07",
+        "ACCT-B17"
       ],
       "name": "Create account",
       "source_paths": [
@@ -1095,12 +1128,14 @@ window.STORYBOOK_DATA = {
         "ACCT-B12",
         "ACCT-B13",
         "ACCT-B14",
-        "ACCT-B15"
+        "ACCT-B15",
+        "ACCT-B16"
       ],
       "name": "Account settings",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/styles.css"
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/custody_relay.rs"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -1244,6 +1279,24 @@ window.STORYBOOK_DATA = {
       ],
       "status": "captured",
       "summary": "Opening a space's address with no access of one's own, when the space keeps no public ticket (never published, or made private again), ends on the private wall rather than a failure.",
+      "surface": "browser"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/web-19-command-status.png",
+      "capture": "running product",
+      "id": "WEB-19",
+      "journey_ids": [
+        "UI-06"
+      ],
+      "name": "Command status in the bar",
+      "source_paths": [
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-worker/src/router/command.rs"
+      ],
+      "status": "captured",
+      "summary": "A command run from the command palette reports in the bar where it got to; a refused one says why instead of vanishing.",
       "surface": "browser"
     },
     {
@@ -1420,7 +1473,8 @@ window.STORYBOOK_DATA = {
         "DATA-06",
         "DATA-08",
         "DATA-09",
-        "DATA-12"
+        "DATA-12",
+        "DATA-13"
       ],
       "name": "Concepts, views, and data verbs",
       "source_paths": [
@@ -1430,11 +1484,14 @@ window.STORYBOOK_DATA = {
         "rust/tonk-cli/src/data_ops.rs",
         "rust/tonk-cli/src/elements.rs",
         "rust/tonk-cli/src/render.rs",
+        "rust/tonk-cli/src/log.rs",
+        "rust/tonk-cli/src/restore.rs",
+        "rust/tonk-cli/src/branches.rs",
         "rust/tonk-display/src/registry.rs",
         "rust/tonk-render/src/page/orchestrate.rs"
       ],
       "status": "captured",
-      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode.",
+      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode. History inspection and local historical checkout share this CLI surface; the existing capture predates those commands.",
       "surface": "cli"
     },
     {
@@ -1739,6 +1796,22 @@ window.STORYBOOK_DATA = {
       "id": "LIFE-30",
       "priority": "P1",
       "result": "Focused regressions: it_replaces_obsolete_device_grants_and_repairs_a_repeat, it_repairs_obsolete_grants_when_following_an_existing_root, it_retracts_a_device_grant_added_after_the_branch_was_cached. it_keeps_the_current_device_grant_after_account_hydration also passes against a real local access service: old grant revoked, fresh grant installed, first-hydration and already-hydrated cases, bidirectional remote edits without restart. Live passkey and native callback with this patch remain unverified."
+    },
+    {
+      "claim": "A first sign-in on a browser new to the account says the spaces are arriving, and never draws a half-synced page (Remain in flight, BUG-351).",
+      "device": "fresh-browser + slow link",
+      "file": "verification/accounts.md",
+      "id": "LIFE-31",
+      "priority": "P1",
+      "result": "Browser: it_shows_the_account_arriving_after_a_first_sign_in passes against the dev build and fails without the worker fix with the reported No \\ui\\ view for tonk:site dump. Worker: a_first_contact_never_sends_profile_main_without_its_library, a_profile_stream_waits_out_a_hydration, the_last_navigation_during_a_hydration_wins. CI unverified at the time of writing."
+    },
+    {
+      "claim": "Account dialogs wear settings' palette and sheet in light and dark (Settings presentation decision).",
+      "device": "fresh-browser + both schemes",
+      "file": "verification/accounts.md",
+      "id": "LIFE-32",
+      "priority": "P2",
+      "result": "Browser: it_draws_the_sign_in_page_in_the_schemes_the_hub_does (ground, ink and inline-link ink in both schemes); it_sets_up_a_recovery_phrase_and_signs_in_with_it_in_a_fresh_browser (the phrase card is a centred task sheet). Static: style-boundaries.test.mjs. Dialogs captured in both schemes on the dev build."
     },
     {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
@@ -2381,6 +2454,14 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
+      "claim": "Historical checkout preserves the original branch and subsequent commands follow the selection (Inventory).",
+      "device": "cli + restart",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "DATA-13",
+      "priority": "P1",
+      "result": "Automated coverage: history_checkout_persists_selection_and_keeps_main_intact and restore integration tests. Process termination during create/switch and storage faults remain unverified."
+    },
+    {
       "claim": "Carry/account migrations are idempotent and crash-recoverable (Inventory).",
       "device": "restart",
       "file": "verification/cli-spaces-ui.md",
@@ -2504,7 +2585,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 15,
+    "other": 18,
     "pass": 3,
     "unrun": 107
   },

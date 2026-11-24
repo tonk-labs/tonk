@@ -4,10 +4,29 @@ use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// The capability a browser passlink conveys on its space subject.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PasslinkRole {
+    /// Read space data.
+    Read,
+    /// Read and write space data.
+    #[default]
+    Write,
+    /// Administer the space and its access.
+    Admin,
+}
+
 /// Request to mint an open or root-targeted invitation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateInviteRequest {
+    /// Desired role. Older callers grant write.
+    #[serde(default)]
+    pub role: PasslinkRole,
+    /// Signed access deadline, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Link base. Browser callers may omit it to use their request origin.
     #[serde(default, alias = "base_url", skip_serializing_if = "Option::is_none")]
     pub base_url: Option<Url>,
@@ -18,6 +37,10 @@ pub struct CreateInviteRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub recipient_root: Option<Did>,
+    /// The target CID of an open link this one replaces: the new link lists
+    /// in its place. The caller revokes the replaced link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
 }
 
 /// Minted invitation URL and its audience mode.
@@ -36,6 +59,9 @@ pub enum CreateInviteResponse {
     Open {
         /// Public invitation URL.
         url: Url,
+        /// Target listed for this invitation. Older workers omit it.
+        #[serde(rename = "targetCid", default, skip_serializing_if = "Option::is_none")]
+        target_cid: Option<String>,
     },
 }
 
@@ -66,6 +92,12 @@ impl InvitationKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvitationSummary {
+    /// Access conveyed by this invitation.
+    #[serde(default)]
+    pub role: PasslinkRole,
+    /// Earliest deadline in its authority chain, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
     /// Exact revocation target CID.
     pub target_cid: String,
     /// Open or root-targeted invitation.
@@ -79,6 +111,22 @@ pub struct InvitationSummary {
     /// so a client can say who joined through this link.
     #[serde(default)]
     pub invitation: String,
+    /// When the invitation was minted, unix milliseconds. Absent for an
+    /// invitation minted before mint times were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minted_at: Option<u64>,
+    /// Where it lists, when it replaced another link: that link's place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_at: Option<u64>,
+}
+
+impl InvitationSummary {
+    /// Its place in a space's links, oldest first: where it lists, else
+    /// when it was minted. One minted before mint times were recorded
+    /// counts as oldest.
+    pub fn place(&self) -> u64 {
+        self.listed_at.or(self.minted_at).unwrap_or(0)
+    }
 }
 
 /// Canonical relay acknowledgement for an invitation revocation.
@@ -104,7 +152,7 @@ impl CreateInviteResponse {
     /// The minted invitation URL, independent of audience mode.
     pub fn url(&self) -> &Url {
         match self {
-            Self::Scoped { url, .. } | Self::Open { url } => url,
+            Self::Scoped { url, .. } | Self::Open { url, .. } => url,
         }
     }
 }
@@ -167,13 +215,18 @@ mod tests {
     #[test]
     fn it_keeps_invitation_lists_secret_free() {
         let summary = InvitationSummary {
+            role: PasslinkRole::Write,
+            expires_at: None,
             target_cid: "bafycid".into(),
             kind: InvitationKind::Scoped,
             recipient_root: Some(root()),
             status: "active".into(),
             invitation: "tonk:invitation".into(),
+            minted_at: Some(1_700_000_000_000),
+            listed_at: None,
         };
         let json = serde_json::to_value(summary).unwrap();
+        assert_eq!(json["mintedAt"], 1_700_000_000_000_u64);
         assert_eq!(json["targetCid"], "bafycid");
         assert_eq!(json["invitation"], "tonk:invitation");
         assert_eq!(json["recipientRoot"], "did:key:z6Mktest");

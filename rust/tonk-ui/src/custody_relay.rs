@@ -39,38 +39,38 @@ thread_local! {
 
 const CARD_ID: &str = "tonk-custody-consent";
 
+/// A trusted passkey task can also occupy the seat supplied by an open guest task.
 const CARD_HTML: &str = r#"
-<div style="position:fixed;right:16px;bottom:16px;z-index:2147483647;width:min(432px, calc(100vw - 32px));
-            display:flex;flex-direction:column;gap:7px;
-            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
-            color:var(--ink, #38182a);text-transform:none">
-  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
-              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
-              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
-              letter-spacing:.02em;text-transform:lowercase">passkey needed</div>
-  <p id="tonk-custody-text" style="box-sizing:border-box;min-height:36px;display:flex;align-items:center;
-            margin:0;padding:var(--custody-message-padding, 14px) 16px;background:var(--card, #fcfbfb);
-            box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font-weight:600">
-    Tonk is securing something to your account and needs your passkey to
-    unlock the account&rsquo;s custody key on this device.
-  </p>
-  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
-    <button id="tonk-custody-dismiss" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
-                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      not now</button>
-    <button id="tonk-custody-continue" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
-                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      use passkey</button>
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">use your passkey</h2></header>
+  <div class="fabb-request"><p id="tonk-custody-text" role="status">Use your passkey to unlock your account key on this device.</p></div>
+  <div id="tonk-custody-actions" class="fabb-actions">
+    <button id="tonk-custody-dismiss" type="button">not now</button>
+    <button id="tonk-custody-continue" type="button">use passkey</button>
   </div>
-</div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
+{style}
 "#;
+
+/// What every card mounted here wears beyond gooey's task sheet: where it
+/// sits, the phrase's numbered words, and the primary action. gooey makes
+/// the last button primary; a step keeps its other buttons in the row,
+/// hidden, so it is the last one shown, as on the sign-in page.
+const CARD_STYLE: &str = r#"<style>
+#tonk-custody-consent { color-scheme:light dark; }
+dialog#tonk-custody-consent { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100%; max-width:none; max-height:none; border:0; }
+#tonk-custody-consent .fabb-top { grid-row:1; }
+#tonk-custody-consent .tc-card { grid-row:2; border-radius:var(--tonk-radius-sheet,12px); }
+#tonk-custody-consent[data-anchored] { display:contents; }
+#tonk-custody-consent[data-anchored] .fabb-top { display:none; }
+#tonk-custody-consent[data-anchored] .tc-card { position:fixed; z-index:2147483647; margin:0; max-height:calc(100dvh - 32px); overflow:auto; }
+#tonk-custody-consent .tc-words { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:4px 12px; margin:0 0 var(--fp-pad,16px); padding:0; list-style:none; font:var(--fp-mono); }
+#tonk-custody-consent .tc-words li span { color:var(--fp-soft); }
+#tonk-custody-consent .tc-checks { display:grid; gap:0; }
+#tonk-custody-consent .fabb-actions > button:not([hidden]):not(:has(~ :not([hidden]))) { padding:4px 12px; background:var(--tonk-main); color:var(--tonk-main-text); }
+#tonk-custody-consent .fabb-actions > button:not([hidden]):not(:has(~ :not([hidden]))):is(:hover, :focus-visible) { background:var(--tonk-main-hover); }
+</style>"#;
 
 /// Derive the account's encryption key through a passkey assertion and
 /// save it with the root. `Ok(false)` when there was nothing to do: no
@@ -219,18 +219,61 @@ fn position_card() {
 }
 
 fn mount_card(anchored: bool) -> Option<Element> {
+    mount_task_card(CARD_HTML, anchored, "#tonk-custody-continue")
+}
+
+/// Mount `markup` (a gooey task sheet, its `{style}` placeholder for
+/// [`CARD_STYLE`]) as this document's one card: a modal task page, or
+/// seated in a guest's dialog column when `anchored`. `focus` names what
+/// takes focus in the modal.
+fn mount_task_card(markup: &str, anchored: bool, focus: &str) -> Option<Element> {
     let document = web_sys::window().and_then(|window| window.document())?;
     let body = document.body()?;
-    let host = document.create_element("div").ok()?;
+    let host = document
+        .create_element(if anchored { "div" } else { "dialog" })
+        .ok()?;
+    host.set_class_name("fabb-page");
+    host.set_attribute("aria-labelledby", "tonk-custody-heading")
+        .ok()?;
     host.set_id(CARD_ID);
     if anchored {
         host.set_attribute("data-anchored", "").ok()?;
-        host.set_attribute("style", "--custody-message-padding:7px")
-            .ok()?;
     }
-    host.set_inner_html(CARD_HTML);
+    host.set_inner_html(&crate::task_page::page(
+        &markup.replace("{style}", CARD_STYLE),
+    ));
     body.append_child(&host).ok()?;
+    if !anchored
+        && host
+            .dyn_ref::<web_sys::HtmlDialogElement>()?
+            .show_modal()
+            .is_err()
+    {
+        host.remove();
+        return None;
+    }
     position_card();
+    if !anchored
+        && let Ok(Some(target)) = host.query_selector(focus)
+        && let Some(target) = target.dyn_ref::<web_sys::HtmlElement>()
+    {
+        let _ = target.focus();
+    }
+    if !anchored {
+        // Escape is `not now`, as a dialog's is; once the answer is out
+        // there is nothing to dismiss.
+        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+            event.prevent_default();
+            if let Some(dismiss) = card()
+                .and_then(|card| card.query_selector("#tonk-custody-dismiss").ok().flatten())
+                .and_then(|dismiss| dismiss.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                dismiss.click();
+            }
+        });
+        let _ = host.add_event_listener_with_callback("cancel", closure.as_ref().unchecked_ref());
+        closure.forget();
+    }
     if anchored {
         RETURN_FOCUS.with(|focus| {
             if let Some(focus) = focus.borrow().as_ref() {
@@ -286,7 +329,7 @@ fn show_consent() {
                         tonk_analytics::account::Stage::Complete,
                         tonk_analytics::account::AccountOutcome::success(),
                     );
-                    set_card_text("Nothing was needed after all.")
+                    set_card_text("No account key update needed.")
                 }
                 Err(error) => {
                     tonk_common::log!("custody: encryption key not published: {error}");
@@ -316,6 +359,8 @@ fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
         tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => "authorize-agent",
         tonk_worker_api::CustodyIntent::RevokeAgent(_) => "revoke-agent",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "add-recovery-phrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "login-with-recovery-phrase",
         tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
         tonk_worker_api::CustodyIntent::Login(_) => "login",
@@ -329,6 +374,8 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
         tonk_worker_api::CustodyIntent::AuthorizeAgent(_) => AccountAction::AuthorizeAgent,
         tonk_worker_api::CustodyIntent::RevokeAgent(_) => AccountAction::RevokeAgent,
         tonk_worker_api::CustodyIntent::AddPasskey(_) => AccountAction::AddPasskey,
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => AccountAction::AddRecoveryPhrase,
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => AccountAction::LogIn,
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::CreateAccount(_)
         | tonk_worker_api::CustodyIntent::Login(_) => AccountAction::FinishPreviousAction,
@@ -340,6 +387,8 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
 fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
     match intent {
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "addRecoveryPhrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "useRecoveryPhrase",
         _ => "usePasskey",
     }
 }
@@ -389,6 +438,11 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
             return;
         };
         report(&error.message);
+        // A ceremony the account sheet follows answers on its row, which
+        // offers `try again`: no card on top of it.
+        if report_ended(&intent, &error) {
+            return;
+        }
         let said = user_error::ceremony(action, &error);
         if matches!(
             error.refusal,
@@ -410,6 +464,333 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
         }
     });
 }
+
+/// The card that sets up a recovery phrase, in the top document.
+///
+/// The words are generated, shown and confirmed here and nowhere else:
+/// the guest that asked holds no words, and the command it sent carries
+/// none. `tonkIdentity.generateRecoveryPhrase` stages the phrase in this
+/// document; the confirming click runs `addRecoveryPhrase`, which asserts
+/// the account's passkey on that click and hands the worker its PRF
+/// outputs and the phrase's bytes. Leaving the card drops the staged
+/// phrase with the page, and nothing was saved.
+fn run_recovery_phrase_card(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!("custody: a card is already up; the recovery phrase card was not raised");
+        return;
+    }
+    let words = match generate_recovery_phrase() {
+        Ok(words) => words,
+        Err(error) => {
+            report(&error);
+            BUSY.with(|busy| busy.set(false));
+            return;
+        }
+    };
+    let Some(host) = mount_phrase_card(&words) else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+
+    let asked = three_positions(words.len());
+    let confirm_words = words.clone();
+    let confirm_asked = asked.clone();
+    on_click(&host, "#tonk-phrase-written", move || {
+        show_phrase_confirmation(&confirm_asked);
+    });
+    let copied_words = words.join(" ");
+    on_click(&host, "#tonk-phrase-copy", move || {
+        copy_words(&copied_words);
+    });
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        if !phrase_confirmed(&confirm_words, &asked) {
+            set_card_message("Those words don’t match. Check your saved phrase.");
+            return;
+        }
+        set_card_text("Waiting for passkey…");
+        match begin_with("addRecoveryPhrase", intent.clone(), credential_id.clone()) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                match mediation.finish().await {
+                    Ok(_) => {
+                        set_card_text(
+                            "Your recovery phrase is saved. Keep the words somewhere safe and offline.",
+                        );
+                        remove_card_after(4000);
+                    }
+                    Err(error) => {
+                        report(&error.message);
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(6000);
+                    }
+                }
+            }),
+            Err(error) => {
+                report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(6000);
+            }
+        }
+    });
+}
+
+/// Ask for the account's recovery phrase in place of its passkey, for a
+/// browser that signed in with the phrase. The words are staged here and
+/// the worker opens the account with them, as it would with a passkey.
+fn run_phrase_entry_card(intent: tonk_worker_api::CustodyIntent) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!(
+            "custody: a card is already up; {} not raised",
+            intent_label(&intent)
+        );
+        return;
+    }
+    let Some(host) = mount_phrase_entry_card() else {
+        BUSY.with(|busy| busy.set(false));
+        return;
+    };
+    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    let passkey_intent = intent.clone();
+    on_click(&host, "#tonk-phrase-use-passkey", move || {
+        remove_card();
+        run_command_ceremony(passkey_intent.clone(), None);
+    });
+    let action = command_action(&intent);
+    on_click(&host, "#tonk-custody-continue", move || {
+        let words = card()
+            .and_then(|card| card.query_selector("#tonk-phrase-entry").ok().flatten())
+            .and_then(|field| js_sys::Reflect::get(&field, &"value".into()).ok())
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        if let Err(message) = stage_phrase(&words) {
+            set_card_message(&message);
+            return;
+        }
+        set_card_text("Opening your account…");
+        match begin_with("useRecoveryPhrase", intent.clone(), None) {
+            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
+                match mediation.finish().await {
+                    Ok(_) => remove_card(),
+                    Err(error) => {
+                        report(&error.message);
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(6000);
+                    }
+                }
+            }),
+            Err(error) => {
+                report(&error.message);
+                set_card_text(&user_error::ceremony(action, &error));
+                remove_card_after(6000);
+            }
+        }
+    });
+}
+
+/// Check typed words with `tonkIdentity.stageRecoveryPhrase` and keep
+/// the phrase for the ceremony that follows; a refusal is the sentence
+/// to show.
+fn stage_phrase(words: &str) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "Recovery phrases are not available in this browser.".to_owned())?;
+    let stage: js_sys::Function = js_sys::Reflect::get(&identity, &"stageRecoveryPhrase".into())
+        .ok()
+        .and_then(|value| value.dyn_into().ok())
+        .ok_or("Recovery phrases are not available in this browser.")?;
+    let input = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&input, &"words".into(), &words.into());
+    stage
+        .call1(&identity, &input)
+        .map(|_| ())
+        .map_err(|refusal| {
+            match js_sys::Reflect::get(&refusal, &"code".into())
+                .ok()
+                .and_then(|code| code.as_string())
+                .as_deref()
+            {
+                Some("WordCount") => "Enter all 12 words.".to_owned(),
+                Some("UnknownWord") => "Check the spelling of each word.".to_owned(),
+                _ => "Check the spelling and order of the words.".to_owned(),
+            }
+        })
+}
+
+fn mount_phrase_entry_card() -> Option<Element> {
+    let host = mount_task_card(PHRASE_ENTRY_HTML, false, "#tonk-phrase-entry")?;
+    host.set_attribute("data-phrase-dialog", "").ok()?;
+    Some(host)
+}
+
+/// The same task sheet as every other card, with the field the sign-in
+/// page reads a phrase in.
+const PHRASE_ENTRY_HTML: &str = r#"
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">recovery phrase needed</h2></header>
+  <div class="fabb-request">
+    <p id="tonk-custody-text" role="status">Enter your 12-word recovery phrase to confirm.</p>
+    <label class="fabb-field editing">
+      <span class="fabb-field-head"><span>12-word recovery phrase</span></span>
+      <textarea class="fabb-phrase" id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="none"
+                spellcheck="false"></textarea>
+    </label>
+    <button type="button" class="fabb-inline-action" id="tonk-phrase-use-passkey">use a passkey instead</button>
+  </div>
+  <div id="tonk-custody-actions" class="fabb-actions">
+    <button id="tonk-custody-dismiss" type="button">not now</button>
+    <button id="tonk-custody-continue" type="button">continue</button>
+  </div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
+{style}
+"#;
+
+/// A new phrase from `tonkIdentity.generateRecoveryPhrase`, staged in
+/// this document, as its words.
+fn generate_recovery_phrase() -> Result<Vec<String>, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let identity = js_sys::Reflect::get(&window, &"tonkIdentity".into())
+        .map_err(|_| "tonkIdentity is missing")?;
+    let generate: js_sys::Function =
+        js_sys::Reflect::get(&identity, &"generateRecoveryPhrase".into())
+            .ok()
+            .and_then(|value| value.dyn_into().ok())
+            .ok_or("tonkIdentity.generateRecoveryPhrase is missing")?;
+    let generated = generate
+        .call0(&identity)
+        .map_err(|_| "the recovery phrase was not generated")?;
+    let words = js_sys::Reflect::get(&generated, &"words".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .ok_or("the recovery phrase came back without words")?;
+    Ok(words.split(' ').map(str::to_owned).collect())
+}
+
+/// Put the words on the clipboard, in order, and say so on the button.
+///
+/// The words are already in this document, which is the only place they
+/// are shown; copying hands them to the person's own clipboard and
+/// nowhere else.
+fn copy_words(words: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let promise = window.navigator().clipboard().write_text(words);
+    wasm_bindgen_futures::spawn_local(async move {
+        let said = match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(_) => "copied",
+            Err(_) => "could not copy: write the words down instead",
+        };
+        if let Some(button) =
+            card().and_then(|card| card.query_selector("#tonk-phrase-copy").ok().flatten())
+        {
+            button.set_text_content(Some(said));
+        }
+    });
+}
+
+/// Three distinct word positions to ask back, in order.
+fn three_positions(count: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = Vec::with_capacity(3);
+    while picked.len() < 3.min(count) {
+        let position = (js_sys::Math::random() * count as f64) as usize % count;
+        if !picked.contains(&position) {
+            picked.push(position);
+        }
+    }
+    picked.sort_unstable();
+    picked
+}
+
+fn phrase_confirmed(words: &[String], asked: &[usize]) -> bool {
+    let Some(card) = card() else {
+        return false;
+    };
+    asked.iter().enumerate().all(|(index, position)| {
+        card.query_selector(&format!("#tonk-phrase-check-{index}"))
+            .ok()
+            .flatten()
+            .and_then(|input| input.dyn_into::<web_sys::HtmlInputElement>().ok())
+            .is_some_and(|input| input.value().trim().eq_ignore_ascii_case(&words[*position]))
+    })
+}
+
+/// Swap the words for three inputs asking for some of them back, and
+/// clear the words from the page.
+fn show_phrase_confirmation(asked: &[usize]) {
+    let Some(card) = card() else {
+        return;
+    };
+    if let Ok(Some(list)) = card.query_selector("#tonk-phrase-words") {
+        list.remove();
+    }
+    if let Ok(Some(written)) = card.query_selector("#tonk-phrase-written") {
+        written.remove();
+    }
+    if let Ok(Some(copy)) = card.query_selector("#tonk-phrase-copy") {
+        copy.remove();
+    }
+    if let Ok(Some(checks)) = card.query_selector("#tonk-phrase-checks") {
+        let rows: String = asked
+            .iter()
+            .enumerate()
+            .map(|(index, position)| {
+                format!(
+                    r#"<label class="fabb-field editing"><span class="k">word {}</span>
+                      <input id="tonk-phrase-check-{index}" type="text" autocomplete="off" autocapitalize="none"
+                        spellcheck="false"></label>"#,
+                    position + 1
+                )
+            })
+            .collect();
+        checks.set_inner_html(&rows);
+        let _ = checks.remove_attribute("hidden");
+    }
+    set_card_message("Enter the requested words from your recovery phrase.");
+    if let Ok(Some(save)) = card.query_selector("#tonk-custody-continue") {
+        let _ = save.remove_attribute("hidden");
+    }
+}
+
+fn mount_phrase_card(words: &[String]) -> Option<Element> {
+    // BIP-39 English words are lowercase ASCII, so they need no escaping.
+    let list: String = words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| format!("<li><span>{}.</span> {word}</li>", index + 1))
+        .collect();
+    let host = mount_task_card(
+        &PHRASE_CARD_HTML.replace("{words}", &list),
+        false,
+        "#tonk-phrase-written",
+    )?;
+    host.set_attribute("data-phrase-dialog", "").ok()?;
+    host.set_attribute("data-recovery-phrase", "").ok()?;
+    Some(host)
+}
+
+/// The same task sheet as every other card: the twelve words, then three
+/// of them asked back in fields like the sign-in page's.
+const PHRASE_CARD_HTML: &str = r#"
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">recovery phrase</h2></header>
+  <div class="fabb-request">
+    <p id="tonk-custody-text" role="status">Write down these 12 words in order and keep them offline. Tonk shows them only once.
+      Anyone with the phrase can sign in as you. You can’t revoke or replace it.</p>
+    <ol id="tonk-phrase-words" class="tc-words" data-recovery-words>{words}</ol>
+    <button type="button" class="fabb-inline-action" id="tonk-phrase-copy">copy the 12 words</button>
+    <div id="tonk-phrase-checks" class="tc-checks" hidden></div>
+  </div>
+  <div id="tonk-custody-actions" class="fabb-actions">
+    <button id="tonk-custody-dismiss" type="button">cancel</button>
+    <button id="tonk-phrase-written" type="button">I wrote them down</button>
+    <button id="tonk-custody-continue" type="button" hidden>save with passkey</button>
+  </div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
+{style}
+"#;
 
 /// Raise the top-document consent a guest-asserted command needs when the
 /// click that asserted it no longer counts here, or a first ask failed.
@@ -437,7 +818,11 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     set_card_message("Confirm this account action with your passkey.");
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
-    on_click(&host, "#tonk-custody-dismiss", remove_card);
+    let dismissed = intent.clone();
+    on_click(&host, "#tonk-custody-dismiss", move || {
+        report_outcome(&dismissed, "cancelled");
+        remove_card();
+    });
 
     let method = command_method(&intent);
     let action = command_action(&intent);
@@ -445,17 +830,22 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
-            Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
-                if let Err(error) = mediation.finish().await {
-                    report(&error.message);
-                    set_card_text(&user_error::ceremony(action, &error));
-                    remove_card_after(4000);
-                } else {
-                    remove_card();
-                }
-            }),
+            Ok(mediation) => {
+                let asked = intent.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(error) = mediation.finish().await {
+                        report(&error.message);
+                        report_ended(&asked, &error);
+                        set_card_text(&user_error::ceremony(action, &error));
+                        remove_card_after(4000);
+                    } else {
+                        remove_card();
+                    }
+                })
+            }
             Err(error) => {
                 report(&error.message);
+                report_ended(&intent, &error);
                 set_card_text(&user_error::ceremony(action, &error));
                 remove_card_after(4000);
             }
@@ -525,6 +915,26 @@ pub fn install() {
                     // Enrollment arrives mid-ceremony, on a page whose
                     // gesture is still live.
                     intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
+                    // Setting up a recovery phrase shows its words here,
+                    // in the top document, never in the sealed guest:
+                    // the card's own last click asks for the passkey.
+                    intent @ tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => {
+                        run_recovery_phrase_card(intent, message.credential_id)
+                    }
+                    // A browser signed in with a recovery phrase holds no
+                    // passkey for the account, and the worker says so.
+                    // Approving an agent, removing one or deleting the
+                    // account then asks for the phrase, with the passkey
+                    // still on offer. A missing credential id is not that
+                    // signal: approving and removing an agent name none on
+                    // purpose, so that any passkey of the account will do.
+                    intent @ (tonk_worker_api::CustodyIntent::AuthorizeAgent(_)
+                    | tonk_worker_api::CustodyIntent::RevokeAgent(_)
+                    | tonk_worker_api::CustodyIntent::PurgeAccount(_))
+                        if message.phrase_only =>
+                    {
+                        run_phrase_entry_card(intent)
+                    }
                     // A command the guest asserted, on the click that is
                     // still live here: ask now. Past it, the card asks for
                     // one explicit top-document click.
@@ -552,6 +962,8 @@ pub(crate) fn mediate_custody(intent: tonk_worker_api::CustodyIntent) {
     let method = match &intent {
         tonk_worker_api::CustodyIntent::CreateAccount(_) => "createPasskey",
         tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_) => "addRecoveryPhrase",
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_) => "useRecoveryPhrase",
         tonk_worker_api::CustodyIntent::Enroll(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
@@ -637,8 +1049,85 @@ impl Mediation {
     }
 }
 
+/// The ceremony the account sheet follows for `intent`: the ones that
+/// report their outcome on its row.
+fn followed(intent: &tonk_worker_api::CustodyIntent) -> Option<&'static str> {
+    match intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => Some("add-passkey"),
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => Some("delete-account"),
+        // The device task page answers on its own row and offers its own
+        // `allow whole account` again (gooey task-page.html, the device
+        // step's cancel), so no card goes over it.
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => Some("authorize-device"),
+        _ => None,
+    }
+}
+
+/// Tell the worker how a followed ceremony ended here: a dismissed prompt
+/// is `cancelled`, anything else (an authenticator with no PRF, say)
+/// `failed`. `true` when `intent` is followed and was told.
+fn report_ended(intent: &tonk_worker_api::CustodyIntent, error: &CeremonyError) -> bool {
+    use tonk_identity::passkey::CeremonyRefusal;
+    // A device approval's own failures (the wrong account, a callback that
+    // would not take the grant) are the worker's answer, already on the
+    // request's row with their detail. Only a prompt that ended here is
+    // this page's to report; either way its task page answers, not a card.
+    if matches!(intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+        let outcome = match &error.refusal {
+            Some(CeremonyRefusal::NotAllowed) => Some("cancelled"),
+            Some(
+                CeremonyRefusal::NoPrf
+                | CeremonyRefusal::NotSupported
+                | CeremonyRefusal::Security
+                | CeremonyRefusal::InvalidState,
+            ) => Some("failed"),
+            Some(CeremonyRefusal::Other) | None => None,
+        };
+        if let Some(outcome) = outcome {
+            report_outcome(intent, outcome);
+        }
+        return true;
+    }
+    let outcome = if matches!(
+        error.refusal,
+        Some(tonk_identity::passkey::CeremonyRefusal::NotAllowed)
+    ) {
+        "cancelled"
+    } else {
+        "failed"
+    };
+    report_outcome(intent, outcome)
+}
+
+/// Tell the worker a ceremony the account sheet follows ended here
+/// without its work, so its row says so instead of waiting for a passkey
+/// forever. Only the ceremonies that report their outcome on that row.
+fn report_outcome(intent: &tonk_worker_api::CustodyIntent, outcome: &str) -> bool {
+    let Some(ceremony) = followed(intent) else {
+        return false;
+    };
+    let Some(controller) =
+        web_sys::window().and_then(|window| window.navigator().service_worker().controller())
+    else {
+        return false;
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"custody-ended".into());
+    let _ = js_sys::Reflect::set(&message, &"ceremony".into(), &ceremony.into());
+    let _ = js_sys::Reflect::set(&message, &"outcome".into(), &outcome.into());
+    // A device approval's row is the request's own, so the worker needs
+    // the request to find it.
+    if let tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) = intent
+        && let Ok(authorization) = serde_json::to_string(authorization)
+    {
+        let _ = js_sys::Reflect::set(&message, &"authorization".into(), &authorization.into());
+    }
+    controller.post_message(&message).is_ok()
+}
+
 /// Log a mediation failure, keeping a dismissed prompt quiet: declining
 /// the passkey is a decision, not a fault.
+
 fn report(error: &str) {
     if error.starts_with("NotAllowedError") {
         // Debug level, but with the browser's own text: a refusal the
@@ -675,10 +1164,18 @@ pub(crate) fn begin(
 /// the caller knows which passkey holds the account.
 pub(crate) fn begin_with(
     method: &'static str,
-    intent: tonk_worker_api::CustodyIntent,
+    mut intent: tonk_worker_api::CustodyIntent,
     credential_id: Option<String>,
 ) -> Result<Mediation, CeremonyError> {
     use wasm_bindgen::{JsCast, JsValue};
+
+    // The passkey being added is made here, so this browser names it:
+    // the account's passkey list shows each one by that name.
+    if let tonk_worker_api::CustodyIntent::AddPasskey(addition) = &mut intent {
+        addition
+            .created_on
+            .get_or_insert_with(crate::device_name::current);
+    }
 
     let identity = web_sys::window()
         .and_then(|window| js_sys::Reflect::get(&window, &"tonkIdentity".into()).ok())
@@ -699,6 +1196,8 @@ pub(crate) fn begin_with(
         tonk_worker_api::CustodyIntent::CreateAccount(creation) => Some(creation.email.clone()),
         tonk_worker_api::CustodyIntent::Enroll(enrollment) => enrollment.email.clone(),
         tonk_worker_api::CustodyIntent::AddPasskey(_)
+        | tonk_worker_api::CustodyIntent::AddRecoveryPhrase(_)
+        | tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(_)
         | tonk_worker_api::CustodyIntent::Login(_)
         | tonk_worker_api::CustodyIntent::PurgeAccount(_)
         | tonk_worker_api::CustodyIntent::AuthorizeDevice(_)
@@ -820,11 +1319,35 @@ mod tests {
         });
         assert_eq!(rows.get_bounding_client_rect().top(), 167.0);
         assert_eq!(rows.get_bounding_client_rect().width(), 576.0);
+        // Seated, it wears the hub's card too, with no backdrop of its own.
+        let window = web_sys::window().unwrap();
+        let style = window.get_computed_style(&rows).unwrap().unwrap();
+        assert_eq!(style.get_property_value("border-radius").unwrap(), "12px");
+        assert!(host.query_selector(".fabb-top").unwrap().is_some());
+        assert!(!rows.has_attribute("aria-modal"));
         remove_card();
-        // A subsequent unrelated custody request keeps its floating placement.
+        // A subsequent unrelated custody request floats as the hub's
+        // dialog does: centred, over a backdrop, its answer in focus.
         let host = mount_card(false).unwrap();
-        let rows: web_sys::HtmlElement = host.first_element_child().unwrap().dyn_into().unwrap();
-        assert_eq!(rows.style().get_property_value("bottom").unwrap(), "16px");
+        let card = host.query_selector(".tc-card").unwrap().unwrap();
+        let rect = card.get_bounding_client_rect();
+        let window = web_sys::window().unwrap();
+        let width = window.inner_width().unwrap().as_f64().unwrap();
+        assert!(((rect.left() + rect.width() / 2.0) - width / 2.0).abs() < 1.0);
+        assert_eq!(
+            window
+                .get_computed_style(&card)
+                .unwrap()
+                .unwrap()
+                .get_property_value("border-radius")
+                .unwrap(),
+            "12px"
+        );
+        assert!(host.matches("dialog:modal").unwrap());
+        assert_eq!(
+            window.document().unwrap().active_element().unwrap().id(),
+            "tonk-custody-continue"
+        );
         remove_card();
         ANCHOR.with(|seat| seat.borrow_mut().take());
     }

@@ -45,7 +45,9 @@ mod subscribe;
 mod subscription;
 mod transaction;
 
-pub use branch::{BranchReference, BranchSession, BranchState, ProfileUpgrade, Upgraded, migrate};
+pub use branch::{
+    BranchReference, BranchSession, BranchState, DeliveryHold, ProfileUpgrade, Upgraded, migrate,
+};
 pub use command::{Decode, Migrated, control, decode_concept, facts_entity};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
@@ -55,7 +57,7 @@ pub use error::ReactorError;
 // `PendingSubscription` is declared in this module; re-exported here for
 // symmetry with the other public reactor types.
 pub use export::{Export, ExportError};
-pub use formula::{FormulaError, resolve_formula};
+pub use formula::FormulaError;
 pub use import::{Import, ImportError};
 pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
 pub use pull::Pull;

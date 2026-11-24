@@ -123,9 +123,9 @@ impl std::fmt::Display for Laps {
 fn access(choice: &AgentSpaceChoice) -> Result<AgentAccess, TonkWorkerError> {
     match choice.access.as_str() {
         "read" => Ok(AgentAccess::Read),
-        "write" => Ok(AgentAccess::ReadWrite),
+        "write" | "share" => Ok(AgentAccess::ReadWrite),
         other => Err(TonkWorkerError::Router(format!(
-            "unknown access `{other}`; choose read or write"
+            "unknown access `{other}`; choose read, write, or share"
         ))),
     }
 }
@@ -165,6 +165,7 @@ pub(crate) fn provider(redirect_uri: &str, client_name: &str) -> Option<&'static
 struct Target {
     subject: Did,
     access: AgentAccess,
+    share: bool,
     remote: url::Url,
     label: String,
 }
@@ -238,6 +239,7 @@ async fn targets(
         targets.push(Target {
             subject: repository.did(),
             access,
+            share: space.access == "share",
             remote,
             label,
         });
@@ -373,13 +375,15 @@ pub async fn create(
         .await;
     }
     clock.lap("pending reported");
+    let phrase_only = super::identity::signed_in_with_phrase(&*state.read().await).await;
     // Any passkey of this account will do: the recovered root is checked
     // against the signed-in account before anything is signed.
-    super::navigate::request_webauthn_with(
+    super::navigate::request_webauthn_for(
         &client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(tonk_worker_api::CustodyIntent::AuthorizeAgent(intent)),
         None,
+        phrase_only,
     )
     .await?;
     clock.lap("passkey asked");
@@ -539,12 +543,12 @@ async fn authorize_inner(
     let signer = Signer::from(root.clone());
     let mut granted = Vec::new();
     for target in targets {
-        let chains = grant(
+        let scopes = approval_scopes(&target.subject, target.access, target.share);
+        let chains = grant_scopes(
             &tonk,
             &signer,
             &agent_did,
-            &target.subject,
-            target.access,
+            &scopes,
             &target.remote,
             now,
             expires,
@@ -590,11 +594,27 @@ async fn authorize_inner(
         js_sys::Date::now() - started
     );
 
-    // The token is the session alone: what the agent may reach is in its
-    // own space, where the host reads it like any other space's content.
-    let issued = tonk_identity::agent::issue_agent_session(Signer::from(agent), &home)
-        .await
-        .map_err(|error| error.to_string())?;
+    // Each connection can request a new space for approval in chat.
+    let permissions = {
+        let tonk = state.read().await;
+        let provider = super::account_state::account_remote(&tonk)
+            .await
+            .map_err(said)?
+            .parse::<url::Url>()
+            .map_err(|error| error.to_string())?;
+        vec![
+            tonk_identity::created_space::permission(&root, &agent_did, &provider, expires)
+                .await
+                .map_err(|error| error.to_string())?,
+        ]
+    };
+    let issued = tonk_identity::agent::issue_agent_session_with_grants(
+        Signer::from(agent),
+        &home,
+        &permissions,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     tonk_common::log!(
         "agent {agent_did} {} with {} new space grant(s)",
         if authorization.agent.is_some() {
@@ -717,9 +737,15 @@ async fn create_agent(
         js_sys::Date::now() - started
     );
     let tonk = state.read().await;
-    mark(&tonk, &key, &agent_did, authorization.provider.as_deref())
-        .await
-        .map_err(said)?;
+    mark(
+        &tonk,
+        &key,
+        &agent_did,
+        authorization.name.trim(),
+        authorization.provider.as_deref(),
+    )
+    .await
+    .map_err(said)?;
     Ok((agent, key, pushing))
 }
 
@@ -808,12 +834,18 @@ pub(super) async fn open_held(
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-/// Mark the agent space as one, and note which provider's apps it is for.
+/// Mark the agent space as one, name it `name`, and note which
+/// provider's apps it is for.
+///
+/// The name lands here, with the approval's push, so the agent's cards
+/// name it at once: the library seed that also writes it runs after the
+/// approval has answered, and can take minutes to sync.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(super) async fn mark(
     tonk: &crate::TonkState,
     key: &str,
     agent: &Did,
+    name: &str,
     provider: Option<&str>,
 ) -> Result<(), TonkWorkerError> {
     let this: dialog_corpus::Entity = agent.to_string().parse().map_err(failure)?;
@@ -823,6 +855,12 @@ pub(super) async fn mark(
         .branch(super::repository::CONTENT_BRANCH)
         .transaction()
         .assert(tonk_schema::agent::AgentSpace::new(this.clone()));
+    if !name.trim().is_empty() {
+        transaction = transaction.assert(tonk_schema::RepositoryName {
+            this: this.clone(),
+            name: tonk_schema::domain::repo::Name(name.trim().to_owned()),
+        });
+    }
     if let Some(provider) = provider {
         transaction = transaction.assert(tonk_schema::agent::AgentProvider::new(this, provider));
     }
@@ -1067,15 +1105,54 @@ pub(super) async fn grant(
     now: Timestamp,
     expires: Timestamp,
 ) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
-    let scopes = agent_grant_scopes(subject, access);
+    grant_scopes(
+        tonk,
+        issuer,
+        agent,
+        &agent_grant_scopes(subject, access),
+        remote,
+        now,
+        expires,
+    )
+    .await
+}
+
+pub(super) fn approval_scopes(
+    subject: &Did,
+    access: AgentAccess,
+    share: bool,
+) -> Vec<dialog_ucan::Scope> {
+    let mut scopes = agent_grant_scopes(subject, access);
+    if share {
+        scopes.push(dialog_ucan::Scope {
+            subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+            command: dialog_ucan_core::command::Command(vec!["use".into()]),
+            parameters: Default::default(),
+        });
+    }
+    scopes
+}
+
+async fn grant_scopes(
+    tonk: &crate::TonkState,
+    issuer: &Signer,
+    agent: &Did,
+    scopes: &[dialog_ucan::Scope],
+    remote: &url::Url,
+    now: Timestamp,
+    expires: Timestamp,
+) -> Result<Vec<dialog_ucan_core::DelegationChain>, TonkWorkerError> {
     let mut ancestors = Vec::new();
-    for chain in issuer_ancestors(tonk, &scopes, now, expires).await? {
+    for chain in issuer_ancestors(tonk, scopes, now, expires).await? {
         let proofs: Vec<_> = chain.proofs().cloned().collect();
         let reach = proofs
             .iter()
             .position(|link| link.audience() == &issuer.did())
             .ok_or_else(|| {
-                TonkWorkerError::Forbidden(format!("{} holds no proof for {subject}", issuer.did()))
+                TonkWorkerError::Forbidden(format!(
+                    "{} holds no proof for the requested space",
+                    issuer.did()
+                ))
             })?;
         let mut kept = dialog_ucan_core::DelegationChain::new(proofs[0].clone());
         for link in &proofs[1..=reach] {
@@ -1087,7 +1164,7 @@ pub(super) async fn grant(
         agent,
         issuer.clone(),
         ancestors,
-        &scopes,
+        scopes,
         remote,
         now,
         expires,
@@ -1231,12 +1308,12 @@ mod tests {
                 .perform(&tonk.operator)
                 .await?
                 .did();
-            let chains = grant(
+            let scopes = approval_scopes(&subject, access, name == "Plans");
+            let chains = grant_scopes(
                 &tonk,
-                &tonk.profile.credential().signer().clone(),
+                tonk.profile.credential().signer(),
                 &agent,
-                &subject,
-                access,
+                &scopes,
                 &remote,
                 now,
                 expires,
@@ -1270,7 +1347,16 @@ mod tests {
                 .count();
             assert_eq!(mine, space.chains.len(), "chains for {}", space.name);
         }
-        assert_eq!(retained.len(), 3 + 6);
+        for dialog_ucan::UcanDelegation(leaf) in &retained {
+            super::super::agents::ancestor(
+                &tonk,
+                &tonk.profile.did(),
+                leaf.subject().unwrap(),
+                leaf,
+            )
+            .await?;
+        }
+        assert_eq!(retained.len(), 3 + 6 + 1);
 
         let names: Vec<tonk_schema::SpaceName> = branch
             .handle()
@@ -1311,6 +1397,7 @@ mod tests {
                 .get(&space.subject)
                 .unwrap_or_else(|| panic!("{} is listed: {access:?}", space.name));
             assert_eq!((entry.read, entry.write), (read, write), "{}", space.name);
+            assert_eq!(entry.share, space.name == "Plans");
             assert_eq!(entry.name.as_deref(), Some(space.name.as_str()));
             assert_eq!(entry.address.as_deref(), Some(remote.as_str()));
             assert_eq!(entry.expires, Some(expires.to_unix()), "{}", space.name);
@@ -1324,7 +1411,8 @@ mod tests {
         for space in &granted {
             let chains =
                 super::super::hosted::access::space_chains(&tonk, &agent, &space.subject).await?;
-            assert_eq!(chains.len(), space.chains.len(), "{}", space.name);
+            assert_eq!(chains.len(), if space.name == "Plans" { 6 } else { 3 });
+            assert!(chains.iter().all(|chain| chain.ability() != "/use"));
             for chain in &chains {
                 assert_eq!(chain.issuer(), &space.subject, "rooted at {}", space.name);
                 assert_eq!(chain.audience(), &agent);
@@ -1414,7 +1502,7 @@ mod tests {
             let key =
                 super::super::repository::create_space_from_seed(&state, name, None, seed).await?;
             let tonk = state.read().await;
-            mark(&tonk, &key, &did, provider).await?;
+            mark(&tonk, &key, &did, name, provider).await?;
             agents.push((did, key));
         }
 

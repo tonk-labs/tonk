@@ -102,7 +102,7 @@
       "artifact": "app/screens/web-08-account-create.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07"],
+      "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07", "ACCT-B17"],
       "source_paths": ["rust/tonk-ui/src/register_dialog.rs", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/account_flow.rs"]
     },
     {
@@ -138,8 +138,8 @@
       "artifact": "app/screens/web-11-account-settings.png",
       "capture": "production-source fixture",
       "status": "captured",
-      "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css"]
+      "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15", "ACCT-B16"],
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/custody_relay.rs"]
     },
     {
       "id": "WEB-12",
@@ -224,6 +224,18 @@
       "status": "captured",
       "journey_ids": ["COLLAB-01", "COLLAB-07"],
       "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/join.rs"]
+    },
+    {
+      "id": "WEB-19",
+      "surface": "browser",
+      "area": "Spaces",
+      "name": "Command status in the bar",
+      "summary": "A command run from the command palette reports in the bar where it got to; a refused one says why instead of vanishing.",
+      "artifact": "app/screens/web-19-command-status.png",
+      "capture": "running product",
+      "status": "captured",
+      "journey_ids": ["UI-06"],
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-fab/src/markup.rs", "rust/tonk-worker/src/router/command.rs"]
     },
     {
       "id": "CLI-01",
@@ -314,12 +326,15 @@
       "surface": "cli",
       "area": "Authoring",
       "name": "Concepts, views, and data verbs",
-      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode.",
+      "summary": "Schema-derived commands expose stable view anchors and entities, then render every matching presentation in browser-equivalent order and frame mode. History inspection and local historical checkout share this CLI surface; the existing capture predates those commands.",
       "artifact": "app/screens/cli-08-authoring.png",
       "capture": "captured CLI output",
       "status": "captured",
-      "journey_ids": ["DATA-01", "DATA-02", "DATA-03", "DATA-04", "DATA-05", "DATA-06", "DATA-08", "DATA-09", "DATA-12"],
-      "source_paths": ["rust/tonk-cli/src/authoring.rs", "rust/tonk-cli/src/bin/tonk.rs", "rust/tonk-cli/src/data.rs", "rust/tonk-cli/src/data_ops.rs", "rust/tonk-cli/src/elements.rs", "rust/tonk-cli/src/render.rs", "rust/tonk-display/src/registry.rs", "rust/tonk-render/src/page/orchestrate.rs"]
+      "journey_ids": ["DATA-01", "DATA-02", "DATA-03", "DATA-04", "DATA-05", "DATA-06", "DATA-08", "DATA-09", "DATA-12", "DATA-13"],
+      "source_paths": ["rust/tonk-cli/src/authoring.rs", "rust/tonk-cli/src/bin/tonk.rs", "rust/tonk-cli/src/data.rs", "rust/tonk-cli/src/data_ops.rs", "rust/tonk-cli/src/elements.rs", "rust/tonk-cli/src/render.rs",
+        "rust/tonk-cli/src/log.rs",
+        "rust/tonk-cli/src/restore.rs",
+        "rust/tonk-cli/src/branches.rs", "rust/tonk-display/src/registry.rs", "rust/tonk-render/src/page/orchestrate.rs"]
     },
     {
       "id": "CLI-09",

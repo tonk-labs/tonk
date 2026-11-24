@@ -29,6 +29,13 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// backs the Hub (the `space` directory view + the `space/create`
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+const GOOEY_LOOK: &str = include_str!("../../tonk-core/assets/library/gooey/tonk-look.css");
+const GOOEY_HUB: &str = include_str!("../../tonk-core/assets/library/gooey/in-browser/hub.css");
+/// gooey's task-page sheets, vendored beside the library.
+const TASK_PAGES_CSS: &str =
+    include_str!("../../tonk-core/assets/library/gooey/in-browser/fabb-pages.css");
+const TASK_FORMS_CSS: &str =
+    include_str!("../../tonk-core/assets/library/gooey/in-browser/fabb-forms.css");
 
 /// The component libraries. Each is seeded the same way and lowers the
 /// same way, so each belongs in the lowering gate — until now only
@@ -40,8 +47,11 @@ const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose-e
 const CODE_EDITOR_LIBRARY: &str = include_str!("../../tonk-core/assets/library/code-editor.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
+const TREE_INSPECTOR_LIBRARY: &str =
+    include_str!("../../tonk-core/assets/library/tree-inspector.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
+const TASKS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tasks.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
@@ -273,18 +283,18 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
 /// reached. This asserts the copy is here, because without it the tag
 /// renders inert and the menu silently stops responding to keys.
 #[dialog_common::test]
-fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
+fn it_carries_the_row_task_element_on_the_branch_that_renders_it() {
     assert!(
         PROFILE_LIBRARY.contains("concept!: &element"),
         "the element concept must be seeded on the profile branch, not only in core.yaml",
     );
     assert!(
-        PROFILE_LIBRARY.contains("element!: &hub-menu"),
-        "the menu's behaviour must be defined as branch data",
+        PROFILE_LIBRARY.contains("element!: &hub-row-task"),
+        "the row task's behaviour must be defined as branch data",
     );
     assert!(
-        PROFILE_LIBRARY.contains("<hub-menu"),
-        "and the account menu must actually be one",
+        PROFILE_LIBRARY.contains("<hub-row-task"),
+        "the space row must render the task",
     );
 }
 
@@ -524,12 +534,12 @@ fn it_distinguishes_leaving_from_deleting_a_space() {
 }
 
 #[dialog_common::test]
-fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
+fn it_uses_the_inline_question_for_hub_space_removal() {
     for contract in [
         "<space-remove ",
         "data-space-remove-open",
-        "<tonk-dialog appearance=\"hub\" data-space-remove-dialog",
-        "data-dialog=\"close\"",
+        "class=\"hub-ask\" data-space-remove-dialog",
+        "data-row-cancel",
         "type=\"submit\" html:form=\"remove-{subject}\"",
     ] {
         assert!(
@@ -635,9 +645,11 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must say where an invite link comes from"
     );
     assert_eq!(
-        directory_probe.matches("<space-login>").count(),
+        directory_probe
+            .matches("<space-login data-signed-out-only>")
+            .count(),
         2,
-        "both absence states must offer sign-in recovery"
+        "both absence states must offer sign-in recovery while signed out"
     );
     assert!(
         !directory_probe.contains("you don't have access"),
@@ -693,7 +705,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         // What a visit to a space that keeps no public ticket ends on.
         "this space is private",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<space-login><button type=\"button\"",
+        "<space-login data-signed-out-only><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -707,9 +719,61 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        5,
-        "the absent-space panel must explain downloading, login, and invite recovery"
+        1,
+        "the absent-space panel must explain downloading"
     );
+    // The two absence walls are task pages (gooey in-browser/PAGES.md):
+    // a sheet, the login and invite recovery, and a way on.
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<div class=\"fabb-page space-private\">")
+            .count(),
+        2,
+        "both absence states must be task-page walls"
+    );
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><space-login data-signed-out-only><button type=\"button\">sign in</button></space-login></div>")
+            .count(),
+        2,
+        "both absence walls must offer your spaces and sign in"
+    );
+    // Signed in, a wall does not ask to sign in: each reads the hub's
+    // own account-link marker, and the sign-in sentence and button go.
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<tonk-display with=\"{profile-branch}@profile:tonk\" model=\"state:account-link\" view=\"label\" hidden>")
+            .count(),
+        2,
+        "both absence walls must know whether this device holds the account"
+    );
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<p data-signed-out-only>Already use this space? Sign in with your account.")
+            .count(),
+        2
+    );
+    assert!(PROFILE_LIBRARY.contains(
+        ".space-unknown .space-private:has([data-account-linked]) [data-signed-out-only] { display:none; }"
+    ));
+    // A ticket link's join runs on a task page too: its failure wall sits
+    // under the logotype on the page's ground, not bare in the panel.
+    let join_page = PROFILE_LIBRARY
+        .split("<div class=\"fabb-page space-join\">")
+        .nth(1)
+        .and_then(|tail| tail.split("</div>").next())
+        .expect("the space route's join sits in a task page");
+    assert!(join_page.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
+    assert!(
+        join_page.contains("<tonk-display class=\"join-status-slot\" model=\"tonk:join/status\">")
+    );
+    for contract in [
+        ".space-unknown .space-join:not(:has(.join-status)) { display:none; }",
+        ".space-unknown:has(.space-join .join-status) { padding:0; }",
+        ".space-unknown .space-join :is(tonk-display, tonk-view, .join-card-wrap, .join-status) { display:contents; }",
+    ] {
+        assert!(PROFILE_LIBRARY.contains(contract), "missing `{contract}`");
+    }
     assert!(
         PROFILE_LIBRARY.contains("model=space view=downloading"),
         "the absent-space panel must consult the directory row before accusing the link"
@@ -727,7 +791,38 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 
 #[dialog_common::test]
 fn it_keeps_the_hub_on_the_shared_theme_tokens() {
-    // Colors live in ONE place — the token block at the top of the hub's
+    // The hub page is `.tonk-hub`: its colours, type and sizes are Tonk's
+    // look, the `--tonk-*` names `gooey/tonk-look.css` sets, which the
+    // vendored `gooey/in-browser/hub.css` reads. Both travel with the view
+    // as its own styles, included from the library directory.
+    for contract in [
+        "look: !include/text ./gooey/tonk-look.css",
+        "hub: !include/text ./gooey/in-browser/hub.css",
+        // Hidden until its stylesheets load, so it never flashes unstyled.
+        "<div class=\"hub-page tonk-hub\" style=\"visibility:hidden\" data-styling>",
+        ".hub-page[data-styling] { animation:hub-styled 0s linear 2s forwards; }",
+        "<link rel=\"stylesheet\" with:src=\"look@space\">",
+        "<link rel=\"stylesheet\" with:src=\"hub@space\">",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the Hub must draw from Tonk's look: missing `{contract}`",
+        );
+    }
+    for (file, text) in [
+        ("tonk-look.css", GOOEY_LOOK),
+        ("in-browser/hub.css", GOOEY_HUB),
+    ] {
+        assert!(
+            text.starts_with(&format!("/* Vendored from tonk-labs/gooey {file} at ")),
+            "gooey/{file} must name the gooey revision it was copied from",
+        );
+    }
+    assert!(GOOEY_LOOK.contains(".tonk-hub, .tonk-desk { color-scheme: light dark; }"));
+    assert!(GOOEY_HUB.contains(".hub-line { position: sticky;"));
+
+    // The parts of the page the mocks have not reached yet keep their
+    // older palette. Colors live in ONE place — the token block at the top of the hub's
     // own `style: ui`, which travels with the view. The hub must CONSUME
     // those tokens rather than restating a color at each use; a raw hex in
     // a rule is the drift this contract exists to prevent.
@@ -736,13 +831,7 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     // aliases over a component library's theme: that is what lets the page
     // carry its own colors instead of depending on a stylesheet the host
     // injects into every guest.
-    for consumed in [
-        "background:var(--page)",
-        "color:var(--ink)",
-        "background:var(--cur)",
-        "var(--frost-solid)",
-        "var(--wash-p)",
-    ] {
+    for consumed in ["color:var(--ink)", "var(--frost-solid)", "var(--wash-p)"] {
         assert!(
             PROFILE_LIBRARY.contains(consumed),
             "the Hub must consume the shared theme token `{consumed}`",
@@ -768,14 +857,21 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 #[dialog_common::test]
 fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
-        ".hub-header",
-        ".hubcol",
-        "width:min(1166px, calc(100vw - 84px))",
-        "grid-template-columns:repeat(3,minmax(0,1fr))",
-        "<hub-collection class=\"stack chrome\"",
+        "<hub-bar class=\"hub-top\">",
+        "<svg class=\"hub-logo\"",
+        // Your name is a toggle: a chevron, and aria-expanded on the sheet.
+        "<a class=\"hub-me account-trigger\" href=\"/settings\" data-account-trigger role=\"button\"",
+        "aria-expanded=\"false\" aria-controls=\"account-sheet\">",
+        "<section class=\"hub-sheet\" data-spaces-sheet aria-label=\"your spaces\">",
+        "<div class=\"hub-line\">",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-spaces-line>spaces <span class=\"hub-count\" data-space-count></span></h2>",
+        "<button class=\"hub-btn hub-btn--main\" type=\"button\" data-new-space data-space-create-open>new space</button>",
+        "<hub-collection class=\"hub-rows\"",
+        "<div class=\"hub-row space-card\"",
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<span class=\"hub-name\" title=\"{name}\">{name}</span>",
         "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
-        "<a class=\"hub-logo\" href=\"/\" aria-label=\"Tonk home\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -786,15 +882,15 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         PROFILE_LIBRARY.contains("create new space"),
         "the responsive Hub collection must contain `create new space`",
     );
-    let hubbar = PROFILE_LIBRARY
-        .split(".hubbar {")
-        .nth(1)
-        .and_then(|css| css.split('}').next())
-        .expect("the Hub bar rule");
-    for rejected in ["position:fixed", "right:", "border-radius"] {
+    // A row is a line in the sheet now, not a card with a picture.
+    for rejected in [
+        "class=\"space-preview\"",
+        "class=\"space-description\"",
+        "<hub-collection class=\"stack",
+    ] {
         assert!(
-            !hubbar.contains(rejected),
-            "the desktop Hub bar must reject `{rejected}`",
+            !PROFILE_LIBRARY.contains(rejected),
+            "the Hub's rows must reject `{rejected}`",
         );
     }
     let rejected = "class=\"shead";
@@ -802,19 +898,33 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the responsive Hub collection must reject `{rejected}`",
     );
-    // The empty stack carries NO words. An account with no spaces and an
-    // account whose spaces are still downloading are indistinguishable
-    // from the stack, so any sentence here is wrong in one of those two
-    // cases. The waiting is stated where it is known — the account cell
-    // holds a skeleton while the link runs.
-    assert_eq!(
-        PROFILE_LIBRARY.matches("no spaces yet").count(),
-        0,
-        "the empty Hub must not claim a roster fact it cannot tell from a pending download",
+    // An empty list says so inside the sheet in one short, quiet line, so
+    // the sheet does not end at its line (Jack's call: a list still arriving
+    // after sign-in shows it for a moment). It is the display's `empty`
+    // slot, so it shows only once the list has answered.
+    assert!(
+        PROFILE_LIBRARY
+            .contains("<div slot=\"empty\" class=\"hub-empty\"><p>No spaces yet.</p></div>"),
+        "the empty Hub must say it has no spaces, in the sheet",
     );
+    // The one place that may say so is the wall on a settings task page
+    // (an app or a terminal asking for the account), where it is true.
+    let wall_start = PROFILE_LIBRARY
+        .find("<div class=\"fabb-page signed-out-wall\"")
+        .expect("the settings task pages' wall");
+    let wall_end = wall_start
+        + PROFILE_LIBRARY[wall_start..]
+            .find("</section>")
+            .expect("the wall's end");
+    let hub = format!(
+        "{}{}",
+        &PROFILE_LIBRARY[..wall_start],
+        &PROFILE_LIBRARY[wall_end..]
+    )
+    .to_lowercase();
     for rejected in ["signed out", "no spaces available"] {
         assert!(
-            !PROFILE_LIBRARY.to_lowercase().contains(rejected),
+            !hub.contains(rejected),
             "a provider-free local profile must not claim `{rejected}`",
         );
     }
@@ -829,7 +939,7 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
         "data-space-create-open",
         "description: \".currentTarget.elements.description.value\"",
         "the: xyz.tonk.command.create-space/description",
-        "form=\"create-space-header\"",
+        "form=\"create-space-mobile\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -854,7 +964,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject', 'data-space-thumbnail']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail', 'data-sync-case', 'data-pinned', 'data-opened']",
     ] {
         assert!(
             collection.contains(contract),
@@ -870,28 +980,31 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
 }
 
 #[dialog_common::test]
-fn it_mints_an_invite_when_copying_a_hub_space_link() {
+fn it_copies_a_hub_spaces_address_without_minting() {
     assert!(
-        PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
-        "the Hub copy action must name the space whose invite it mints"
+        PROFILE_LIBRARY.contains(
+            r#"<button class="hub-btn" type="button" data-space-copy-link data-space={subject}>"#
+        ),
+        "the Hub copy action is a footer button that names its space"
     );
     assert!(
-        PROFILE_LIBRARY
-            .contains(r#"<tonk-share space={subject}><button type="button" role="menuitem">"#),
-        "the copy verb is a plain button inside the share, never a form submit"
+        !PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
+        "the Hub menu must not mint an invite to copy: that waits on a link"
     );
-    for (state, label) in [
-        ("idle", "idle"),
-        ("copying", "copying"),
-        ("copied", "copied"),
-        ("blocked", "failed"),
-        ("failed", "failed"),
-    ] {
+    let actions = PROFILE_LIBRARY
+        .split("element!: &space-actions")
+        .nth(1)
+        .expect("space-actions element");
+    assert!(
+        actions.contains("const url = `${origin}/space/${button.dataset.space}`;"),
+        "the copy action copies the space's own address"
+    );
+    for (state, label) in [("copied", "copied"), ("failed", "failed")] {
         assert!(
             PROFILE_LIBRARY.contains(&format!(
-                "data-share-state=\"{state}\"] [data-share-copy-label=\"{label}\"]"
+                "[data-space-copy-link][data-copy=\"{state}\"] [data-copy-label=\"{label}\"]"
             )),
-            "the Hub invite action must display its `{label}` answer in `{state}` state"
+            "the Hub copy action must display its `{label}` answer"
         );
     }
 }
@@ -915,7 +1028,7 @@ fn it_answers_a_resend_activation_request_in_place() {
 }
 
 #[dialog_common::test]
-fn it_renames_a_space_from_the_hub_menu() {
+fn it_renames_a_space_from_the_hub_row() {
     for contract in [
         "data-space={subject}",
         "the: xyz.tonk.command.rename-repository/name",
@@ -940,14 +1053,14 @@ fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
         css_rule(
             PROFILE_LIBRARY,
-            ".space-menu tonk-share, .space-menu space-remove {"
+            "space-actions > :is(space-create, space-remove) {"
         )
         .contains("display:contents"),
-        "share and authority-aware removal must remain direct rows in the card menu"
+        "authority-aware removal must remain in the row footer"
     );
     assert!(
-        PROFILE_LIBRARY.contains("data-space-actions-open aria-haspopup=\"menu\""),
-        "the card menu opener must expose its menu semantics"
+        PROFILE_LIBRARY.contains("<space-actions class=\"hub-own\">"),
+        "the space controls must share the row footer"
     );
 }
 
@@ -1040,7 +1153,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
             "{route} resolves to the hub, not a page of its own",
         );
     }
-    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\">"));
+    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-top\">"));
     assert!(!PROFILE_LIBRARY.contains("tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));
@@ -1065,27 +1178,37 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(PROFILE_LIBRARY.contains("on:add-passkey=tonk:add-passkey"));
     assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
     assert!(!panel.contains("/api/"));
-    assert!(panel.contains("data-delete-account-open"));
-    assert!(panel.contains("data-sign-out-open"));
-    assert!(panel.contains("<h2>Sign out</h2>"));
-    assert!(panel.contains(
-        "Disconnect this account. Its spaces stay on this device for when you sign back in."
-    ));
-    assert!(panel.contains("sign out on this device"));
-    assert!(panel.contains("heading=\"confirm sign out\""));
-    assert!(panel.contains(
-        "this disconnects the account from this browser. its spaces stay on this device, including spaces that have not been backed up or synced, but the hub lists them only while you are signed in. sign back into this account to see them again."
-    ));
-    assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
+    // The account is a sheet: Tonk's line with `close`, then its sections,
+    // each with its action on the heading line. What can't be undone asks
+    // first, in place.
+    for contract in [
+        "<section class=\"hub-sheet\" id=\"account-sheet\" data-account-sheet aria-label=\"account settings\">",
+        // The sheet's sections sit in the hub's 16px gutter.
+        "<div class=\"hub-account\">",
+        // A change that didn't land says so in the line, with try again.
+        "<button class=\"hub-btn\" type=\"button\" data-account-retry hidden>try again</button>",
+        "<h2 class=\"hub-line-name\" tabindex=\"-1\" data-account-line>account settings</h2>",
+        "<a class=\"hub-btn\" href=\"/\" data-return-spaces data-account-close>close</a>",
+        "<h3 id=\"sec-conn\">connections</h3>",
+        "<h3 id=\"sec-device\">this device</h3><button class=\"hub-btn\" type=\"button\" data-sign-out-open>sign out on this device</button>",
+        "<p>Sign out on this device? Your spaces stay in your account.</p>",
+        "<button class=\"hub-btn\" type=\"button\" data-ask-keep>stay signed in</button><button class=\"hub-btn hub-btn--ring\" type=\"button\" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>",
+        "data-agent-connections hidden",
+        // Connections load on opening; there is no refresh button, and
+        // with none the note says how one connects.
+        "data-connections-note",
+        r#"<tonk-display model="tonk:account/registered" view="deletion">"#,
+    ] {
+        assert!(
+            panel.contains(contract),
+            "the account sheet must carry `{contract}`"
+        );
+    }
+    assert!(!panel.contains("data-sign-out-dialog"));
+    assert!(!panel.contains("data-connections-refresh"));
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
-    assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
-    // Agent access joins the current panel layout; the API feature gate
-    // controls visibility. Account switching remains absent.
-    assert!(panel.contains("class=\"settings-panel agent-access-panel\""));
-    assert!(panel.contains("data-agent-connections hidden"));
-    assert!(panel.contains("data-connections-refresh"));
     assert!(!panel.contains("switch-panel"));
     assert!(!panel.contains("data-add-profile"));
     assert_eq!(panel.matches("href=\"/settings\"").count(), 0);
@@ -1100,54 +1223,51 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         r#"<tonk-display model="state:ceremony" entity="state:ceremony" view="settings">"#
     ));
 
-    // The deletion dialog rides the registration view, because the
-    // command carries the verified address and that view has it.
-    let registered = PROFILE_LIBRARY
-        .split("    settings: |\n      <div data-account-registered>")
+    // Deleting stands apart, on the registration view, because the
+    // command carries the verified address and that view has it. It asks
+    // first in place; the answer is `delete with passkey`.
+    let deletion = PROFILE_LIBRARY
+        .split("    deletion: |\n      <section class=\"hub-sec hub-apart\"")
         .nth(1)
         .and_then(|rest| rest.split("\n\n").next())
-        .expect("the registration settings facet");
-    assert!(registered.contains("data-delete-account-submit data-email={email}"));
-    assert!(registered.contains("on:delete-account=tonk:delete-account disabled"));
+        .expect("the registration deletion facet");
+    assert!(deletion.contains("data-delete-account-submit data-email={email}"));
+    assert!(deletion.contains("on:delete-account=tonk:delete-account>"));
+    assert!(deletion.contains("<p>Delete your account? This can’t be undone.</p>"));
+    assert!(deletion.contains("data-ask-keep>keep account</button>"));
+    assert!(deletion.contains("<span data-delete-submit-label>delete with passkey</span>"));
     assert!(
-        registered.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
-        "what the deletion deletes is listed from the owned-space facts",
+        deletion.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
+        "what the deletion deletes is counted from the owned-space facts",
     );
-    // Editable settings fields use native text inputs and native carets.
+    assert!(!deletion.contains("data-delete-confirm"));
+    // The name saves when you leave the field: no save button.
     let name_form = PROFILE_LIBRARY
-        .split("<form class=\"details-form\" data-profile-rename-form")
+        .split("<form class=\"hub-kv\" data-profile-rename-form")
         .nth(1)
         .and_then(|rest| rest.split("</form>").next())
         .expect("the display-name form");
-    assert!(
-        !name_form.contains("<i class=\"cur\""),
-        "an unfocused display-name field must not draw an editing cursor",
-    );
     assert!(
         !name_form.contains("on:profile-rename-submit"),
         "the receipt-aware submit handler must own dispatch",
     );
     for contract in [
         "name=\"name\" type=\"text\"",
-        "required maxlength=\"50\" autocomplete=\"name\"",
-        "data-profile-rename-submit>save changes",
+        "maxlength=\"50\" autocomplete=\"name\"",
     ] {
         assert!(
             name_form.contains(contract),
-            "the explicit display-name form must preserve `{contract}`",
+            "the display-name form must preserve `{contract}`",
         );
     }
+    assert!(!name_form.contains("save changes"));
     assert!(
-        registered.contains("data-delete-confirm type=\"text\""),
-        "the deletion confirm is a native text input",
+        PROFILE_LIBRARY.contains("if (error) error.textContent = 'Your name can’t be empty.';")
     );
+    assert!(PROFILE_LIBRARY.contains("self.receipt(['changed your name to', name]);"));
     assert!(
-        registered.contains("data-delete-confirm-label>delete account</b>"),
-        "the deletion confirm must say exactly what to type",
-    );
-    assert!(
-        !registered.contains("<i class=\"cur\""),
-        "settings inputs must not draw terminal-style cursors",
+        PROFILE_LIBRARY
+            .contains("'This is your only passkey. Add another for a second way to sign in.'")
     );
 }
 
@@ -1222,6 +1342,31 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
 }
 
 #[dialog_common::test]
+fn agent_consent_uses_the_task_sheet_for_both_steps() {
+    let sheet = PROFILE_LIBRARY
+        .split_once("data-pane=\"agent\" hidden data-agent-approval")
+        .expect("agent approval pane")
+        .1
+        .split_once("</section>")
+        .expect("end of the task sheet")
+        .0;
+    for part in [
+        "class=\"fabb-task-step\" data-agent-counter",
+        "<dl class=\"fabb-ledger\">",
+        "<dt>your account</dt>",
+        "<fieldset class=\"fabb-group\" data-agent-options",
+        "<ul class=\"fabb-reach\" data-agent-spaces",
+        "class=\"fabb-actions\" data-agent-panel=\"agent\"",
+        "class=\"fabb-actions\" data-agent-panel=\"spaces\"",
+    ] {
+        assert!(
+            sheet.contains(part),
+            "missing consent sheet component {part}"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_renders_join_refusals_as_neutral_edge_walls() {
     let failure = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/failure")
@@ -1231,7 +1376,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
     for rejected in ["<wa-callout", "variant=\"danger\"", "{reason}"] {
@@ -1240,9 +1385,14 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
             "the closed-invitation wall must not expose `{rejected}`",
         );
     }
-    assert!(failure.contains("this share link expired"));
-    assert!(failure.contains("ask the person who shared this space to send you a new link"));
-    assert!(failure.contains("go to home"));
+    // The mock's #link-off: a revoked link reads as turned off, not
+    // expired. The worker can also report a confirmed expiry.
+    assert!(failure.contains("heading=\"this passlink was turned off\""));
+    assert!(failure.contains("so it can’t be used to join. Ask them for a new one."));
+    assert!(failure.contains("heading=\"this passlink expired\""));
+    assert!(failure.contains("data-kind={kind}"));
+    // A wall is never a dead end for someone signed in (PAGES.md).
+    assert!(failure.contains("<a href=\"/\">your spaces</a>"));
     assert!(!failure.contains("edge-field edge-field--settled"));
     assert!(!failure.contains("paste a new link"));
     assert!(!failure.contains("tonk-join-retry"));
@@ -1260,11 +1410,12 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
         .expect("the paste form lives in <join-paste>");
     assert!(paste.contains("<form") && paste.contains("<input"));
     assert!(route.contains("<join-paste class=\"join-paste\" on:join=tonk:join>"));
-    assert!(route.contains(".join-paste { display:none; }"));
-    assert!(route.contains(".join-view[data-path=\"/join\"] .join-paste"));
+    assert!(
+        route.contains(".join-view:not([data-path=\"/join\"]) .join-paste-task { display:none; }")
+    );
     assert!(!route.contains("tonk-invite-link"));
     assert!(route.contains("<page-mount on:join=tonk:join>"));
-    assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
+    assert_eq!(failure.matches("class=\"fabb-actions\"").count(), 1);
 }
 
 #[dialog_common::test]
@@ -1272,15 +1423,23 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
 
+    // A task page (gooey in-browser/PAGES.md): the vendored parts draw
+    // it, so the view sets no colour, size or font of its own.
+    assert!(route.contains("<main class=\"join-view fabb-page\""));
+    assert!(route.contains("<section class=\"fabb-task join-paste-task\""));
+    assert!(!route.contains("--edge-"), "no tokens of the view's own");
+    // The top is the logotype alone: a task page has no navigation
+    // (PAGES.md), so the mark is not a link home.
+    assert!(route.contains("<header class=\"fabb-top\"><svg class=\"fabb-logo\""));
     assert!(
-        css_rule(route, ".edge-statement {").contains("color:var(--edge-ink)"),
-        "join statements must override the global heading colour with local mode ink",
+        !PROFILE_LIBRARY.contains("<header class=\"fabb-top\"><a"),
+        "no task page's logotype is a link",
     );
     assert!(
-        route.contains(".join-status:has(.edge-wall--closed) .join-opening { display:none; }"),
+        route.contains(".join-status:has(.join-closed) .join-opening { display:none; }"),
         "retained failure content must suppress the opening row even while its display reconnects",
     );
 
@@ -1290,7 +1449,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
         "inset:0",
         "align-items:center",
         "justify-content:center",
-        "background:var(--edge-page)",
+        "background:var(--tonk-ground)",
     ] {
         assert!(
             opening.contains(contract),
@@ -1300,23 +1459,11 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     assert!(PROFILE_LIBRARY.contains("class=\"join-opening-status\""));
     assert!(PROFILE_LIBRARY.contains("class=\"tonk-pulse\""));
     assert!(route.contains(
-        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.edge-wall--closed))"
+        ".join-view:not([data-path=\"/join\"]):has(.join-status-slot[data-state=\"ready\"]):not(:has(.join-closed))"
     ));
 
-    let action = css_rule(route, ".ebtn {");
-    for contract in [
-        "height:40px",
-        "border:0",
-        "border-radius:0",
-        "font:inherit",
-        "line-height:1",
-        "white-space:normal",
-    ] {
-        assert!(
-            action.contains(contract),
-            "join actions must normalize links and native buttons with `{contract}`",
-        );
-    }
+    // The answers are the hub's buttons, at the right edge.
+    assert!(route.contains("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a><button type=\"submit\" form=\"join-paste-form\">join</button></div>"));
 }
 
 #[dialog_common::test]
@@ -1324,37 +1471,29 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
         .nth(1)
-        .and_then(|tail| tail.split("# The /inspector and /diagnose routes").next())
+        .and_then(|tail| tail.split("# The /inspector route").next())
         .expect("join route view");
-    let join_view = css_rule(route, ".join-view {");
-    let fallback = join_view
-        .find("min-height:100vh")
-        .expect("join route must retain the legacy viewport fallback");
-    let dynamic = join_view
-        .find("min-height:100dvh")
-        .expect("join route must use the dynamic mobile viewport");
+    // The join route is a task page: gooey's sheet sizes it, the legacy
+    // viewport first and the dynamic one after it.
+    assert!(route.contains("class=\"join-view fabb-page\""));
+    let page = css_rule(TASK_PAGES_CSS, ".fabb-page {");
+    let fallback = page
+        .find("min-height: 100vh")
+        .expect("legacy viewport fallback");
+    let dynamic = page
+        .find("min-height: 100dvh")
+        .expect("dynamic mobile viewport");
     assert!(
         fallback < dynamic,
         "the dynamic viewport declaration must follow and override the fallback"
     );
-    for contract in [
-        "padding:48px 16px 80px",
-        ".edge-mast { position:relative; display:block; width:132px;",
-        "margin:0 auto 56px",
-        ".edge-wall { width:min(576px, 100%); margin:0 auto;",
-    ] {
-        assert!(
-            route.contains(contract),
-            "the join state must use the shared upper-page geometry `{contract}`"
-        );
-    }
 }
 
 #[dialog_common::test]
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }",
-        ".mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;",
+        ".mobile-nav > a, .mobile-nav .mobile-create { display:flex; width:100%; min-height:54px;",
         ".account-menu__row { min-height:44px; }",
     ] {
         assert!(
@@ -1362,15 +1501,12 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
             "mobile Hub CSS must contain `{contract}`"
         );
     }
-    for contract in [
-        ".edge-mast { width:98px; min-height:44px; margin-bottom:40px;",
-        ".ebtn { height:44px; min-height:44px; }",
-    ] {
-        assert!(
-            PROFILE_LIBRARY.contains(contract),
-            "mobile Hub/join CSS must contain `{contract}`"
-        );
-    }
+    // The join route's answers are a task page's buttons: 44px to see on a
+    // touch screen.
+    assert!(
+        TASK_FORMS_CSS
+            .contains("@media (pointer:coarse){.fabb-actions :is(button,a){min-height:44px}")
+    );
 }
 
 /// Lower a component library the way the seed reaches it: on top of
@@ -1446,6 +1582,22 @@ async fn it_lowers_the_prose_editor_library() {
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
         .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tasks_library() {
+    assert_component_library_lowers("tasks library (tasks.yaml)", "tasks.yaml", TASKS_LIBRARY)
+        .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_tree_inspector_library() {
+    assert_component_library_lowers(
+        "tree-inspector library (tree-inspector.yaml)",
+        "tree-inspector.yaml",
+        TREE_INSPECTOR_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]
@@ -2048,4 +2200,310 @@ fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
         matched.params.get("url"),
         Some("https://tonk.network/library/notebook.yaml")
     );
+}
+
+/// A hub row draws the space's sync disc, derived on the profile branch
+/// from facts this device holds: the space's upstream and this device's
+/// pause preference. It shows no role or people count, since the profile
+/// branch records neither and the hub shows only recorded facts.
+#[dialog_common::test]
+fn it_derives_each_hub_rows_sync_disc_and_no_unrecorded_role() {
+    for contract in [
+        "concept!: &space/sync",
+        "concept!: &replica/sync-enabled",
+        "the: xyz.tonk.space/sync",
+        "the: xyz.tonk.sync/enabled",
+        "description: A synced space whose replica is paused on this device is paused",
+        "<span class=\"hub-disc\" role=\"img\" data-sync-case={sync}></span>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    for absent in [
+        "concept!: &space/role",
+        "data-role-case",
+        "class=\"hub-role\"",
+    ] {
+        assert!(
+            !PROFILE_LIBRARY.contains(absent),
+            "the hub row must not infer `{absent}`",
+        );
+    }
+    // The cases rank: a paused space that has an upstream reads as paused,
+    // and one nothing better speaks for reads as local.
+    let sync = PROFILE_LIBRARY
+        .split("concept!: &space/sync\n")
+        .nth(1)
+        .expect("the space/sync concept");
+    let paused = sync.find("- case:paused").expect("paused case");
+    let synced = sync.find("- case:synced").expect("synced case");
+    let local = sync.find("- case:local").expect("local case");
+    assert!(
+        paused < synced && synced < local,
+        "paused, then synced, then local"
+    );
+}
+
+/// A hub row is a link that opens the space; a chevron beside it, a button
+/// of its own, unfolds the space's details in place. Closed, the details
+/// stay in the page, inert and out of the tab order.
+#[dialog_common::test]
+fn it_opens_a_hub_space_from_its_row_and_unfolds_details_with_a_chevron() {
+    for contract in [
+        "<a class=\"hub-open\" href=\"/space/{subject}\">",
+        "<button type=\"button\" class=\"hub-toggle\" aria-expanded=\"false\" aria-controls=\"body-{subject}\"",
+        "aria-label=\"links and details of {name}\"",
+        "<div class=\"hub-body\" id=\"body-{subject}\" inert>",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row must carry `{contract}`",
+        );
+    }
+    // The address is not repeated in the open row: the row is its link.
+    assert!(!PROFILE_LIBRARY.contains("data-space-address"));
+    let collection = PROFILE_LIBRARY
+        .split("element!: &hub-collection")
+        .nth(1)
+        .and_then(|rest| rest.split("\nelement!:").next())
+        .expect("the hub collection element");
+    for contract in [
+        // one row open at a time
+        "if (other !== row) self.fold(other, false);",
+        // closed details leave the tab order
+        "if (body) body.inert = !open;",
+        // Escape folds the open row and hands focus back to its chevron
+        "row.querySelector('.hub-toggle')?.focus();",
+        // a keyboard press lands at once
+        "page.setAttribute('data-still', '');",
+    ] {
+        assert!(
+            collection.contains(contract),
+            "the hub collection must keep `{contract}`",
+        );
+    }
+}
+
+/// While the spaces list loads, placeholder rows hold its place past
+/// 400ms and Tonk's line says `loading`; when the service worker cannot
+/// be reached before any row shows, the sheet says so with `try again`.
+#[dialog_common::test]
+fn it_shows_loading_rows_and_a_didnt_load_sheet_for_the_spaces_list() {
+    for contract in [
+        "<ul slot=\"loading\" class=\"hub-wait\" aria-hidden=\"true\">",
+        "<div class=\"hub-skel\"><i></i><i></i></div>",
+        ".hub-wait { list-style:none; margin:0; padding:0; animation:hub-wait-in 400ms step-end; }",
+        "<div slot=\"offline\" class=\"hub-empty hub-failed\"><p>Your spaces didn’t load. Check your connection and try again.</p><button class=\"hub-btn hub-btn--main\" type=\"button\" data-spaces-retry>try again</button></div>",
+        "tonk-display:has(.space-card) > .hub-failed { display:none; }",
+        "count.textContent = list === 'loading' ? 'loading' : '';",
+        "button.disabled = list === 'loading';",
+        "if (event.target?.closest?.('[data-spaces-retry]')) { self.listRetry(); return; }",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces sheet must carry `{contract}`",
+        );
+    }
+    assert_eq!(
+        PROFILE_LIBRARY
+            .matches("<li class=\"hub-wait-row\"><div class=\"hub-skel\">")
+            .count(),
+        5,
+        "five placeholder rows",
+    );
+}
+
+/// A rename or a removal in the hub leaves a receipt in the spaces line,
+/// in place of its name, and announces it. The hub follows the command to
+/// its outcome, since a removed space's row leaves before `removed`.
+#[dialog_common::test]
+fn it_gives_a_receipt_in_the_spaces_line_after_a_change() {
+    for contract in [
+        "<span class=\"hub-receipt\" tabindex=\"-1\" data-hub-receipt hidden></span>",
+        "<button class=\"hub-btn\" type=\"button\" data-hub-undo data-wait=\"undoing\" hidden>undo</button>",
+        "<div class=\"hub-sr\" role=\"status\" aria-live=\"polite\" data-hub-live></div>",
+        "document.createTextNode(' · by you')",
+        "sheet.querySelector('[data-spaces-line]')?.classList.add('hub-sr');",
+        "self.fail('Couldn’t undo that, so the change stays.', pending.run, 'undoing');",
+        "self.closest('hub-discover')?.follow?.(id, 'repository-rename', 'renamed',",
+        "self.closest('hub-discover')?.follow?.(id, 'space-removal', 'removed',",
+        "[action === 'leave' ? 'left' : 'deleted', name]",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the spaces line must carry `{contract}`",
+        );
+    }
+}
+
+/// An open hub row lists the space's links from what the worker records,
+/// with desktop's rules: the first open link is the default and resets in
+/// place; any other link is removed. No link records a role or an expiry,
+/// so the rows say neither.
+#[dialog_common::test]
+fn it_lists_a_spaces_links_in_its_open_hub_row() {
+    for contract in [
+        "element!: &space-links",
+        "<space-links data-space={subject} data-name={name}></space-links>",
+        "self.api(`${base}/invites`)",
+        "member: field('xyz.tonk.membership/member', 'Entity'),",
+        "self.api('/api/account/connections')",
+        // The default is the oldest open link, whatever this tab made.
+        "const first = rows.find((row) => row.kind === 'open');",
+        "/invites/${encodeURIComponent(target)}/revoke",
+        "/api/account/connections/${encodeURIComponent(target)}/revoke",
+        "'keep the link', 'reset passlink', true]",
+        "new ClipboardItem({ 'text/plain': pending.then(",
+        "'No links yet. Make one to bring someone in.'",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the hub row's links must carry `{contract}`",
+        );
+    }
+}
+
+/// `new space` opens a row under the spaces line: a name, `make space` and
+/// `not now`. An empty name and a name you already have are said under the
+/// field; the hub stays, and the new space's row opens with its default
+/// link made.
+#[dialog_common::test]
+fn it_makes_a_new_space_from_an_inline_row_under_the_line() {
+    for contract in [
+        "<space-create data-inline>",
+        "<form class=\"hub-new\" data-space-create-form novalidate hidden>",
+        "<label for=\"new-space-name\">name</label>",
+        "<input type=\"hidden\" name=\"open\" value=\"false\">",
+        "<button class=\"hub-btn\" type=\"button\" data-space-create-cancel>not now</button>",
+        "data-space-create-submit data-wait=\"making\">make space</button>",
+        "(inline ? 'Give the space a name.' : 'Enter a name for this space.')",
+        ": `You already have a space called ${name.value}.`;",
+        // `make space` keeps focus and says `making` only past 400ms.
+        ".map((control) => hub?.waiting?.(control, 'making') ?? (() => {}));",
+        // An error clears as the name is typed.
+        "if (error?.textContent) error.textContent = '';",
+        "self.closest('hub-discover')?.receipt?.(['made', parameters.name]);",
+        "await links.makeDefault();",
+        "self.querySelector('[data-link-copy]')?.focus();",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the inline new space row must carry `{contract}`",
+        );
+    }
+}
+
+#[dialog_common::test]
+fn it_draws_a_missing_page_as_a_wall() {
+    let view = PROFILE_LIBRARY
+        .split("view!:\n  this: tonk:not-found")
+        .nth(1)
+        .and_then(|tail| tail.split("# ════").next())
+        .expect("not-found view");
+    // gooey in-browser/task-page.html#notfound: a whole-page status on a
+    // task sheet, no disc, and `your spaces`. No Web Awesome, no tokens.
+    assert!(view.contains("<main class=\"fabb-page nf\""));
+    assert!(view.contains(">no page here</h1>"));
+    assert!(view.contains(
+        "<tonk-message kind=\"status\">There’s nothing at this address. Check the link, or ask whoever sent it.</tonk-message>"
+    ));
+    assert!(view.contains("<div class=\"fabb-actions\"><a href=\"/\">your spaces</a></div>"));
+    for gone in ["<wa-button", "--wa-", "fabb-disc", "404"] {
+        assert!(!view.contains(gone), "the wall must not draw `{gone}`");
+    }
+}
+
+#[dialog_common::test]
+fn it_shows_a_signed_out_wall_on_settings_task_pages() {
+    // gooey in-browser/task-page.html#signed-out, on /settings/* only: a
+    // wall whose sign in raises the account ceremony, in place of raising
+    // it unasked. The account page and ?via keep raising theirs.
+    assert!(PROFILE_LIBRARY.contains(
+        "const signedOut = path.startsWith('/settings/') && self.unlinked()\n          && !self.viaRequest() && !self.viaAsk();"
+    ));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("if (account && self.unlinked() && !self.viaRequest() && !signedOut) {")
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("<div class=\"fabb-page signed-out-wall\" data-signed-out-wall>")
+    );
+    assert!(PROFILE_LIBRARY.contains(">you’re signed out</h1>"));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("<tonk-message kind=\"status\">Sign in to see your spaces.</tonk-message>")
+    );
+    assert!(PROFILE_LIBRARY.contains(
+        "} else if (hit('[data-signed-out-sign-in]')) {\n            self.link('needs-account');"
+    ));
+}
+
+#[dialog_common::test]
+fn it_draws_a_devices_request_as_the_connect_a_device_task() {
+    // gooey in-browser/task-page.html #device, #device-connected,
+    // #device-denied, #device-expired, #device-cancelled, #device-failed.
+    let pane = PROFILE_LIBRARY
+        .split("<div class=\"pane fabb-page\" data-pane=\"link\" hidden data-link-approval>")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("<div class=\"pane fabb-page\" data-pane=\"local-link\"")
+                .next()
+        })
+        .expect("the device task");
+    assert!(pane.contains(">connect a device</h1>"));
+    assert!(pane.contains("<dt>device</dt><dd data-link-name></dd>"));
+    assert!(pane.contains("<dt>your account</dt>"));
+    // the account reads by its name (the mock's "Alex"), the email only
+    // while no name row has arrived
+    assert!(pane.contains(
+        "<dd data-link-account-cell>\n                          <tonk-display model=\"state:account-link\" view=\"label\">"
+    ));
+    assert!(PROFILE_LIBRARY.contains(
+        "account-settings :is([data-link-account-cell], [data-agent-account-cell]):has([data-account-name]) [data-link-account-email] { display:none; }"
+    ));
+    // the connected step names the device it connected
+    assert!(pane.contains(
+        "<span data-link-connected-name>The device</span> can now use your account. You can close this page."
+    ));
+    assert!(
+        PROFILE_LIBRARY
+            .contains("self.text('[data-link-connected-name]', request.name || 'The device');")
+    );
+    assert!(
+        pane.contains("BUG-246"),
+        "a slot for the code the device shows"
+    );
+    // the safe answer first, the main one last, naming how much it grants
+    assert!(pane.contains(
+        "<button type=\"button\" data-link-decline>don’t allow</button>\n                      <button type=\"button\" data-link-approve"
+    ));
+    assert!(pane.contains("data-wait=\"connecting\">allow whole account</button>"));
+    for step in ["ask", "connected", "denied", "expired"] {
+        assert!(
+            pane.contains(&format!("data-link-step=\"{step}\"")),
+            "{step}"
+        );
+    }
+    // the terminal's answer comes back as ?link=ok|denied|invalid
+    assert!(PROFILE_LIBRARY.contains(
+        "return { ok: 'connected', denied: 'denied', invalid: 'denied' }[outcome] ?? null;"
+    ));
+    // a cancelled or failed passkey is the same step, the reason in the form
+    assert!(PROFILE_LIBRARY.contains(
+        "if (state === 'refused') self.linkError('The passkey prompt was cancelled. Try again when you’re ready.');"
+    ));
+    // a failure says what stayed, in the mock's words, without the
+    // worker's detail
+    assert!(PROFILE_LIBRARY.contains(
+        "self.linkError('Tonk couldn’t reach the device, so nothing was connected. Check that it’s still waiting, then try again.');"
+    ));
+    // except a handoff for another account, whose detail names both
+    assert!(PROFILE_LIBRARY.contains(
+        "else if (state === 'failed' && /requires account/.test(detail)) self.linkError(`Tonk couldn’t finish, so nothing was connected."
+    ));
+    // the other two panes keep their copy on the same parts
+    assert!(PROFILE_LIBRARY.contains(">attach a local space to this account</h1>"));
+    assert!(PROFILE_LIBRARY.contains(">sign in through another tonk</h1>"));
 }

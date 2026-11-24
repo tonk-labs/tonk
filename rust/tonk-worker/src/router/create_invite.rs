@@ -22,16 +22,18 @@ use ::axum::{
 };
 use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
-use dialog_effects::Use;
+use dialog_effects::{Use, method};
 use dialog_repository::{RepositoryExt as _, SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::time::Timestamp;
 use dialog_varsig::Principal;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
 use tonk_invite::{Invite, InviteAudience, Ticket, home_address_meta, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution};
+use tonk_schema::{Invitation, InvitationExecution, InvitationListed, InvitationMinted};
+use tonk_worker_api::PasslinkRole;
 use url::Url;
 
 pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
@@ -106,6 +108,42 @@ pub async fn create_invite(
     mint_invite(state, repo_name, origin, request, None, None).await
 }
 
+/// Highest passlink role this device can grant on this space.
+#[wasm_compat]
+pub async fn share_role(
+    State(state): State<AppState>,
+    Path(repo): Path<String>,
+) -> Result<Json<Option<PasslinkRole>>, TonkWorkerError> {
+    let tonk = state.read().await;
+    let repository = tonk
+        .profile
+        .space(&repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(format!("space '{repo}': {e}")))?;
+    let subject = Subject::from(repository.did());
+    let access = tonk.profile.access();
+    let role = if access
+        .claim(subject.clone())
+        .perform(&tonk.operator)
+        .await
+        .is_ok()
+    {
+        Some(PasslinkRole::Admin)
+    } else if access
+        .claim(subject.attenuate(Use))
+        .perform(&tonk.operator)
+        .await
+        .is_ok()
+    {
+        Some(PasslinkRole::Write)
+    } else {
+        None
+    };
+    Ok(Json(role))
+}
+
 /// Mint an agent handoff for the current browser account, never the space owner.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn create_agent_handoff(
@@ -138,6 +176,28 @@ pub(super) async fn mint_invite(
             .url()
             .join("join")
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?,
+    };
+
+    // A link that replaces an open one lists in its place, so a reset
+    // default passlink stays the default. Read before the guard below:
+    // listing takes the state itself.
+    let (place, role, expires_at) = match request.replaces.as_deref() {
+        None => (None, request.role, request.expires_at),
+        Some(target) => {
+            let Json(listed) =
+                super::revoke_invite::list(State(state.clone()), Path(repo_name.clone())).await?;
+            let replaced = listed
+                .iter()
+                .find(|row| {
+                    row.target_cid == target && row.kind == tonk_worker_api::InvitationKind::Open
+                })
+                .ok_or_else(|| {
+                    TonkWorkerError::Router(format!(
+                        "the link {target} to replace is not an open link of this space"
+                    ))
+                })?;
+            (Some(replaced.place()), replaced.role, replaced.expires_at)
+        }
     };
 
     let tonk = state.read().await;
@@ -231,15 +291,72 @@ pub(super) async fn mint_invite(
     {
         meta.extend(tonk_invite::space_name_meta(&name));
     }
-    let delegation: UcanDelegation = tonk
-        .profile
-        .access()
-        .claim(Subject::from(repository.did()).attenuate(Use))
-        .delegate(audience_did.clone())
-        .meta(meta)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
+    // Even a read passlink can only be issued by someone who can share.
+    let access = tonk.profile.access();
+    let subject = Subject::from(repository.did());
+    let deadline = expires_at
+        .map(|seconds| {
+            let deadline = Timestamp::try_from(i128::from(seconds))
+                .map_err(|_| TonkWorkerError::Router("invalid passlink expiry".into()))?;
+            if deadline <= Timestamp::now() {
+                return Err(TonkWorkerError::Router(
+                    "passlink expiry must be in the future".into(),
+                ));
+            }
+            Ok(deadline)
+        })
+        .transpose()?;
+    let delegation: UcanDelegation = match role {
+        PasslinkRole::Read => {
+            access
+                .claim(subject.clone().attenuate(Use))
+                .perform(&tonk.operator)
+                .await
+                .map_err(|_| {
+                    TonkWorkerError::Forbidden("write access is required to make a passlink".into())
+                })?;
+            let claim = access.claim(subject.attenuate(Use).attenuate(method::Get));
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+        PasslinkRole::Write => {
+            let claim = access.claim(subject.attenuate(Use));
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+        PasslinkRole::Admin => {
+            let claim = access.claim(subject);
+            let claim = if let Some(deadline) = deadline {
+                claim.expires(deadline)
+            } else {
+                claim
+            };
+            claim
+                .delegate(audience_did.clone())
+                .meta(meta)
+                .perform(&tonk.operator)
+                .await
+        }
+    }
+    .map_err(|e| {
+        TonkWorkerError::Forbidden(format!("cannot delegate the requested access: {e}"))
+    })?;
 
     let invite = Invite::new(
         delegation.into_chain(),
@@ -249,38 +366,7 @@ pub(super) async fn mint_invite(
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    // Record the invitation on the repo's content branch: the durable
-    // half of the invite. The content branch syncs across replicas, so
-    // the record converges where the roster lives. The URL (with its
-    // secret fragment) is never stored — only chain-derivable facts. A
-    // failure here fails the mint; the claim path can self-heal a missing
-    // record, but a mint that can't write its own repo's content branch
-    // is broken enough to surface.
-    //
-    // Route through the *reactor's* cached `main` handle (keyed by the
-    // routing key, the `{repo}` param) rather than a fresh
-    // `repository.branch().open()`: background sync pulls/publishes through
-    // the reactor's cached handle, so a commit on a separate handle leaves
-    // it pinned at a stale head and the next pull's CAS fails forever.
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
-    let kind = match &invite.audience {
-        InviteAudience::Open { .. } => "open",
-        InviteAudience::Scoped => "scoped",
-    };
-    let execution = InvitationExecution::new(&invitation, kind);
-    tonk.reactor
-        .repository(&repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
-
-    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
+    record_invite(&tonk, &repo_name, &invite, place).await?;
 
     // An open invite's grant waits in the space as the ephemeral key's
     // ticket, and the link names only the space and the key's seed, on
@@ -335,13 +421,126 @@ pub(super) async fn mint_invite(
     );
 
     let response = match invite.audience {
-        InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
+        InviteAudience::Open { .. } => CreateInviteResponse::Open {
+            url,
+            target_cid: Some(super::revoke_invite::leaf_cid(&invite.chain)?.to_string()),
+        },
         InviteAudience::Scoped => CreateInviteResponse::Scoped {
             url,
             recipient_root: audience_did,
         },
     };
     Ok(Json(response))
+}
+
+/// Called only after a held passlink request has been approved. The writer's
+/// operator must prove the same /use capability as the browser account.
+pub(super) async fn hosted_passlink(
+    tonk: &crate::TonkState,
+    space: &dialog_varsig::Did,
+    agent: &dialog_varsig::Did,
+    remote: &Url,
+) -> Result<Url, TonkWorkerError> {
+    if space == agent {
+        return Err(TonkWorkerError::Forbidden(
+            "The agent's private space cannot be shared.".into(),
+        ));
+    }
+    let (holder, seed) = generate_ephemeral().await?;
+    let mut meta = home_address_meta(remote);
+    meta.extend(tonk_invite::inviter_meta(agent));
+    let repository = tonk
+        .profile
+        .space(space.as_ref())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    if let Some(name) =
+        super::repository::repository_display_name(tonk, &repository, space.as_ref()).await
+    {
+        meta.extend(tonk_invite::space_name_meta(&name));
+    }
+    let chain: UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(Subject::from(space.clone()).attenuate(Use))
+        .delegate(holder.did())
+        .meta(meta)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|_| {
+            TonkWorkerError::Forbidden(
+                "This connection needs full space access and sharing to make a passlink.".into(),
+            )
+        })?;
+    let invite = Invite::new(
+        chain.into_chain(),
+        InviteAudience::Open { seed },
+        Some(remote.clone()),
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+    let link = issue_ticket(tonk, remote, &invite.chain, seed)
+        .await
+        .ok_or_else(|| {
+            TonkWorkerError::Conflict("The space did not accept the passlink ticket.".into())
+        })?;
+    record_invite(tonk, space.as_ref(), &invite, None).await?;
+    Url::parse(&link).map_err(|error| TonkWorkerError::Internal(error.to_string()))
+}
+
+async fn record_invite(
+    tonk: &crate::TonkState,
+    repo_name: &str,
+    invite: &Invite,
+    place: Option<u64>,
+) -> Result<(), TonkWorkerError> {
+    // Record the invitation on the repo's content branch: the durable
+    // half of the invite. The content branch syncs across replicas, so
+    // the record converges where the roster lives. The URL (with its
+    // secret fragment) is never stored — only chain-derivable facts. A
+    // failure here fails the mint; the claim path can self-heal a missing
+    // record, but a mint that can't write its own repo's content branch
+    // is broken enough to surface.
+    //
+    // Route through the *reactor's* cached `main` handle (keyed by the
+    // routing key, the `{repo}` param) rather than a fresh
+    // `repository.branch().open()`: background sync pulls/publishes through
+    // the reactor's cached handle, so a commit on a separate handle leaves
+    // it pinned at a stale head and the next pull's CAS fails forever.
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
+    let kind = match &invite.audience {
+        InviteAudience::Open { .. } => "open",
+        InviteAudience::Scoped => "scoped",
+    };
+    let execution = InvitationExecution::new(&invitation, kind);
+    // When it was minted, so a list can keep the oldest open link first.
+    let minted_at = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default();
+    let minted = InvitationMinted::new(&invitation, minted_at);
+    let listed = place.map(|place| InvitationListed::new(&invitation, place));
+    let mut transaction = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(invitation)
+        .assert(execution)
+        .assert(minted);
+    if let Some(listed) = listed {
+        transaction = transaction.assert(listed);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    retain_invite_authority(tonk, repo_name, &invite.chain).await
 }
 
 /// Leave an open invite's `chain` in its space as the ticket of the key
@@ -1009,6 +1208,142 @@ mod tests {
             serde_json::from_slice(&bytes).unwrap();
         assert_eq!(listed.len(), 1, "the minted invitation is listed");
         assert_eq!(listed[0].invitation, expected.this.to_string());
+        let CreateInviteResponse::Open { target_cid, .. } = minted else {
+            panic!("expected an open invitation");
+        };
+        assert_eq!(target_cid.as_ref(), Some(&listed[0].target_cid));
+        assert!(
+            listed[0].minted_at.is_some(),
+            "a fresh invitation lists when it was minted"
+        );
+    }
+
+    /// A link minted to replace the default lists in its place, ahead of
+    /// a link made before it, so a reset default stays the default.
+    #[dialog_common::test]
+    async fn it_lists_a_replacing_link_in_the_place_of_the_one_it_replaces() {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "test-replace-invitation").await;
+        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
+
+        let call = |method: &'static str, path: String, body: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .method(method)
+                            .header("content-type", "application/json")
+                            .extension(
+                                RequestOrigin::parse("https://local.example/invite")
+                                    .expect("valid origin"),
+                            )
+                            .body(if body.is_empty() {
+                                Body::empty()
+                            } else {
+                                Body::from(body)
+                            })
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                (status, bytes)
+            }
+        };
+        let rows = || async {
+            let (status, bytes) = call(
+                "GET",
+                format!("/api/repository/{key}/invites"),
+                String::new(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            serde_json::from_slice::<Vec<tonk_worker_api::InvitationSummary>>(&bytes).unwrap()
+        };
+        let invite = format!("/api/repository/{key}/invite");
+
+        let (status, _) = call("POST", invite.clone(), "{}".into()).await;
+        assert_eq!(status, StatusCode::OK);
+        let first = rows().await;
+        assert_eq!(first.len(), 1);
+        let default = first[0].clone();
+        let (status, _) = call("POST", invite.clone(), "{}".into()).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = rows().await;
+        assert_eq!(
+            before[0].target_cid, default.target_cid,
+            "the older link lists first"
+        );
+        let second = before[1].target_cid.clone();
+
+        // Reset mints the replacement first; revoking the old one is the
+        // service's (not reachable here), and the order already holds.
+        let (status, _) = call(
+            "POST",
+            invite.clone(),
+            serde_json::json!({ "replaces": default.target_cid }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let listed = rows().await;
+        assert_eq!(listed.len(), 3);
+        let replacing = listed
+            .iter()
+            .position(|row| row.target_cid != default.target_cid && row.target_cid != second)
+            .expect("the replacing link is listed");
+        assert_eq!(
+            listed[replacing].listed_at, default.minted_at,
+            "the replacing link takes the default's place"
+        );
+        assert!(
+            replacing
+                < listed
+                    .iter()
+                    .position(|row| row.target_cid == second)
+                    .unwrap(),
+            "the replacing link lists ahead of the link made before it"
+        );
+
+        // Verify the signed link itself and the management projection together.
+        let expires = super::Timestamp::now().to_unix() + 86400;
+        for (role, command) in [("read", "/use/get"), ("write", "/use"), ("admin", "/")] {
+            let (status, bytes) = call(
+                "POST",
+                invite.clone(),
+                serde_json::json!({ "role": role, "expiresAt": expires }).to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+            let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
+            assert_eq!(parsed.chain.ability(), command);
+            assert_eq!(parsed.chain.expiration().unwrap().to_unix(), expires);
+            let CreateInviteResponse::Open { target_cid, .. } = minted else {
+                panic!("expected open invite")
+            };
+            let listed = rows().await;
+            let row = listed
+                .iter()
+                .find(|r| Some(&r.target_cid) == target_cid.as_ref())
+                .unwrap();
+            assert_eq!(serde_json::to_value(row.role).unwrap(), role);
+            assert_eq!(row.expires_at, Some(expires));
+        }
+
+        // Replacing a link this space doesn't list is refused.
+        let (status, _) = call(
+            "POST",
+            invite,
+            serde_json::json!({ "replaces": "bafy-not-a-link" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     /// A space created without a remote refuses, and says which case it was.

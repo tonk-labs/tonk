@@ -222,14 +222,19 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
 /// Run [`super::run_commands`] as background work so it never blocks the
 /// triggering response (shared by the transact and evaluate routes). The
 /// service worker attaches the promise to the originating fetch event;
-/// native builds run it inline so tests remain deterministic.
+/// hosted writers await the effects before pushing and answering, and native
+/// builds run them inline as well.
 pub(super) async fn run_commands_detached(
     state: AppState,
     origin: super::CommandOrigin,
     pending: Option<Pending>,
     lifetime: Option<Extension<crate::worker::FetchLifetime>>,
 ) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    ))]
     match lifetime {
         Some(Extension(lifetime)) => {
             let promise = wasm_bindgen_futures::future_to_promise(async move {
@@ -246,7 +251,11 @@ pub(super) async fn run_commands_detached(
             run_pending(&state, origin, pending).await;
         }),
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    )))]
     {
         let _ = lifetime;
         run_pending(&state, origin, pending).await;

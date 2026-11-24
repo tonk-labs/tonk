@@ -75,6 +75,8 @@ pub use account::{
     email_state,
 };
 
+pub mod invocation;
+
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
@@ -133,7 +135,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 
 mod recovery;
 mod roster;
-pub use recovery::RecoveryPasskey;
+pub use recovery::{RecoveryPasskey, RecoveryPhrase};
 pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;

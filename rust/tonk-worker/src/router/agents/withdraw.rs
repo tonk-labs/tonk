@@ -68,7 +68,7 @@ pub(crate) async fn link_grants(
     Ok(grants(tonk, agent)
         .await?
         .into_iter()
-        .filter(|(chain, _, issued)| *issued == Issued::Link && chain.subject() == Some(space))
+        .filter(|(chain, _, issued)| *issued != Issued::Here && chain.subject() == Some(space))
         .map(|(chain, _, _)| chain)
         .collect())
 }
@@ -99,13 +99,15 @@ pub(crate) async fn withdraw(
         return Err("this passkey belongs to a different account".into());
     }
     let agent = super::find(tonk, key).await.map_err(said)?;
-    let signer = Signer::from(super::super::agent_session::open_held(tonk, root, &agent).await?);
+    let owned =
+        dialog_repository::secrets::held_principal(tonk.profile.state(), space, &tonk.profile)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some_and(|key| key.to == linked);
     let leaves = link_grants(tonk, &agent, space).await.map_err(said)?;
     if leaves.is_empty() {
         return Ok(Withdrawal::default());
     }
-    let remote = home(tonk, &agent, space).await.map_err(said)?;
-
     let session = tonk
         .reactor
         .repository(agent.repo_key())
@@ -118,11 +120,41 @@ pub(crate) async fn withdraw(
         let target = *leaf.proof_cids().last().ok_or("an empty grant")?;
         let revoked = async {
             let path = evidence(tonk, &agent, space, &leaf).await?;
+            let (principal, remote) = if owned && leaf.issuer() == space {
+                let remote = tonk_invite::home_address(&leaf)
+                    .map_err(failure)?
+                    .ok_or_else(|| failure("direct grant has no signed home"))?;
+                (space, remote)
+            } else {
+                (&agent, home(tonk, &agent, space).await?)
+            };
+            let signer = Signer::from(
+                super::super::agent_session::open_held(tonk, root, principal)
+                    .await
+                    .map_err(failure)?,
+            );
             publish(&signer, &remote, &path, &target).await
         }
         .await;
         match revoked {
             Ok(()) => {
+                if owned && leaf.issuer() == space {
+                    let main = tonk
+                        .reactor
+                        .profile_repository()
+                        .branch(&tonk.active_branch)
+                        .acquire(&tonk.operator)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    main.handle()
+                        .delegations()
+                        .retract(UcanDelegation(leaf.clone()))
+                        .perform(&tonk.operator)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tonk.sync_queue
+                        .mark_dirty(linked.repo_key(), super::super::sync::now_millis());
+                }
                 session
                     .handle()
                     .delegations()

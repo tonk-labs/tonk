@@ -24,6 +24,147 @@ use zeroize::Zeroizing;
 use crate::worker::TonkState;
 use crate::{RepositoryError, TonkWorkerError};
 
+/// Whether profile main is taking over an account's content right now.
+///
+/// A first contact with an account that has content withdraws this
+/// device's own library from profile main, then pulls the account's
+/// head over the network ([`hydrate_untrusted`]). Until the pull lands,
+/// the branch carries no library: no route table, no views. A display
+/// that opens in that window reads a built-in concept beside a missing
+/// view and renders its notation fallback, which is the dump a person
+/// who clicked anything during sign-in saw (BUG-351). A stream opened
+/// while this is held answers `pending` until it lifts, the same notice
+/// a branch that is not here yet gets, so the page shows it is waiting
+/// rather than drawing what the half-made branch says.
+///
+/// Counted rather than a flag, so two overlapping sweeps keep it held
+/// until both are done.
+#[derive(Clone)]
+pub(crate) struct ProfileHydration {
+    held: std::sync::Arc<tokio::sync::watch::Sender<usize>>,
+    /// The newest stamp each site asked for while held, by ticket: the
+    /// stamps waiting all wake when the gate lifts, and only the newest
+    /// may land, or a page clicked twice could end where it was first.
+    loads: std::sync::Arc<Mutex<(u64, std::collections::HashMap<String, u64>)>>,
+}
+
+impl Default for ProfileHydration {
+    fn default() -> Self {
+        Self {
+            held: std::sync::Arc::new(tokio::sync::watch::channel(0).0),
+            loads: Default::default(),
+        }
+    }
+}
+
+impl ProfileHydration {
+    /// Hold the gate until the returned guard drops.
+    pub(crate) fn begin(&self) -> HydrationGuard {
+        self.held.send_modify(|held| *held += 1);
+        HydrationGuard(self.clone())
+    }
+
+    /// Whether a hydration holds the gate now.
+    pub(crate) fn in_progress(&self) -> bool {
+        *self.held.borrow() > 0
+    }
+
+    /// Wait until no hydration holds the gate.
+    pub(crate) async fn settled(&self) {
+        let mut held = self.held.subscribe();
+        // The sender lives as long as this handle does, so the wait
+        // ends only when the count reaches zero.
+        let _ = held.wait_for(|held| *held == 0).await;
+    }
+
+    /// Wait out the gate for a stamp `site` asked for, answering whether
+    /// it is still the newest the site asked for when the gate lifts.
+    /// One that is not has been overtaken, and lands nothing.
+    pub(crate) async fn defer_load(&self, site: &str) -> bool {
+        let ticket = {
+            let mut loads = self.loads.lock().unwrap_or_else(|held| held.into_inner());
+            loads.0 += 1;
+            let ticket = loads.0;
+            loads.1.insert(site.to_owned(), ticket);
+            ticket
+        };
+        self.settled().await;
+        let mut loads = self.loads.lock().unwrap_or_else(|held| held.into_inner());
+        if loads.1.get(site) == Some(&ticket) {
+            loads.1.remove(site);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Retire any stamp `site` still has waiting: one asked for now,
+    /// with the gate lifted, is newer than all of them.
+    pub(crate) fn overtake_load(&self, site: &str) {
+        self.loads
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .1
+            .remove(site);
+    }
+}
+
+/// Holds [`ProfileHydration`] for as long as it lives.
+pub(crate) struct HydrationGuard(ProfileHydration);
+
+impl Drop for HydrationGuard {
+    fn drop(&mut self) {
+        self.0
+            .held
+            .send_modify(|held| *held = held.saturating_sub(1));
+    }
+}
+
+#[cfg(test)]
+mod hydration_tests {
+    use super::ProfileHydration;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// A person who navigates twice while the account arrives lands where
+    /// they went last: both stamps wait out the gate, and only the newer
+    /// one lands when it lifts.
+    #[dialog_common::test]
+    async fn the_last_navigation_during_a_hydration_wins() {
+        let hydration = ProfileHydration::default();
+        let hydrating = hydration.begin();
+        let first = hydration.defer_load("site:tab");
+        let second = hydration.defer_load("site:tab");
+        let elsewhere = hydration.defer_load("site:other-tab");
+        let lift = async move {
+            // Every stamp has asked before the gate lifts.
+            drop(hydrating);
+        };
+        let (first, second, elsewhere, ()) =
+            futures_util::future::join4(first, second, elsewhere, lift).await;
+        assert!(!first, "the earlier navigation is overtaken");
+        assert!(second, "the later navigation lands");
+        assert!(elsewhere, "another tab's navigation is its own");
+    }
+
+    /// A stamp asked for once the gate has lifted is newer than any still
+    /// waiting, which then land nothing.
+    #[dialog_common::test]
+    async fn a_navigation_after_the_hydration_overtakes_one_waiting() {
+        let hydration = ProfileHydration::default();
+        let hydrating = hydration.begin();
+        let waiting = hydration.defer_load("site:tab");
+        let later = async {
+            drop(hydrating);
+            hydration.overtake_load("site:tab");
+        };
+        let (landed, ()) = futures_util::future::join(waiting, later).await;
+        assert!(!landed, "the waiting stamp is overtaken");
+        assert!(!hydration.in_progress());
+    }
+}
+
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -494,6 +635,10 @@ async fn migrate_adopted_profile_head(tonk: &TonkState) {
 }
 
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
+    // Held from before the library is withdrawn until the pulled head
+    // has been moved to this release's layout: every state between is
+    // one no page should draw.
+    let _hydrating = tonk.profile_hydration.begin();
     let session = tonk
         .reactor
         .profile_repository()
@@ -501,6 +646,31 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    // The gate covers streams opened from here on; this covers the ones
+    // already open. What they would be sent between withdrawing the
+    // library and the pull bringing the account's queues instead, and
+    // reaches them as one net change when this drops: a view withdrawn
+    // and restored is not sent at all.
+    let held = session.state.hold_delivery();
+    let hydrated = take_over_account(tonk, &session).await;
+    // The pull moves the head on the branch handle, which only schedules
+    // a poll. Run it while the hold is on, so what queued ends on the
+    // branch as it now stands; released before that poll, the queue
+    // would end on the withdrawal, and every reader would be sent the
+    // library gone.
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
+    session.state.settle(&tonk.operator).await;
+    drop(held);
+    hydrated
+}
+
+/// The body of [`hydrate_untrusted`], run while it holds the profile
+/// branch's delivery.
+async fn take_over_account(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+) -> Result<(), TonkWorkerError> {
     // The branch follows the account's replica at the peer serving it.
     let remote = match tonk_account::peer::upstream(session.handle()) {
         Some(Upstream::Remote { remote, .. }) => remote,
@@ -1192,6 +1362,69 @@ async fn read_passkeys(
     Ok(passkeys)
 }
 
+/// When this account's recovery phrase was set up, or `None` when it has
+/// none. Joined the way [`read_passkeys`] joins: the account's envelopes
+/// by sender, then the phrase row on each envelope's custody DID.
+///
+/// A phrase cannot be revoked, so this is the whole of why a second one
+/// is refused: the first would keep working beside it.
+pub(crate) async fn recovery_phrase(tonk: &TonkState) -> Result<Option<u64>, TonkWorkerError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let subject = super::identity::local_root(tonk)
+        .await
+        .map_err(|error| TonkWorkerError::NotFound(format!("no account is signed in: {error}")))?
+        .root_did;
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open account state: {error}")))?;
+    let envelopes: Vec<SecretMessage> = branch
+        .handle()
+        .query()
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::var("to"),
+            message: Term::var("message"),
+            from: Term::var("from"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("read the account envelopes: {error:?}"))
+        })?;
+    for envelope in envelopes {
+        if envelope
+            .from
+            .as_ref()
+            .is_none_or(|sender| sender.0 != subject.this())
+        {
+            continue;
+        }
+        let rows: Vec<tonk_schema::RecoveryPhrase> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::RecoveryPhrase> {
+                this: Term::from(envelope.to.0.clone()),
+                created_at: Term::var("created_at"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("read the recovery phrase: {error:?}"))
+            })?;
+        if let Some(row) = rows.into_iter().next() {
+            return Ok(Some(row.created_at.0));
+        }
+    }
+    Ok(None)
+}
+
 /// The most recently created passkey's metadata, for the account panel.
 ///
 /// Best-effort by design — the dashboard has an explicit unavailable state and
@@ -1589,7 +1822,110 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         project_member_names(tonk, &ready.subject, &name, profile_changed).await;
     }
 
+    if let Err(error) = recover_created_spaces(tonk, &ready).await {
+        log!("recover agent-created spaces: {error}");
+    }
     super::adopt::reconcile_account_spaces(tonk).await;
+    Ok(())
+}
+
+/// Import immutable custody receipts through the currently linked account.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn recover_created_spaces(
+    tonk: &TonkState,
+    ready: &ReadyAccountBranch,
+) -> anyhow::Result<()> {
+    use dialog_ucan::UcanDelegation;
+    use tonk_identity::created_space::{Handoff, LIST};
+    let Some(link) = super::account::account_link(tonk).await else {
+        return Ok(());
+    };
+    anyhow::ensure!(link.issuer() == &ready.subject, "account link changed");
+    let remote: url::Url = account_remote(tonk).await?.parse()?;
+    let request = tonk_identity::request::build_device_invocation(
+        tonk.profile.credential().signer().clone(),
+        &link,
+        LIST.map(str::to_string).to_vec(),
+        Default::default(),
+    )
+    .await?;
+    let response = super::http::post_cbor(&remote, &request).await?;
+    let receipts: Vec<String> = serde_json::from_slice(&response.body)?;
+    for receipt in receipts {
+        let bytes = hex::decode(receipt)?;
+        let grant = DelegationChain::try_from(bytes.as_slice())?;
+        let subject = grant.issuer().clone();
+        if dialog_repository::secrets::held_principal(tonk.profile.state(), &subject, &tonk.profile)
+            .await?
+            .is_some_and(|key| key.to == ready.subject)
+        {
+            continue;
+        }
+        let handoff = Handoff::read(grant, &ready.subject).await?;
+        let home = tonk_invite::home_address(&handoff.owner_grant)?
+            .ok_or_else(|| anyhow::anyhow!("space has no home"))?;
+        anyhow::ensure!(home == remote, "space handoff names a different home");
+        tonk.profile
+            .access()
+            .save(UcanDelegation(handoff.owner_grant.clone()))
+            .perform(&tonk.operator)
+            .await?;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await?;
+        // The signed owner grant also serves as the imported marker shared
+        // across devices. A later import must not restore revoked leaves.
+        let imported = main
+            .handle()
+            .delegations()
+            .issued_to(ready.subject.clone())
+            .perform(&tonk.operator)
+            .await?
+            .iter()
+            .any(|held| held.0.proof_cids() == handoff.owner_grant.proof_cids());
+        if !imported {
+            for leaf in &handoff.grants {
+                tonk_account::delegations::retain_space_delegation(
+                    main.handle(),
+                    leaf,
+                    &tonk.operator,
+                )
+                .await?;
+            }
+            let configuration = super::repository::space_config(home.as_str())?;
+            super::repository::record_created_space_mount(
+                tonk,
+                &subject,
+                &configuration,
+                Some(&handoff.name),
+            )
+            .await?;
+        }
+        let mounted = super::adopt::ensure_space_mounted(tonk, subject.as_str()).await?;
+        // An already-imported receipt can outlive its directory listing.
+        anyhow::ensure!(mounted || imported, "created space has no local mount");
+        if tonk_account::delegations::retain_space_delegation(
+            main.handle(),
+            &handoff.owner_grant,
+            &tonk.operator,
+        )
+        .await?
+        {
+            tonk.sync_queue
+                .mark_dirty(&ready.key, super::sync::now_millis());
+        }
+        dialog_repository::secrets::hold_principal(
+            tonk.profile.state(),
+            &subject,
+            SeedKind::Space.held(),
+            dialog_repository::secrets::sealed_message(&ready.subject, handoff.sealed),
+            &tonk.profile,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -2352,6 +2688,7 @@ pub(crate) mod tests {
                 profile_transition: Default::default(),
                 context_generation: Default::default(),
                 profile_swaps: Default::default(),
+                profile_hydration: Default::default(),
             },
         );
         crate::router::repository::bootstrap_profile(&state)
@@ -4029,7 +4366,7 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stale_profile_library() -> String {
         const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-        let marker = "<hub-collection class=\"stack chrome\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
+        let marker = "<hub-collection class=\"hub-rows\" with=\"main@profile:tonk\"\n          data-spaces-view aria-label=\"spaces\">";
         let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
         let historical = CURRENT.replacen(marker, &stale, 1);
         assert_ne!(historical, CURRENT, "the historical fixture must differ");
@@ -4114,6 +4451,111 @@ pub(crate) mod tests {
             .map(|root| root.root_did.repo_key().to_owned())
             .unwrap_or_default();
         discard(state, &key);
+    }
+
+    /// A device signing in to an account that has content withdraws its
+    /// own library, then pulls the account's (BUG-351). A page that was
+    /// already reading profile main is never sent the branch between the
+    /// two: its route table never empties, and the home route it was
+    /// showing stays. Before, the withdrawal reached every reader at
+    /// once, and a page re-rendering during the pull drew the site with
+    /// no view and no route to stamp, as a notation dump.
+    // Storybook LIFE-31: profile main never reaches a page without its library.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn a_first_contact_never_sends_profile_main_without_its_library() {
+        use dialog_query::ConceptQuery;
+
+        // The first device publishes the account, its library included.
+        let (first, service, root, remote) = ready_account_state(None).await;
+        let (status, swept) = ensure_account_state_swept(&first).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("the first device hydrates and publishes");
+
+        // The second has its own library and has never seen the account.
+        let second = device_on(&root, &remote, None).await;
+        let mut routes = second
+            .reactor
+            .profile_repository()
+            .branch(&second.active_branch)
+            .subscribe(ConceptQuery::from(Query::<tonk_schema::Route>::default()))
+            .perform(&second.operator)
+            .await
+            .expect("a page reads the route table");
+        second.reactor.run_scheduled_polls(&second.operator).await;
+
+        let mut held: Vec<serde_json::Value> = Vec::new();
+        let mut frames = 0;
+        let mut apply = |frame: &[u8], held: &mut Vec<serde_json::Value>| {
+            let frame: serde_json::Value = serde_json::from_slice(frame).unwrap();
+            let rows = |key: &str| frame[key].as_array().cloned().unwrap_or_default();
+            match frame["kind"].as_str() {
+                Some("snapshot") => *held = rows("conclusions"),
+                Some("delta") => {
+                    for row in rows("retracted") {
+                        if let Some(at) = held.iter().position(|kept| *kept == row) {
+                            held.remove(at);
+                        }
+                    }
+                    held.extend(rows("asserted"));
+                }
+                other => panic!("an unexpected frame {other:?}: {frame}"),
+            }
+            frames += 1;
+            let home = held.iter().any(|row| row["fields"]["path"] == "/");
+            assert!(
+                home,
+                "frame {frames} left profile main without its home route \
+                 ({} routes): {frame}",
+                held.len()
+            );
+        };
+        let first_frame = routes.recv().await.expect("the routes' snapshot");
+        apply(&first_frame, &mut held);
+        let before = held.len();
+
+        // Every request a page makes ends by settling the branches it
+        // touched, and a page keeps making them while the pull runs, so
+        // whatever profile main holds between two network round trips is
+        // what its readers are sent. Settle the same way while the sweep
+        // runs, reading what each settle delivers.
+        let swept = std::cell::Cell::new(None);
+        let sweep = async {
+            swept.set(Some(ensure_account_state_swept(&second).await));
+        };
+        let page = async {
+            loop {
+                second.reactor.run_scheduled_polls(&second.operator).await;
+                while let Ok(frame) = routes.try_recv() {
+                    apply(&frame, &mut held);
+                }
+                let done = swept.take();
+                let finished = done.is_some();
+                swept.set(done);
+                if finished {
+                    break;
+                }
+                let _ = crate::r#async::sleep(web_time::Duration::from_millis(1)).await;
+            }
+        };
+        futures_util::future::join(sweep, page).await;
+        let (status, swept) = swept.take().expect("the sweep ran");
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("the first contact hydrates the second device");
+        second.reactor.run_scheduled_polls(&second.operator).await;
+        while let Ok(frame) = routes.try_recv() {
+            apply(&frame, &mut held);
+        }
+        assert_eq!(
+            held.len(),
+            before,
+            "the account's library routes what the device's did"
+        );
+
+        let ready = require_ready_account_state(&second).await.unwrap();
+        service.stop().await.unwrap();
+        discard(second, &ready.key);
+        discard(first, &ready.key);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

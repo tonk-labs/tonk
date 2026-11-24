@@ -7,4 +7,4 @@ mod state;
 
 pub use reference::{BranchReference, ProfileUpgrade, Upgraded, migrate};
 pub use session::BranchSession;
-pub use state::BranchState;
+pub use state::{BranchState, DeliveryHold};

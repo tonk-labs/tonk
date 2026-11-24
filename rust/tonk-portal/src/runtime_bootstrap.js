@@ -110,6 +110,12 @@
         var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
         await import(waUrl);
       }
+      // `<tonk-message>` for Tonk's own pages (gooey's fabb.js): a classic
+      // script with no imports, defined before the views that use it mount.
+      if (d.fabb) {
+        var fabbUrl=URL.createObjectURL(new Blob([d.fabb],{type:"text/javascript"}));
+        await import(fabbUrl);
+      }
       // Rewrite each snippet import statement to a guest-minted blob URL.
       var glue=d.glue;
       for (var i=0;i<d.snippets.length;i++){

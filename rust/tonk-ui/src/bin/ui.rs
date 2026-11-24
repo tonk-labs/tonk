@@ -8,8 +8,7 @@
 use wasm_bindgen::{JsCast, prelude::*};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const READINESS_FAILURE_MESSAGE: &str =
-    "Tonk couldn’t start. Check your connection, then reload. Your local data is safe.";
+const READINESS_FAILURE_MESSAGE: &str = "Tonk couldn’t start. Your local data is safe. Reload the page. If it keeps happening, check your connection or try another browser.";
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(main)]

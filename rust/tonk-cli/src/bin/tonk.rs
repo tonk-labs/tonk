@@ -53,11 +53,15 @@ examine state
    status     Where you are: space, branch, sync, authority
    show       Describe the schema, a concept, an entity, or a view
    query      Read the instances of a concept
+   log        List revisions, or the changes recorded for a concept
    render     Render a view to HTML
 
 write facts
    assert     Create an instance of a concept, or update fields on one
    retract    Retract a field, or a whole instance
+   restore    Start a branch at a saved revision and switch to it
+   branch     List local branches
+   switch     Select a local branch
    eval       Evaluate a notation document: anything the verbs can't say
 
 define
@@ -67,8 +71,8 @@ define
 
 collaborate (see also: tonk help sync)
    invite     Create an invite URL granting access to this space
-   pull       Pull main from its upstream
-   push       Push main to its upstream
+   pull       Pull the active branch from its upstream
+   push       Push the active branch to its upstream
    remote     List or manage remotes
 
 'tonk help -a' lists every command; 'tonk help -g' lists the guides
@@ -150,6 +154,71 @@ enum Command {
         /// Emit versioned camelCase JSON.
         #[arg(long)]
         json: bool,
+    },
+
+    /// List the active branch's revisions, or recorded concept changes
+    ///
+    /// Every commit is a revision: who made it, its edition (causal
+    /// depth), and the revisions it built on. With a concept, lists the
+    /// claims recorded on that concept's fields instead — one row per
+    /// assert or retract, grouped by revision, newest first. Read-only;
+    /// reads the history dialog keeps in the branch's own tree, so a
+    /// pulled space carries its history with it.
+    #[command(
+        after_help = "Examples:\n  tonk log\n  tonk log task\n  tonk log task alice\n  tonk log task --revision 12@<origin>\n  tonk log task --json"
+    )]
+    Log {
+        /// Concept whose recorded changes to list.
+        #[arg(value_name = "CONCEPT")]
+        concept: Option<String>,
+        /// Entity bookmark or URI to narrow CONCEPT's changes to.
+        #[arg(value_name = "ENTITY", requires = "concept")]
+        entity: Option<String>,
+        /// Only what this one revision recorded, as `<edition>@<origin>`
+        /// from `tonk log`.
+        #[arg(long, value_name = "VERSION")]
+        revision: Option<String>,
+        /// How many revisions to list, newest first.
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        limit: usize,
+        /// Emit versioned camelCase JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Start a new branch at a saved revision and switch to it
+    ///
+    /// Uses the exact historical tree without replaying changes. Keeps the
+    /// previous branch and its history. The new branch is local and has no
+    /// upstream. Accepts a log version or tree hash retained by this device;
+    /// older log entries without a saved signed head cannot be checked out.
+    #[command(
+        after_help = "Examples:\n  tonk restore --revision 12@<origin> --dry-run\n  tonk restore --revision 12@<origin>\n  tonk --space garden restore --revision '#<hash>'\n  tonk branch\n  tonk switch main"
+    )]
+    Restore {
+        /// Saved version (<edition>@<origin>) or tree hash.
+        #[arg(long, value_name = "REVISION")]
+        revision: String,
+        /// Preview the checkout without creating or switching branches.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit a versioned JSON checkout receipt.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List local branches and mark the active one
+    Branch {
+        /// Emit versioned JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Switch to an existing local branch
+    Switch {
+        /// Branch to select, as listed by `tonk branch`.
+        #[arg(value_name = "BRANCH")]
+        branch: String,
     },
 
     // -- author -------------------------------------------------------
@@ -363,11 +432,11 @@ enum Command {
         via: Option<String>,
     },
 
-    /// Push local main to its upstream
+    /// Push the active local branch to its upstream
     #[command(after_help = "Examples:\n  tonk push")]
     Push,
 
-    /// Pull local main from its upstream
+    /// Pull the active local branch from its upstream
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
 
@@ -430,13 +499,13 @@ enum Command {
         /// Write the CSV to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
-        /// Branch to export. Branches carry separate data and migrate
+        /// Branch to export (defaults to the active branch). Branches migrate
         /// separately, so an upgrade covers each in turn.
-        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
-        branch: String,
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
     },
 
-    /// Import artifacts from a CSV file onto local main
+    /// Import artifacts from a CSV file onto the active branch
     ///
     /// Commits each row as an assertion. The inverse of `tonk export`,
     /// and the bulk path in.
@@ -445,9 +514,9 @@ enum Command {
         /// The CSV file to read (`the,of,as,is,cause` columns).
         #[arg(value_name = "PATH")]
         file: PathBuf,
-        /// Branch to import onto.
-        #[arg(long, value_name = "NAME", default_value = tonk_cli::site::BRANCH_NAME)]
-        branch: String,
+        /// Branch to import onto (defaults to the active branch).
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
         #[command(flatten)]
         write: WriteArgs,
     },
@@ -1069,6 +1138,10 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Push => ("push", None),
         Command::Pull => ("pull", None),
         Command::Status { .. } => ("status", None),
+        Command::Log { .. } => ("log", None),
+        Command::Restore { .. } => ("restore", None),
+        Command::Branch { .. } => ("branch", None),
+        Command::Switch { .. } => ("switch", None),
         Command::Invite { .. } => ("invite", None),
         Command::Join { .. } => ("join", None),
         Command::Remote { command, .. } => (
@@ -1129,6 +1202,10 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Push
             | Command::Pull
             | Command::Status { .. }
+            | Command::Log { .. }
+            | Command::Restore { .. }
+            | Command::Branch { .. }
+            | Command::Switch { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
             | Command::Blob { .. }
@@ -1241,16 +1318,42 @@ async fn main() {
         Command::Migrate { command } => match command {
             MigrateCommand::Carry { from, do_move } => migrate(from, do_move).await,
         },
-        Command::Export { out, branch } => export_op(out, &branch, space.as_deref()).await,
+        Command::Export { out, branch } => {
+            export_op(out, branch.as_deref(), space.as_deref()).await
+        }
         Command::Render { route, out } => render_op(route, out, space.as_deref()).await,
         Command::Import {
             file,
             branch,
             write,
-        } => import_op(file, &branch, write, space.as_deref()).await,
+        } => import_op(file, branch.as_deref(), write, space.as_deref()).await,
         Command::Push => sync_op(SyncOp::Push, space.as_deref()).await,
         Command::Pull => sync_op(SyncOp::Pull, space.as_deref()).await,
         Command::Status { json } => status_op(json, space.as_deref()).await,
+        Command::Restore {
+            revision,
+            dry_run,
+            json,
+        } => restore_op(&revision, json, dry_run, space.as_deref()).await,
+        Command::Branch { json } => branches_op(json, space.as_deref()).await,
+        Command::Switch { branch } => switch_op(&branch, space.as_deref()).await,
+        Command::Log {
+            concept,
+            entity,
+            revision,
+            limit,
+            json,
+        } => {
+            log_op(
+                concept.as_deref(),
+                entity.as_deref(),
+                revision.as_deref(),
+                limit,
+                json,
+                space.as_deref(),
+            )
+            .await
+        }
         Command::Invite {
             base_url,
             remote,
@@ -1986,11 +2089,16 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
     }
 }
 
-async fn export_op(out: Option<PathBuf>, branch: &str, space: Option<&str>) -> ExitCode {
+async fn export_op(out: Option<PathBuf>, branch: Option<&str>, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+    let active = match tonk_cli::branches::active_name(&site).await {
+        Ok(name) => name,
+        Err(error) => return print_failure(error),
+    };
+    let branch = branch.unwrap_or(&active);
 
     let destination = match &out {
         Some(path) => transfer::Destination::File(path.clone()),
@@ -2041,11 +2149,21 @@ async fn render_op(route: String, out: Option<PathBuf>, space: Option<&str>) -> 
     }
 }
 
-async fn import_op(file: PathBuf, branch: &str, write: WriteArgs, space: Option<&str>) -> ExitCode {
+async fn import_op(
+    file: PathBuf,
+    branch: Option<&str>,
+    write: WriteArgs,
+    space: Option<&str>,
+) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+    let active = match tonk_cli::branches::active_name(&site).await {
+        Ok(name) => name,
+        Err(error) => return print_failure(error),
+    };
+    let branch = branch.unwrap_or(&active);
 
     if write.dry_run {
         return match transfer::plan_import(&file).await {
@@ -2065,7 +2183,7 @@ async fn import_op(file: PathBuf, branch: &str, write: WriteArgs, space: Option<
         };
     }
 
-    let sync = branch == tonk_cli::site::BRANCH_NAME && auto_sync::enabled(write.no_sync);
+    let sync = branch == active && auto_sync::enabled(write.no_sync);
     match auto_sync::around_commit(&site, sync, transfer::import_branch(&site, branch, &file)).await
     {
         Ok(revision) => {
@@ -2102,6 +2220,187 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
     }
 }
 
+async fn restore_op(revision: &str, json: bool, dry_run: bool, space: Option<&str>) -> ExitCode {
+    use tonk_cli::restore;
+
+    if tonk_cli::revisions::key(revision).is_err() {
+        return print_coded(restore::RestoreError::Invalid(revision.into()));
+    }
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let plan = match restore::plan(&site, revision).await {
+        Ok(plan) => plan,
+        Err(error) => return print_coded(error),
+    };
+    if !dry_run && let Err(error) = restore::apply(&site, &plan).await {
+        return print_coded(error);
+    }
+    if json {
+        return print_json(&serde_json::json!({
+            "schemaVersion": "tonk.restore.v2",
+            "target": plan.target.version().to_string(),
+            "tree": plan.target.tree.to_string(),
+            "dryRun": dry_run,
+            "switched": !dry_run && plan.switches(),
+            "previousBranch": plan.previous_branch,
+            "branch": plan.branch,
+            "before": plan.before.version().to_string(),
+            "after": if dry_run { plan.before.version().to_string() } else { plan.target.version().to_string() },
+        }));
+    }
+    if dry_run {
+        println!("dry run — no branches created or switched");
+    } else if plan.switches() {
+        println!("switched to new branch '{}'", plan.branch);
+    } else {
+        println!("already at {}", plan.target.version());
+    }
+    println!(
+        "revision: {}\nhash: {}",
+        plan.target.version(),
+        plan.target.tree
+    );
+    if plan.switches() {
+        println!(
+            "previous branch: {} (preserved)\nreturn with: tonk switch {}",
+            plan.previous_branch, plan.previous_branch
+        );
+        println!("upstream: none (local branch)");
+    }
+    ExitCode::Success
+}
+
+async fn branches_op(json: bool, space: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    let rows = match tonk_cli::branches::list(&site).await {
+        Ok(rows) => rows,
+        Err(error) => return print_failure(error),
+    };
+    if json {
+        return print_json(&serde_json::json!({"schemaVersion": "tonk.branch.v1", "rows": rows}));
+    }
+    for row in rows {
+        println!(
+            "{} {}  {}",
+            if row.active { "*" } else { " " },
+            row.name,
+            row.revision.as_deref().unwrap_or("empty")
+        );
+    }
+    ExitCode::Success
+}
+
+async fn switch_op(branch: &str, space: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    match tonk_cli::branches::switch(&site, branch).await {
+        Ok(()) => {
+            println!("switched to branch '{branch}'");
+            ExitCode::Success
+        }
+        Err(error) => print_failure(error),
+    }
+}
+
+async fn log_op(
+    concept: Option<&str>,
+    entity: Option<&str>,
+    revision: Option<&str>,
+    limit: usize,
+    json: bool,
+    space: Option<&str>,
+) -> ExitCode {
+    use tonk_cli::log;
+
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+    if concept.is_none() && revision.is_none() {
+        return match log::revisions(&site, limit).await {
+            Ok(rows) if json => print_json(&Rows::new("tonk.log.v1", rows)),
+            Ok(rows) => {
+                print_revision_log(&rows, limit);
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        };
+    }
+    let filter = match log::filter_for(&site, concept, entity, revision).await {
+        Ok(filter) => filter,
+        Err(err) => return print_coded(err),
+    };
+    match log::changes(&site, &filter, limit).await {
+        Ok(rows) if json => print_json(&Rows::new("tonk.log-changes.v1", rows)),
+        Ok(rows) => {
+            print_change_log(&rows, limit);
+            ExitCode::Success
+        }
+        Err(err) => print_coded(err),
+    }
+}
+
+fn print_revision_log(rows: &[tonk_cli::log::RevisionRow], limit: usize) {
+    let mut listing = Listing::new(
+        &["VERSION", "EDITION", "ISSUER", "AUTHORITY", "PARENTS"],
+        "no revisions yet; the first write to this space creates one",
+    );
+    for row in rows {
+        listing.push([
+            row.version.clone(),
+            row.edition.to_string(),
+            row.issuer.clone(),
+            row.authority.clone(),
+            if row.parents.is_empty() {
+                listing::ABSENT.to_owned()
+            } else {
+                row.parents.join(",")
+            },
+        ]);
+    }
+    if rows.len() == limit {
+        listing.note(format!(
+            "showing the newest {limit} revisions; pass --limit to see more"
+        ));
+    }
+    println!("{}", listing.render());
+}
+
+fn print_change_log(rows: &[tonk_cli::log::ChangeRow], limit: usize) {
+    let mut listing = Listing::new(
+        &["VERSION", "CHANGE", "ENTITY", "ATTRIBUTE", "VALUE"],
+        "no recorded changes match; `tonk log` lists every revision",
+    );
+    let mut revisions = 0usize;
+    let mut last: Option<&str> = None;
+    for row in rows {
+        if last != Some(row.version.as_str()) {
+            revisions += 1;
+            last = Some(row.version.as_str());
+        }
+        listing.push([
+            row.version.clone(),
+            row.change.to_owned(),
+            row.name.clone().unwrap_or_else(|| row.entity.clone()),
+            row.attribute.clone(),
+            row.value_text.clone(),
+        ]);
+    }
+    if revisions == limit {
+        listing.note(format!(
+            "showing the changes of the newest {limit} matching revisions; pass --limit to see more"
+        ));
+    }
+    println!("{}", listing.render());
+}
+
 async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
     let (resolved, site) = match open_selected(space).await {
         Ok(opened) => opened,
@@ -2124,7 +2423,11 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
             }
         }
     };
-    let space = SpaceContext::new(&resolved);
+    let mut space = SpaceContext::new(&resolved);
+    space.branch = match tonk_cli::branches::active_name(&site).await {
+        Ok(name) => name,
+        Err(error) => return print_failure(error),
+    };
     let authority = if site.is_scoped() {
         let binding = match selected_connection_binding(&site.account_store, &resolved) {
             Ok(Some(binding)) => binding,
@@ -3989,6 +4292,31 @@ mod account_spaces_parser_tests {
     }
 
     use super::*;
+
+    #[test]
+    fn restore_requires_a_revision_and_accepts_preview_and_receipt_flags() {
+        assert!(Cli::try_parse_from(["tonk", "restore"]).is_err());
+        let cli = Cli::try_parse_from([
+            "tonk",
+            "--space",
+            "garden",
+            "restore",
+            "--revision",
+            "12@origin",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(cli.space.as_deref(), Some("garden"));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Restore {
+                json: true,
+                dry_run: true,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn every_data_write_parser_accepts_the_shared_switches() {
