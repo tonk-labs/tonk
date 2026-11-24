@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | Chronicle against the block store on the same races. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | The problem statement. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -139,3 +139,20 @@ already syncs on its own every 5 s.
 
 **Decided.** Not decided. Candidate for the direction matrix: sync off the
 write path, in a process of its own.
+
+## 2026-11-24, Diagnosing: Chronicle on the same races
+
+**Asked.** Does Chronicle, which waits on its file's lock, change the
+races?
+
+**Learned.** As predicted: no lock refusals and no missed checkout index
+(H2 and H5's symptom gone), version mismatches as before (H1), so failures
+at N = 16 fall from 85% to 67% and no further. Starvation under retry and
+cold start on an empty space are the same on both. Chronicle answers the
+refusal, not the race.
+
+**Decided.** The local causes are now: (1) eval treats a lost race as a
+failure, deliberately, so its response describes what it committed; (2)
+the fs lock refuses instead of waiting (gone on Chronicle); (3) re-running
+a long eval against frequent writers starves it; (4) every command starts
+cold, lengthening each eval's window. Next: state the problem.
