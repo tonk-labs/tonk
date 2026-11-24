@@ -8929,6 +8929,9 @@ element!: &command-palette
         self.__keys = null;
         self.__asked = null;
         if (self.__list) self.__list.remove();
+        if (self.__following) self.__following.cancel().catch(() => {});
+        self.__following = null;
+        self.clear();
       }
     summon: |
       (self) => {
@@ -8995,6 +8998,15 @@ element!: &command-palette
             tonk-fab > ol.command-suggestions .kind { font-size: 12px; opacity: .7; }
             tonk-fab > ol.command-suggestions .text::before { content: '“'; opacity: .6; }
             tonk-fab > ol.command-suggestions .text::after { content: '”'; opacity: .6; }
+            tonk-fab > .command-status-line { display: flex; flex-wrap: wrap; align-items: baseline;
+              column-gap: 10px; margin: 0; min-height: 44px; box-sizing: border-box; padding: 11px 20px;
+              font: 400 17px/1.3 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; cursor: pointer;
+              box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 22%, transparent); }
+            tonk-fab > .command-status-line .said { font-weight: 600; }
+            tonk-fab > .command-status-line .case { opacity: .75; }
+            tonk-fab > .command-status-line[data-case="failed"] .case,
+            tonk-fab > .command-status-line[data-case="aborted"] .case,
+            tonk-fab > .command-status-line[data-case="unhandled"] .case { opacity: 1; }
           </style>
           <span class="prompt" aria-hidden="true">&rsaquo;</span>
           <input type="text" role="combobox" aria-autocomplete="both" aria-controls="command-suggestions"
@@ -9401,10 +9413,377 @@ element!: &command-palette
         // Leave command mode first: a command's outcome may be the bar
         // opening one of its own panels (a site request).
         self.dismiss();
+        // Name this run, and stamp it with when it was run and which
+        // command it is: that asks the branch's stack to keep its life on
+        // this entity in `session:` (see `invocation` in this file), which
+        // `follow` shows in the bar.
+        const id = `urn:uuid:${crypto.randomUUID()}`;
+        const claim = JSON.parse(JSON.stringify(proposal.claim));
+        for (const entry of claim.claims || []) {
+          const application = entry.application || {};
+          const concept = ((application.predicate || {}).concept) || {};
+          concept.with = {
+            ...(concept.with || {}),
+            'invoked-at': { the: 'xyz.tonk.command/invoked-at', as: 'Float' },
+            'invoked-concept': { the: 'xyz.tonk.command/concept', as: 'Entity' },
+          };
+          application.parameters = {
+            ...(application.parameters || {}),
+            this: id,
+            'invoked-at': Date.now(),
+            'invoked-concept': proposal.command,
+          };
+        }
+        const said = (proposal.display || []).map((segment) => segment.text).join(' ').trim()
+          || proposal.input || 'command';
+        self.report(said, { case: 'case:sent' });
         try {
-          await window.tonk.transact(proposal.claim, { with: proposal.branch });
+          await window.tonk.transact(claim, { with: proposal.branch });
           self.remember(proposal);
         } catch (error) {
           console.error('<command-palette> run failed', error);
+          self.report(said, { case: 'case:failed', why: 'it could not be sent' });
+          return;
+        }
+        self.follow(said, id, proposal.branch);
+      }
+    follow: |
+      async (self, said, id, branch) => {
+        // Watch this run's invocation until it ends. A newer run takes over
+        // the line, and stops this one.
+        if (self.__following) self.__following.cancel().catch(() => {});
+        const field = (name, as, optional) => ({
+          the: `xyz.tonk.invocation/${name}`, as, cardinality: 'one', in: 'session:',
+          ...(optional ? { optional: true } : {}) });
+        // The words for the state a provider last reported, when it has any.
+        const status = async (state) => {
+          if (!state) return '';
+          const found = await window.tonk.query({
+            predicate: { with: { status: { the: 'xyz.tonk.state/status', as: 'Text', cardinality: 'one', in: 'session:' } } },
+            terms: { this: state, status: { '?': { name: 'status' } } },
+          }, { with: branch }).catch(() => null);
+          const row = (Array.isArray(found) ? found : (found && found.rows) || [])[0];
+          return (row && (row.fields || {}).status) || '';
+        };
+        // Where an invocation got to. A failure says so whatever else came;
+        // an answer or an output (a command a rule handled has only that)
+        // is done; dialog's unhandled is last, since a rule-handled command
+        // is unhandled too.
+        const caseOf = (fields) => {
+          if (fields.failed) return 'case:failed';
+          if (fields.answered || fields.output) return 'case:done';
+          if (fields.unhandled) return 'case:unhandled';
+          return 'case:active';
+        };
+        let reader;
+        try {
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              invoked: field('invoked', 'Float'),
+              answered: field('answered', 'Entity', true),
+              failed: field('failed', 'Text', true),
+              unhandled: field('unhandled', 'Boolean', true),
+              state: field('state', 'Entity', true),
+              output: field('output', 'Entity', true),
+            } },
+            terms: { this: id, invoked: { '?': { name: 'invoked' } },
+              ...Object.fromEntries(['answered', 'failed', 'unhandled', 'state', 'output']
+                .map((name) => [name, { '?': { name } }])) },
+          }, { with: branch }).getReader();
+          self.__following = reader;
+          self.report(said, { case: 'case:active' });
+          while (self.__following === reader) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            const row = (value || []).find((found) => found.this === id) || (value || [])[0];
+            if (!row) continue;
+            const fields = row.fields || {};
+            const now = caseOf(fields);
+            if (now === 'case:active') {
+              self.report(said, { case: now, why: await status(fields.state) });
+              continue;
+            }
+            self.report(said, { case: now, why: now === 'case:failed' ? String(fields.failed) : '' });
+            return;
+          }
+        } catch (error) {
+          console.warn('<command-palette> not followed', error);
+        } finally {
+          if (reader) reader.cancel().catch(() => {});
+          if (self.__following === reader) self.__following = null;
         }
       }
+    report: |
+      (self, said, { case: now, why = '' }) => {
+        // One line in the bar for the latest run: what was said and where it
+        // got to. A success clears itself shortly after; anything else stays
+        // until it is clicked or the next run replaces it.
+        const fab = self.closest('tonk-fab');
+        if (!fab) return;
+        let line = self.__status;
+        if (!line || !line.isConnected) {
+          line = document.createElement('p');
+          line.className = 'command-status-line';
+          line.setAttribute('slot', 'command-status');
+          line.setAttribute('role', 'status');
+          line.setAttribute('aria-live', 'polite');
+          line.addEventListener('click', () => self.clear());
+          fab.append(line);
+          self.__status = line;
+        }
+        const words = {
+          'case:sent': 'sending…',
+          'case:active': 'working…',
+          'case:done': 'done',
+          'case:failed': 'failed',
+          'case:aborted': 'stopped before it finished',
+          'case:unhandled': 'nothing handled it',
+        };
+        line.dataset.case = now.replace(/^case:/, '');
+        line.textContent = '';
+        const verb = document.createElement('span');
+        verb.className = 'said';
+        verb.textContent = said;
+        const where = document.createElement('span');
+        where.className = 'case';
+        where.textContent = why && now !== 'case:done' ? (now === 'case:active' ? why : `${words[now]}: ${why}`) : words[now] || now;
+        line.append(verb, where);
+        fab.setAttribute('data-command-status', line.dataset.case);
+        clearTimeout(self.__clearing);
+        if (now === 'case:done') self.__clearing = setTimeout(() => self.clear(), 2500);
+      }
+    clear: |
+      (self) => {
+        clearTimeout(self.__clearing);
+        if (self.__status) self.__status.remove();
+        self.__status = null;
+        const fab = self.closest('tonk-fab');
+        if (fab) fab.removeAttribute('data-command-status');
+      }
+
+# invocation-schema:begin
+#
+# Invocations: what became of a command someone ran. Declared identically
+# in `core.yaml` and `profile.yaml`, because a command lands on the branch
+# it was sent to, a space's or the profile's. `rust/tonk-schema/src/
+# invocation.rs` follows this.
+#
+# A command lands in its stack's `control:` layer for one tick, and dialog
+# writes each change in its life there as a `dialog.command/*` row of the
+# command's entity, again for one tick: `answered`, `failed` or
+# `unhandled` once the providers ran, and `progress` when a provider
+# reports some. Nothing keeps them. An invoker that wants to follow a
+# command (the command palette) gives it an entity of its own and stamps
+# it with `xyz.tonk.command/invoked-at` and `xyz.tonk.command/concept`; the
+# rules below copy that command's life into the stack's `session:` layer,
+# where it stays for the session. Never committed, never synced.
+
+# What a followed command carries as it lands: when it was run and which
+# command it is.
+concept!: &command/invoked
+  this: tonk:command/invoked
+  description: A followed command as it lands, in `control:` for one tick.
+  with:
+    at:
+      description: When the invoker ran it, in milliseconds since the epoch, by its own clock.
+      the: xyz.tonk.command/invoked-at
+      as: float:64
+    concept:
+      description: The concept of the command that was run.
+      the: xyz.tonk.command/concept
+      as: entity
+
+# dialog's rows for a command's life, each in `control:` for one tick.
+concept!: &command/answered
+  this: tonk:command/answered
+  description: A provider answered the command; dialog's row, for one tick.
+  with:
+    by:
+      description: The concept whose provider answered it.
+      the: dialog.command/answered
+      as: entity
+      pick: :all
+
+concept!: &command/failed
+  this: tonk:command/failed
+  description: A provider failed the command; dialog's row, for one tick.
+  with:
+    reason:
+      description: Why it failed, in the provider's words.
+      the: dialog.command/failed
+      as: text
+      pick: :all
+
+concept!: &command/unhandled
+  this: tonk:command/unhandled
+  description: No provider claimed the command; dialog's row, for one tick.
+  with:
+    unhandled:
+      description: Always true.
+      the: dialog.command/unhandled
+      as: boolean
+
+concept!: &command/progress
+  this: tonk:command/progress
+  description: A provider said what the command is doing; dialog's row, for one tick.
+  with:
+    state:
+      description: The state it is in, an entity with a `status`.
+      the: dialog.command/progress
+      as: entity
+
+# The invocation: the followed command's life, kept in `session:`.
+concept!: &invocation
+  this: tonk:invocation
+  description: |
+    A command someone ran and follows, on the command's own entity, kept
+    in the stack's `session:` layer for the session.
+  with:
+    invoked:
+      description: When the invoker ran it, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/invoked
+      as: float:64
+      in: "session:"
+    of:
+      description: The concept of the command that was run, whose `status` view renders it.
+      the: xyz.tonk.invocation/of
+      as: entity
+      in: "session:"
+
+concept!: &invocation/answered
+  this: tonk:invocation/answered
+  description: The invocation's command was answered.
+  with:
+    answered:
+      description: The concept whose provider answered it.
+      the: xyz.tonk.invocation/answered
+      as: entity
+      in: "session:"
+
+concept!: &invocation/failed
+  this: tonk:invocation/failed
+  description: The invocation's command failed.
+  with:
+    failed:
+      description: Why it failed, in words a person can be shown.
+      the: xyz.tonk.invocation/failed
+      as: text
+      in: "session:"
+
+concept!: &invocation/unhandled
+  this: tonk:invocation/unhandled
+  description: |
+    No provider claimed the invocation's command. A command a rule handled
+    as it landed is unhandled too, as dialog sees it, and has an `output`
+    its rule wrote.
+  with:
+    unhandled:
+      description: Always true.
+      the: xyz.tonk.invocation/unhandled
+      as: boolean
+      in: "session:"
+
+concept!: &invocation/state
+  this: tonk:invocation/state
+  description: What the invocation's command is doing, as its provider last said.
+  with:
+    state:
+      description: A state entity with a `status`.
+      the: xyz.tonk.invocation/state
+      as: entity
+      in: "session:"
+
+concept!: &invocation/output
+  this: tonk:invocation/output
+  description: What the invocation's command produced, written by its provider or the rule that handled it.
+  with:
+    output:
+      description: The entity the command made or acted on.
+      the: xyz.tonk.invocation/output
+      as: entity
+      in: "session:"
+
+concept!: &state
+  this: tonk:state
+  description: |
+    Something a command can be doing, and the words for it: a provider's
+    progress, such as `status:creating-space`. Kept in `session:`.
+  with:
+    status:
+      description: What it is, in words a person can be shown.
+      the: xyz.tonk.state/status
+      as: text
+      in: "session:"
+
+view!:
+  this: tonk:state
+  show:
+    label: |
+      {status}
+
+concept!: &state/reported
+  this: tonk:state/reported
+  description: |
+    The words a provider gave for a state as it reported it, in
+    `control:` for one tick beside the command's `progress`.
+  with:
+    reported:
+      description: What the state is, in words a person can be shown.
+      the: xyz.tonk.state/reported
+      as: text
+
+rule!:
+  description: A followed command that lands starts its invocation.
+  assert!: invocation
+  when:
+    - assert: command/invoked
+      where: { this: ?this, at: ?invoked, concept: ?of }
+
+rule!:
+  description: A followed command a provider answered says so.
+  assert!: invocation/answered
+  when:
+    - assert: command/answered
+      where: { this: ?this, by: ?answered }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command a provider failed says why.
+  assert!: invocation/failed
+  when:
+    - assert: command/failed
+      where: { this: ?this, reason: ?failed }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command no provider claimed says so.
+  assert!: invocation/unhandled
+  when:
+    - assert: command/unhandled
+      where: { this: ?this, unhandled: ?unhandled }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command keeps the state its provider last reported.
+  assert!: invocation/state
+  when:
+    - assert: command/progress
+      where: { this: ?this, state: ?state }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A state a provider reported keeps its words for the session.
+  assert!: state
+  when:
+    - assert: state/reported
+      where: { this: ?this, reported: ?status }
+
+# A command's `status` view, when it declares one, renders its invocation
+# (`view!: this: <command>` with `show: status:`). Whoever lists
+# invocations draws the generic line from the rows above.
+
+# invocation-schema:end

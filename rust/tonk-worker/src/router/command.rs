@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use dialog_capability::{Command, Provider};
 use dialog_common::{ConditionalSend, ConditionalSync};
-use dialog_corpus::{Changes, Entity, Fact, Value};
+use dialog_corpus::{Changes, Entity, Fact, Pick, Update as _, Value};
 use dialog_query::ConceptDescriptor;
 use dialog_repository::{
     CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack,
@@ -73,6 +73,7 @@ use crate::reactor::{Decode, Migrated, control, stamp};
 pub struct CommandEnv {
     state: AppState,
     origin: CommandOrigin,
+    task: Task,
 }
 
 /// The repository + branch a command was triggered in, and the client
@@ -189,11 +190,130 @@ pub(crate) fn client_row(changes: &mut Changes, client: &crate::router::ClientId
     }
 }
 
+/// What a provider uses to say what its command is doing, for the
+/// invoker that follows it (see [`tonk_schema::invocation`]).
+///
+/// A followed command's report is dialog's `dialog.command/progress` row
+/// of the command's entity in `control:`, naming a state entity, with
+/// the state's words beside it in the stack's `session:` layer; a rule
+/// copies the progress into the invocation. A command nobody stamped as
+/// followed reports nothing, so asking costs nothing.
+#[derive(Clone, Default)]
+pub struct Task {
+    followed: Option<(Entity, Scope)>,
+}
+
+impl Task {
+    /// The task of `command`, landed on `scope`'s stack: followed when
+    /// its invoker stamped it.
+    fn of(command: &dialog_repository::Command, scope: &Scope) -> Self {
+        let followed = tonk_schema::invocation::followed(command.rows())
+            .then(|| (command.entity().clone(), scope.clone()));
+        Self { followed }
+    }
+
+    /// The command entity this task reports on, when it is followed.
+    pub fn entity(&self) -> Option<&Entity> {
+        self.followed.as_ref().map(|(entity, _)| entity)
+    }
+
+    /// Say the command is in `state`, a state entity such as
+    /// `status:creating-space`, whose words are `status`. Waits for the
+    /// report to land; a report that cannot land is logged and dropped,
+    /// since the command itself goes on either way.
+    pub async fn status(&self, state: Entity, status: impl Into<String>) {
+        let Some((entity, scope)) = &self.followed else {
+            return;
+        };
+        let mut report = Changes::new();
+        report.associate(
+            dialog_repository::progress_attr(),
+            entity.clone(),
+            Value::Entity(state.clone()),
+            Pick::Last,
+        );
+        // Everything an invocation carries lands in `control:` for one
+        // tick; the library's rules keep the state and its words.
+        report.associate(
+            tonk_schema::invocation::Reported::the().into(),
+            state,
+            Value::String(status.into()),
+            Pick::Last,
+        );
+        let origin = CommandOrigin {
+            repo: scope.repo.clone(),
+            branch: scope.branch.clone(),
+            client: None,
+        };
+        let tonk = scope.state.read().await;
+        let landed = match stack_of(&tonk.reactor, &origin)
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(session) => session
+                .state
+                .stack()
+                .invoke(report)
+                .perform(&tonk.operator)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = landed {
+            log!("commands: progress of {entity} not reported: {error}");
+        }
+    }
+}
+
+/// What a provider's [`Outcome`](tonk_schema::invocation::Outcome) answers
+/// dialog with for the command at `entity`: for a success of a followed
+/// command, its output as the invocation's `output` row in the stack's
+/// `session:` layer; otherwise nothing. A failure is dialog's
+/// [`Failure`], which dialog writes as the command's
+/// `dialog.command/failed` row.
+pub(crate) fn answer(
+    entity: &Entity,
+    followed: bool,
+    outcome: tonk_schema::invocation::Outcome,
+) -> Result<Changes, Failure> {
+    let done = outcome.map_err(|failure| Failure::new(failure.0))?;
+    let mut rows = Changes::new();
+    if let (true, Some(output)) = (followed, done.output) {
+        rows.associate_in(
+            dialog_repository::session_layer(),
+            tonk_schema::invocation::Output::the().into(),
+            entity.clone(),
+            Value::Entity(output),
+            Pick::Last,
+        );
+    }
+    Ok(rows)
+}
+
 impl CommandEnv {
     /// Build the env over a clone of the shared state, scoped to the
     /// `origin` the triggering commit happened in.
     pub fn new(state: AppState, origin: CommandOrigin) -> Self {
-        Self { state, origin }
+        Self {
+            state,
+            origin,
+            task: Task::default(),
+        }
+    }
+
+    /// The same env, reporting progress through `task`: what a stack
+    /// provider hands the command it runs.
+    pub fn with_task(mut self, task: Task) -> Self {
+        self.task = task;
+        self
+    }
+
+    /// How a provider says what its command is doing, for whoever follows
+    /// it. Does nothing for a command nobody follows, so a provider can
+    /// always report.
+    pub fn task(&self) -> &Task {
+        &self.task
     }
 
     /// Borrow the underlying state — `Provider` impls re-lock through
@@ -423,7 +543,7 @@ async fn dispatch(
     command: dialog_repository::Command,
 ) -> Result<Changes, Failure> {
     let origin = CommandOrigin::of_tick(&scope, Tick::of_rows(command.tick()));
-    let env = CommandEnv::new(scope.state.clone(), origin);
+    let env = CommandEnv::new(scope.state.clone(), origin).with_task(Task::of(&command, &scope));
     if !surface.admits(env.origin()) {
         return Err(refusal(&name, &env));
     }
@@ -456,7 +576,11 @@ impl CommandProviders {
     /// registered if the env has the capability to run it. Chainable.
     pub fn command<C>(self, surface: Surface) -> Self
     where
-        C: Decode + Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+        C: Decode
+            + Command<Input = C, Output = tonk_schema::invocation::Outcome>
+            + ConditionalSend
+            + ConditionalSync
+            + 'static,
         CommandEnv: Provider<C>,
     {
         let decode: Decoder<C> = Arc::new(|rows| {
@@ -472,7 +596,7 @@ impl CommandProviders {
     pub fn migrated<Current, Legacy>(self, surface: Surface) -> Self
     where
         Current: Decode
-            + Command<Input = Current, Output = ()>
+            + Command<Input = Current, Output = tonk_schema::invocation::Outcome>
             + ConditionalSend
             + ConditionalSync
             + 'static,
@@ -530,7 +654,10 @@ impl CommandProviders {
         decode: Decoder<C>,
     ) -> Self
     where
-        C: Command<Input = C, Output = ()> + ConditionalSend + ConditionalSync + 'static,
+        C: Command<Input = C, Output = tonk_schema::invocation::Outcome>
+            + ConditionalSend
+            + ConditionalSync
+            + 'static,
         CommandEnv: Provider<C>,
     {
         let decode: Decoding = Arc::new(move |command: &dialog_repository::Command| {
@@ -538,11 +665,10 @@ impl CommandProviders {
             // run: the provider's `execute` re-locks through the env, so
             // nothing here holds a lock.
             let decoded = decode(command.rows())?;
+            let entity = command.entity().clone();
+            let followed = tonk_schema::invocation::followed(command.rows());
             let run: Run = Box::new(move |env: CommandEnv| -> Answer {
-                Box::pin(async move {
-                    env.execute(decoded).await;
-                    Ok(Changes::new())
-                })
+                Box::pin(async move { answer(&entity, followed, env.execute(decoded).await) })
             });
             Some(run)
         });
@@ -1014,7 +1140,7 @@ pub(crate) mod tests {
 
     impl dialog_capability::Command for Ping {
         type Input = Self;
-        type Output = ();
+        type Output = tonk_schema::invocation::Outcome;
     }
 
     /// What `Ping`'s provider was handed, in invocation order: the tag
@@ -1043,11 +1169,12 @@ pub(crate) mod tests {
 
     #[dialog_capability::provider]
     impl dialog_capability::Provider<Ping> for CommandEnv {
-        async fn execute(&self, command: Ping) {
+        async fn execute(&self, command: Ping) -> tonk_schema::invocation::Outcome {
             PING_LOG
                 .lock()
                 .unwrap()
                 .push((command.tag.0, self.client().map(|client| client.0.clone())));
+            tonk_schema::invocation::Done::nothing()
         }
     }
 
@@ -1066,16 +1193,17 @@ pub(crate) mod tests {
 
     impl dialog_capability::Command for Echo {
         type Input = Self;
-        type Output = ();
+        type Output = tonk_schema::invocation::Outcome;
     }
 
     #[dialog_capability::provider]
     impl dialog_capability::Provider<Echo> for CommandEnv {
-        async fn execute(&self, command: Echo) {
+        async fn execute(&self, command: Echo) -> tonk_schema::invocation::Outcome {
             PING_LOG
                 .lock()
                 .unwrap()
                 .push((format!("echo:{}", command.tag.0), None));
+            tonk_schema::invocation::Done::nothing()
         }
     }
 
@@ -1094,7 +1222,7 @@ pub(crate) mod tests {
 
     impl dialog_capability::Command for Evaluated {
         type Input = Self;
-        type Output = ();
+        type Output = tonk_schema::invocation::Outcome;
     }
 
     /// What `Evaluated`'s provider was handed.
@@ -1102,8 +1230,9 @@ pub(crate) mod tests {
 
     #[dialog_capability::provider]
     impl dialog_capability::Provider<Evaluated> for CommandEnv {
-        async fn execute(&self, command: Evaluated) {
+        async fn execute(&self, command: Evaluated) -> tonk_schema::invocation::Outcome {
             EVALUATED_LOG.lock().unwrap().push(command.note.0);
+            tonk_schema::invocation::Done::nothing()
         }
     }
 
@@ -1538,12 +1667,27 @@ pub(crate) mod tests {
                 .is(entity("tonk:register-account"))
                 .assert(&mut rows);
             let report = perform(&state, &origin, rows).await;
+            // Both run. With no access service and no page in a test, each
+            // says why it could not finish, rather than logging it: a run
+            // is a provider that answered or one that failed.
+            let ran = |report: &EffectReport| -> Vec<Entity> {
+                let mut ran: Vec<Entity> = report.answered().to_vec();
+                ran.extend(report.failed().iter().map(|(entity, _)| entity.clone()));
+                ran
+            };
             assert_eq!(
-                report.answered(),
-                &[legacy.clone(), legacy.clone()],
-                "the registration and the lookup both answer a legacy register-account"
+                ran(&report),
+                vec![legacy.clone(), legacy.clone()],
+                "the registration and the lookup both run for a legacy register-account"
             );
-            assert!(report.failed().is_empty(), "{:?}", report.failed());
+            assert!(
+                report
+                    .failed()
+                    .iter()
+                    .all(|(_, why)| !why.trim().is_empty()),
+                "a provider that could not finish says why: {:?}",
+                report.failed()
+            );
             assert!(report.unhandled().is_empty(), "{:?}", report.unhandled());
             let looked_up = {
                 let tonk = state.read().await;
@@ -1574,11 +1718,10 @@ pub(crate) mod tests {
                 .assert(&mut rows);
             let report = perform(&state, &origin, rows).await;
             assert_eq!(
-                report.answered(),
-                &[current],
+                ran(&report),
+                vec![current],
                 "a current register-account satisfies its own concept alone"
             );
-            assert!(report.failed().is_empty(), "{:?}", report.failed());
         }
 
         /// A command a document asserts through the evaluate route is

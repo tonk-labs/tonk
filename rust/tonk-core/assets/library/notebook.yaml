@@ -848,6 +848,38 @@ rule!:
         subject: ?this
         title: ?title
 
+# A retitle someone follows (the command palette) gets the notebook it
+# renamed as its output, so they are told it took. No provider claims a
+# retitle, so dialog alone would only say nothing handled it.
+#
+# The head is declared here rather than naming core's `invocation/output`:
+# a rule's head takes its layer from a concept its own document declares,
+# and core's, read back from the branch, would land the output in the
+# branch instead of `session:`.
+concept!: &notebook/retitled
+  this: tonk:notebook/retitled
+  description: The notebook a followed retitle renamed, as its invocation's output, kept in `session:`.
+  with:
+    output:
+      description: The notebook it renamed.
+      the: xyz.tonk.invocation/output
+      as: entity
+      in: "session:"
+
+rule!:
+  description: A followed retitle produces the notebook it renamed.
+  assert!: notebook/retitled
+  when:
+    - assert: notebook/retitle
+      where:
+        this: ?this
+        subject: ?output
+    - assert: command/invoked
+      where:
+        this: ?this
+        at: ?at
+        concept: ?concept
+
 rule!:
   description: Persist a block edit onto its block.
   assert!: notebook/block

@@ -75,6 +75,8 @@ pub use account::{
     email_state,
 };
 
+pub mod invocation;
+
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
