@@ -334,7 +334,9 @@ pub fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<()
         }
         let attribute: dialog_query::AttributeDescriptor =
             serde_json::from_value(attribute).map_err(|error| error.to_string())?;
-        for statement in attribute_statements(&attribute)? {
+        for statement in
+            attribute_statements(&attribute, tonk_schema::pick::Reading::of_field(field))?
+        {
             statement.assert(changes);
         }
         relabelled.insert(

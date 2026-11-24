@@ -259,6 +259,7 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
             .map(|attribute| AttributeDefinition {
                 entity: attribute.entity,
                 descriptor: attribute.descriptor,
+                reading: attribute.reading,
             }))
     }
     async fn named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError> {
@@ -764,6 +765,7 @@ impl Graph {
                     let attribute = AttrDef {
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
+                        reading: plan.reading,
                     };
                     let (this, name) = derive_head_intent(&a.fields, anchor, scope)?;
                     let variable = match &this {
@@ -789,7 +791,7 @@ impl Graph {
                             .or(variable.as_deref()),
                         attribute,
                     );
-                    let application = attribute_application(&plan.descriptor, &entity, name);
+                    let application = attribute_application(&plan.descriptor, plan.reading, &entity, name);
                     declared.insert(
                         pending.index,
                         DeclaredApplication {
@@ -860,6 +862,7 @@ impl Graph {
                             AttributeDefinition {
                                 descriptor: attr.descriptor.clone(),
                                 entity: attr.entity.clone(),
+                                reading: attr.reading,
                             },
                         );
                     }
@@ -873,6 +876,7 @@ impl Graph {
                                 .map(|role| role_application(&attr.entity, role));
                             std::iter::once(attribute_application(
                                 &attr.descriptor,
+                                attr.reading,
                                 &attr.entity,
                                 None,
                             ))

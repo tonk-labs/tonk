@@ -1439,7 +1439,7 @@ mod tests {
         descriptor: &ConceptDescriptor,
     ) -> Transaction<&'a Branch> {
         for (_, attr) in descriptor.with().iter() {
-            for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
+            for statement in tonk_schema::concept::field_attribute_statements(attr)
                 .expect("attribute facts")
             {
                 txn = txn.assert(statement);

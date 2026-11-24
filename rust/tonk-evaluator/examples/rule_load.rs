@@ -57,8 +57,15 @@ mod load {
     /// subscriptions spell them. `kind` is the field's `as`: a type name,
     /// or the cases a ranked field lists best first.
     fn query(field: &str, the: &str, kind: serde_json::Value) -> ConceptQuery {
+        // A listed type ranks its cases best first, read by the field's
+        // `top` over a cardinality-many attribute, as tonk lowers it.
+        let spec = if kind.is_array() {
+            json!({ "the": the, "as": kind, "pick": "top" })
+        } else {
+            json!({ "the": the, "as": kind })
+        };
         let descriptor = serde_json::from_value(json!({
-            "with": { field: { "the": the, "as": kind } }
+            "with": { field: spec }
         }))
         .expect("descriptor parses");
         let mut terms = Parameters::new();

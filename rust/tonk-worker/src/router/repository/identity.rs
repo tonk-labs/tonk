@@ -244,10 +244,12 @@ fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescrip
     if let Some(Value::Entity(kind)) = fact("db.attribute/as") {
         shape.insert("as".to_owned(), serde_json::Value::String(kind.to_string()));
     }
-    if let Some(Value::Entity(pick)) = fact("db.attribute/pick") {
+    if let Some(Value::Entity(pick)) = fact("db.attribute/pick")
+        && let Some(reading) = tonk_schema::pick::Reading::of_pick(&pick.to_string())
+    {
         shape.insert(
-            "pick".to_owned(),
-            serde_json::Value::String(pick.to_string()),
+            "cardinality".to_owned(),
+            serde_json::Value::String(reading.cardinality.name().to_owned()),
         );
     }
     serde_json::from_value(serde_json::Value::Object(shape)).ok()
