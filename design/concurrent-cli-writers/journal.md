@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | Scope: one machine's writers only, or the remote head too. What 25 ms is compared to. Whether agents reach saturation. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Scope: one machine's writers only, or the remote head too. Whether agents reach saturation. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -89,3 +89,22 @@ the apply-or-rerun question only remains for the remote head.
 
 **Decided.** Not decided. Open: whether agents reach saturation; which
 budget 25 ms is measured against; whether the remote head is in scope.
+
+## 2026-11-24, Diagnosing: warm caches are wanted regardless
+
+**Asked.** Irakli, on being asked what 31 ms is compared to: in the browser a
+commit is 20-30 ms while the service worker is cold and under 5 ms once
+its caches are warm; writes usually hit the same subtree; the CLI should
+get the same. Whether that is how this issue is addressed is a separate
+question.
+
+**Learned.** The comparison was there all along: a warm commit. I had
+argued cold start lies outside the race window; that is only half true,
+since cold caches slow the evaluation inside the window as well, so warm
+caches cut lost races, starvation and queue waits too. Re-litigating
+whether warm caches help was not useful; the evidence for it is the
+browser's.
+
+**Decided.** Keeping caches warm across CLI commands is an objective of its
+own (Irakli). This topic still decides how concurrent writes are handled;
+warm caches are one input to it, not the answer to it by default.
