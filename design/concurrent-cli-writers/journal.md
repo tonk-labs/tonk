@@ -4,8 +4,8 @@
 
 |  | Understanding | Activity |
 |---|---|---|
-| **Status** | What the CLI does on a concurrent write is read from the code (see claims). Four separate places a write can fail are visible: eval's one-try commit, the lock file's immediate refusal, the pull-before moving the head, and the shared remote head. Nothing has been reproduced. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | Which of H1-H4 (below) produce the failures, at what concurrency, and whether any write is lost rather than refused. Whether the cold-start cost is a problem of its own or part of this one. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
+| **Agenda** | What an agent's write must mean when the head moved under it: its claims applied on the new head, or its document run again there. H3 with an upstream. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -54,3 +54,20 @@ that table were filled we would know which of H1-H4 occur and how often.
 
 **Decided.** Diagnose by experiment before weighing remedies. Phase moves
 to Diagnosing.
+
+## 2026-11-24, Diagnosing: the first reproduction
+
+**Asked.** Which of H1-H4 occur on one replica with no upstream?
+
+**Learned.** H1 and H2 both occur from two writers on
+([results](../../research/concurrent-cli-writes/results/2026-11-24.md)).
+Failures are refusals, not losses. Nothing fails before the commit (H4).
+Something unexplained does: under contention a process publishes a head
+before its own commit, and some committed revisions are not retained for
+checkout (H5, which may bear on BUG-350's "a revision cannot be restored").
+A cold eval of an empty space takes 31 ms, so the daemon's cold-start
+argument has no evidence yet; it would need a realistic space to make it.
+
+**Decided.** The local cause is that a lost race is a failure the agent
+sees, whether lost at the version check or at the lock. Not decided: what
+the eval should do instead, which turns on what its write means.

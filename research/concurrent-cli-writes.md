@@ -1,6 +1,6 @@
 # Concurrent CLI writes on one replica
 
-**Status: Exploring.** Answers the diagnosis of
+**Status: Exploring.** First round in: [results/2026-11-24](concurrent-cli-writes/results/2026-11-24.md). Answers the diagnosis of
 [design/concurrent-cli-writers](../design/concurrent-cli-writers.md).
 
 ## The question

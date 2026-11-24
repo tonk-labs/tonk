@@ -1,0 +1,8 @@
+1	4	version-mismatch	no	63
+2	4	version-mismatch	no	65
+3	0	ok	yes	49
+4	0	ok	yes	57
+5	4	lock	no	49
+6	4	version-mismatch	no	50
+7	4	lock	no	55
+8	0	ok	yes	34
