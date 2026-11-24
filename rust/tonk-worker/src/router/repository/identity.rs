@@ -211,7 +211,7 @@ pub(super) async fn rekey(
             };
             for claim in claims {
                 retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
-                assert.push(raw(&claim.the, now, &follow(&claim.is), policy.clone()));
+                assert.push(raw(&claim.the, now, &follow(&claim.is), policy));
             }
         }
     }
