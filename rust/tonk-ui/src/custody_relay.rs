@@ -50,16 +50,27 @@ const CARD_HTML: &str = r#"
   </div>
 </section>
 <header class="fabb-top"><!-- logotype --></header>
-<style>
-#tonk-custody-consent { color-scheme:light; }
+{style}
+"#;
+
+/// What every card mounted here wears beyond gooey's task sheet: where it
+/// sits, the phrase's numbered words, and the primary action. gooey makes
+/// the last button primary; a step keeps its other buttons in the row,
+/// hidden, so it is the last one shown, as on the sign-in page.
+const CARD_STYLE: &str = r#"<style>
+#tonk-custody-consent { color-scheme:light dark; }
 dialog#tonk-custody-consent { box-sizing:border-box; position:fixed; inset:0; width:100%; height:100%; max-width:none; max-height:none; border:0; }
 #tonk-custody-consent .fabb-top { grid-row:1; }
 #tonk-custody-consent .tc-card { grid-row:2; border-radius:var(--tonk-radius-sheet,12px); }
 #tonk-custody-consent[data-anchored] { display:contents; }
 #tonk-custody-consent[data-anchored] .fabb-top { display:none; }
 #tonk-custody-consent[data-anchored] .tc-card { position:fixed; z-index:2147483647; margin:0; max-height:calc(100dvh - 32px); overflow:auto; }
-</style>
-"#;
+#tonk-custody-consent .tc-words { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:4px 12px; margin:0 0 var(--fp-pad,16px); padding:0; list-style:none; font:var(--fp-mono); }
+#tonk-custody-consent .tc-words li span { color:var(--fp-soft); }
+#tonk-custody-consent .tc-checks { display:grid; gap:0; }
+#tonk-custody-consent .fabb-actions > button:not([hidden]):not(:has(~ :not([hidden]))) { padding:4px 12px; background:var(--tonk-main); color:var(--tonk-main-text); }
+#tonk-custody-consent .fabb-actions > button:not([hidden]):not(:has(~ :not([hidden]))):is(:hover, :focus-visible) { background:var(--tonk-main-hover); }
+</style>"#;
 
 /// Derive the account's encryption key through a passkey assertion and
 /// save it with the root. `Ok(false)` when there was nothing to do: no
@@ -208,6 +219,14 @@ fn position_card() {
 }
 
 fn mount_card(anchored: bool) -> Option<Element> {
+    mount_task_card(CARD_HTML, anchored, "#tonk-custody-continue")
+}
+
+/// Mount `markup` (a gooey task sheet, its `{style}` placeholder for
+/// [`CARD_STYLE`]) as this document's one card: a modal task page, or
+/// seated in a guest's dialog column when `anchored`. `focus` names what
+/// takes focus in the modal.
+fn mount_task_card(markup: &str, anchored: bool, focus: &str) -> Option<Element> {
     let document = web_sys::window().and_then(|window| window.document())?;
     let body = document.body()?;
     let host = document
@@ -220,7 +239,9 @@ fn mount_card(anchored: bool) -> Option<Element> {
     if anchored {
         host.set_attribute("data-anchored", "").ok()?;
     }
-    host.set_inner_html(&crate::task_page::page(CARD_HTML));
+    host.set_inner_html(&crate::task_page::page(
+        &markup.replace("{style}", CARD_STYLE),
+    ));
     body.append_child(&host).ok()?;
     if !anchored
         && host
@@ -233,10 +254,10 @@ fn mount_card(anchored: bool) -> Option<Element> {
     }
     position_card();
     if !anchored
-        && let Ok(Some(button)) = host.query_selector("#tonk-custody-continue")
-        && let Some(button) = button.dyn_ref::<web_sys::HtmlElement>()
+        && let Ok(Some(target)) = host.query_selector(focus)
+        && let Some(target) = target.dyn_ref::<web_sys::HtmlElement>()
     {
-        let _ = button.focus();
+        let _ = target.focus();
     }
     if !anchored {
         // Escape is `not now`, as a dialog's is; once the answer is out
@@ -597,56 +618,32 @@ fn stage_phrase(words: &str) -> Result<(), String> {
 }
 
 fn mount_phrase_entry_card() -> Option<Element> {
-    let document = web_sys::window().and_then(|window| window.document())?;
-    let body = document.body()?;
-    let host = document.create_element("div").ok()?;
-    host.set_id(CARD_ID);
-    host.set_inner_html(PHRASE_ENTRY_HTML);
-    body.append_child(&host).ok()?;
+    let host = mount_task_card(PHRASE_ENTRY_HTML, false, "#tonk-phrase-entry")?;
+    host.set_attribute("data-phrase-dialog", "").ok()?;
     Some(host)
 }
 
+/// The same task sheet as every other card, with the field the sign-in
+/// page reads a phrase in.
 const PHRASE_ENTRY_HTML: &str = r#"
-<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
-            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
-<div role="dialog" aria-modal="true" aria-label="recovery phrase"
-     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
-            display:flex;flex-direction:column;gap:7px;
-            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
-            color:var(--ink, #38182a);text-transform:none">
-  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
-              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
-              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
-              letter-spacing:.02em;text-transform:lowercase">recovery phrase needed</div>
-  <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
-              background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
-    <p id="tonk-custody-text" style="margin:0;font-weight:600">
-      Enter your 12-word recovery phrase to confirm.</p>
-    <textarea id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false"
-      aria-label="recovery phrase"
-      style="min-height:120px;padding:10px 12px;border:0;box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-             font:600 15px/1.6 var(--mono, ui-monospace, monospace);resize:vertical"></textarea>
-    <button id="tonk-phrase-use-passkey" type="button"
-      style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
-      use a passkey instead</button>
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">recovery phrase needed</h2></header>
+  <div class="fabb-request">
+    <p id="tonk-custody-text" role="status">Enter your 12-word recovery phrase to confirm.</p>
+    <label class="fabb-field editing">
+      <span class="fabb-field-head"><span>12-word recovery phrase</span></span>
+      <textarea class="fabb-phrase" id="tonk-phrase-entry" rows="4" autocomplete="off" autocapitalize="none"
+                spellcheck="false"></textarea>
+    </label>
+    <button type="button" class="fabb-inline-action" id="tonk-phrase-use-passkey">use a passkey instead</button>
   </div>
-  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
-    <button id="tonk-custody-dismiss" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
-                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      not now</button>
-    <button id="tonk-custody-continue" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
-                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      continue</button>
+  <div id="tonk-custody-actions" class="fabb-actions">
+    <button id="tonk-custody-dismiss" type="button">not now</button>
+    <button id="tonk-custody-continue" type="button">continue</button>
   </div>
-</div>
-</div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
+{style}
 "#;
 
 /// A new phrase from `tonkIdentity.generateRecoveryPhrase`, staged in
@@ -740,10 +737,9 @@ fn show_phrase_confirmation(asked: &[usize]) {
             .enumerate()
             .map(|(index, position)| {
                 format!(
-                    r#"<label style="display:flex;align-items:center;gap:8px">word {}
-                      <input id="tonk-phrase-check-{index}" type="text" autocomplete="off" autocapitalize="off"
-                        spellcheck="false" style="flex:1;min-height:32px;padding:4px 8px;border:0;
-                        box-shadow:inset 0 0 0 1px var(--ring, rgb(56 24 42 / 85%));font:inherit"></label>"#,
+                    r#"<label class="fabb-field editing"><span class="k">word {}</span>
+                      <input id="tonk-phrase-check-{index}" type="text" autocomplete="off" autocapitalize="none"
+                        spellcheck="false"></label>"#,
                     position + 1
                 )
             })
@@ -758,76 +754,42 @@ fn show_phrase_confirmation(asked: &[usize]) {
 }
 
 fn mount_phrase_card(words: &[String]) -> Option<Element> {
-    let document = web_sys::window().and_then(|window| window.document())?;
-    let body = document.body()?;
-    let host = document.create_element("div").ok()?;
-    host.set_id(CARD_ID);
-    host.set_attribute("data-recovery-phrase", "").ok()?;
     // BIP-39 English words are lowercase ASCII, so they need no escaping.
     let list: String = words
         .iter()
         .enumerate()
-        .map(|(index, word)| {
-            format!(
-                "<li><span style=\"opacity:.6\">{}.</span> {word}</li>",
-                index + 1
-            )
-        })
+        .map(|(index, word)| format!("<li><span>{}.</span> {word}</li>", index + 1))
         .collect();
-    host.set_inner_html(&PHRASE_CARD_HTML.replace("{words}", &list));
-    body.append_child(&host).ok()?;
+    let host = mount_task_card(
+        &PHRASE_CARD_HTML.replace("{words}", &list),
+        false,
+        "#tonk-phrase-written",
+    )?;
+    host.set_attribute("data-phrase-dialog", "").ok()?;
+    host.set_attribute("data-recovery-phrase", "").ok()?;
     Some(host)
 }
 
+/// The same task sheet as every other card: the twelve words, then three
+/// of them asked back in fields like the sign-in page's.
 const PHRASE_CARD_HTML: &str = r#"
-<div data-phrase-dialog style="position:fixed;inset:0;z-index:2147483647;overflow:auto;
-            background:var(--dim, rgb(56 24 42 / 35%));backdrop-filter:blur(3px)">
-<div role="dialog" aria-modal="true" aria-label="recovery phrase"
-     style="box-sizing:border-box;width:min(576px, calc(100vw - 32px));margin:22vh auto 80px;
-            display:flex;flex-direction:column;gap:7px;
-            font:400 13.5px/1.55 var(--sans, 'IBM Plex Sans', system-ui, sans-serif);
-            color:var(--ink, #38182a);text-transform:none">
-  <div style="box-sizing:border-box;height:36px;display:flex;align-items:flex-end;justify-content:flex-end;
-              padding:0 10px 9px 16px;background:var(--card, #fcfbfb);
-              box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));
-              font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);
-              letter-spacing:.02em;text-transform:lowercase">recovery phrase</div>
-  <div style="box-sizing:border-box;display:flex;flex-direction:column;gap:10px;margin:0;padding:14px 16px;
-              background:var(--card, #fcfbfb);box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%))">
-    <p id="tonk-custody-text" style="margin:0;font-weight:600">
-      Write down these 12 words in order and keep them offline. Tonk shows them only once.
-      Anyone with the phrase can sign in as you. You can’t revoke or replace it.
-    </p>
-    <ol id="tonk-phrase-words" data-recovery-words
-        style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 12px;margin:0;padding:0;list-style:none;
-               font:600 14px/1.5 var(--mono, ui-monospace, monospace)">{words}</ol>
-    <button id="tonk-phrase-copy" type="button"
-      style="align-self:flex-start;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">
-      copy the 12 words</button>
-    <div id="tonk-phrase-checks" hidden style="display:grid;gap:6px"></div>
+<section class="tc-card fabb-task" aria-labelledby="tonk-custody-heading" aria-describedby="tonk-custody-text">
+  <header class="fabb-task-head"><h2 class="fabb-task-title" id="tonk-custody-heading">recovery phrase</h2></header>
+  <div class="fabb-request">
+    <p id="tonk-custody-text" role="status">Write down these 12 words in order and keep them offline. Tonk shows them only once.
+      Anyone with the phrase can sign in as you. You can’t revoke or replace it.</p>
+    <ol id="tonk-phrase-words" class="tc-words" data-recovery-words>{words}</ol>
+    <button type="button" class="fabb-inline-action" id="tonk-phrase-copy">copy the 12 words</button>
+    <div id="tonk-phrase-checks" class="tc-checks" hidden></div>
   </div>
-  <div id="tonk-custody-actions" style="display:flex;justify-content:flex-end;gap:0">
-    <button id="tonk-custody-dismiss" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--card, #fcfbfb);color:var(--ink, #38182a);
-                   box-shadow:0 0 0 1px var(--ring, rgb(56 24 42 / 85%));cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      cancel</button>
-    <button id="tonk-phrase-written" type="button"
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
-                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      I wrote them down</button>
-    <button id="tonk-custody-continue" type="button" hidden
-            style="box-sizing:border-box;height:36px;min-width:144px;display:flex;align-items:flex-end;justify-content:flex-end;
-                   padding:0 10px 9px 24px;border:0;background:var(--ink, #38182a);color:var(--on-ink, #f7f6f5);
-                   box-shadow:0 0 0 1px var(--ink, #38182a);cursor:pointer;
-                   font:600 13px/1 var(--cond, 'IBM Plex Sans Condensed', system-ui, sans-serif);letter-spacing:.02em">
-      save with passkey</button>
+  <div id="tonk-custody-actions" class="fabb-actions">
+    <button id="tonk-custody-dismiss" type="button">cancel</button>
+    <button id="tonk-phrase-written" type="button">I wrote them down</button>
+    <button id="tonk-custody-continue" type="button" hidden>save with passkey</button>
   </div>
-</div>
-</div>
+</section>
+<header class="fabb-top"><!-- logotype --></header>
+{style}
 "#;
 
 /// Raise the top-document consent a guest-asserted command needs when the

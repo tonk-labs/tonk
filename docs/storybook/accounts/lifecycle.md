@@ -68,6 +68,14 @@ The display-name field commits when Enter or blur ends the edit. Its normal
 native caret is visible while focused; an unfocused field has no blinking
 cursor, so a settled value does not continue to look editable or active.
 
+Every account surface in the browser wears the same palette and the same
+sheet as settings, in the system's light or dark scheme: the sign-in, email
+confirmation and activation pages, the passkey consent card, and the recovery
+phrase dialogs (showing the words, asking some back, and asking for the phrase
+in place of a passkey). A dark hub never opens onto a light sign-in page, and
+the phrase dialogs are task sheets like the rest rather than separate blocks
+(`LIFE-32`).
+
 This is a source-derived presentation decision for `ACCT-B04`, `ACCT-B14`,
 `ACCT-B15`, `ACCT-B13`, `LIFE-21`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to
 `a3f8657d3` and refined by the focused browser regression on 2026-09-02. The
