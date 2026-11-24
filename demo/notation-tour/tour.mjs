@@ -66,8 +66,7 @@ try {
   await page.waitForTimeout(30000);
 
   // Reach the tour by clicking, as a person on the preview would: the hub
-  // links to it from its empty list, and from its troubleshooting fold
-  // beside `make a space`.
+  // links to it from its troubleshooting fold, beside `make a space`.
   log('opening the hub and following its link to the notation tour');
   await page.goto(`${BASE}/`);
   const hub = await frameWith(page, () => !!document.querySelector('a[href*="notation-tour"]'));

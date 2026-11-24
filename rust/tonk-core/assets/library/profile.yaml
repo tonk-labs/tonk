@@ -3728,7 +3728,7 @@ view!:
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
                 <li class="hub-wait-row"><div class="hub-skel"><i></i><i></i></div></li>
               </ul>
-              <div slot="empty" class="hub-empty"><p>No spaces yet.</p><p>Or <a href="/seed/%2Flibrary%2Fnotation-tour.yaml">start from the notation tour</a>, a notebook that walks through the Dialog notation.</p></div>
+              <div slot="empty" class="hub-empty"><p>No spaces yet.</p></div>
               <div slot="offline" class="hub-empty hub-failed"><p>Your spaces didn’t load. Check your connection and try again.</p><button class="hub-btn hub-btn--main" type="button" data-spaces-retry>try again</button></div>
             </tonk-display>
           </section>

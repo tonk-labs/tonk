@@ -2818,6 +2818,11 @@ mod wire_types {
 
         for body in &bodies {
             for found in body.split("\"as\":").skip(1) {
+                // A list is the cases an enumerated type lists, not a
+                // type's name: what a ranked read (`pick: top`) reads.
+                if found.trim_start().starts_with('[') {
+                    continue;
+                }
                 let variant = found
                     .trim_start()
                     .trim_start_matches('"')

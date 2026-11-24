@@ -623,7 +623,7 @@ async fn fragments<Env: SelectProvider>(
             // read under the attribute's own name: a fragment concept names
             // its one field after the attribute (`subject` for
             // `…retitle/subject`). The field's candidates are a set, so
-            // the read selects `all`: under the attribute's own policy a
+            // the read is cardinality many: under the attribute's own a
             // read would elect one of them and the palette would offer
             // one component to install, whichever the election picked.
             let name = selector.rsplit('/').next().unwrap_or(selector);
@@ -632,7 +632,7 @@ async fn fragments<Env: SelectProvider>(
                 env,
                 json!({
                     "predicate": { "with": { name: {
-                        "the": selector, "as": "Entity", "select": "all"
+                        "the": selector, "as": "Entity", "cardinality": "many"
                     } } },
                     "terms": { "this": intent, name: var(name) }
                 }),
