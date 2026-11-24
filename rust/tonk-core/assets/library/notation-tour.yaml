@@ -1082,7 +1082,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-5
   notebook: notebook:notation-tour
-  source: "Asserting through a concept writes one fact per line. A write says every field."
+  source: "Asserting through a concept writes one fact per line. A write through a concept says every field, or the entity alone; one field is written through the attribute's relation."
 
 notebook/block!:
   this: id:notation-tour/block-6
@@ -1162,12 +1162,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-21
   notebook: notebook:notation-tour
-  source: "An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do writes it again with its state done: the state is cardinality one, so the new claim succeeds the open one, and nothing has to be taken back."
+  source: "An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do replaces its record: one rule retracts the record as it is, every field named, and one asserts it changed, with its state done. Both read the same premises and fire in the same round; the fields both name hold afterwards. One field alone is retracted through the attribute's relation, `(retract (tour.todo/state of: ?t is: :open))`."
 
 notebook/block!:
   this: id:notation-tour/block-22
   notebook: notebook:notation-tour
-  source: "```notation\n(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))\n\n; Completing a to-do makes it done.\n(rule (assert (todo ?t title: ?title state: :done list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n```"
+  source: "```notation\n(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))\n\n; Completing a to-do takes back the record as it was.\n(rule (retract (todo ?t title: ?title state: :open list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n\n; And asserts it done.\n(rule (assert (todo ?t title: ?title state: :done list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-23

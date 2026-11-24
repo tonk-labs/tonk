@@ -95,7 +95,7 @@ Scaffolding:
   which shows the notebook; no route of the notation's is involved, and the
   notebook installed is `notebook.yaml`, not `notebook.clj`;
 - the Dialog pin is one exact revision of dialog-db's `feat/notation-poc`
-  (`b423dd78`), the same in the workspace and in the three crates outside
+  (`0cebfc07`), the same in the workspace and in the three crates outside
   it;
 - the space's title pill at the top right is tonk's own chrome and overlaps
   the first lines of a long notebook; left as it is.
@@ -106,11 +106,9 @@ Scaffolding:
   cells above it each time, and the tour's concepts are not written as tonk
   concepts.
 - Natively the live stream is not run.
-- Two behaviours of the notation are written up in `findings.md`: a
-  formula in a select's head answered a cross product (fixed at the pinned
-  revision; the tour shows the plain form), and a retract through a concept
-  took back every field, also those a rule of the same tick asserted (still
-  open; the tour does not need a retract to complete a to-do).
+- Two behaviours of the notation the tour found are written up in
+  `findings.md`; both are fixed at the pinned revision, and
+  `notation_findings.rs` holds each fixed answer.
 - A check written as a rule can only warn, over the expander's few built-in
   premises (a form's head, a command's name and domain, the names that have
   syntax rules, the domains installed rules read); it cannot refuse, and it

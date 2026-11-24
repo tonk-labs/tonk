@@ -117,13 +117,18 @@ Rules can recurse. One to-do blocks another; blocking is transitive.
 (select (tour.before ?a then: todo:milk))
 ```
 
-An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do writes it again with its state done: the state is cardinality one, so the new claim succeeds the open one, and nothing has to be taken back.
+An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do replaces its record: one rule retracts the record as it is, every field named, and one asserts it changed, with its state done. Both read the same premises and fire in the same round; the fields both name hold afterwards. One field alone is retracted through the attribute's relation, `(retract (tour.todo/state of: ?t is: :open))`.
 
 ```notation
 (concept (todo/complete todo: ?t)
   (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))
 
-; Completing a to-do makes it done.
+; Completing a to-do takes back the record as it was.
+(rule (retract (todo ?t title: ?title state: :open list: ?l))
+  (todo/complete todo: ?t)
+  (todo ?t title: ?title state: :open list: ?l))
+
+; And asserts it done.
 (rule (assert (todo ?t title: ?title state: :done list: ?l))
   (todo/complete todo: ?t)
   (todo ?t title: ?title state: :open list: ?l))

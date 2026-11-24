@@ -1,13 +1,14 @@
 # Findings from the notation tour
 
-Kept as history. Status at the revision the branch pins now,
-`b423dd7893ee297cbf4f3e27f1645c3171852c90` (dialog-db `feat/notation-poc`):
-finding 1 is fixed (the head formula answers one total per pair, and the
-tour shows it in the plain form); finding 2 is still open at b423dd78
-(fixed by dialog-db/dialog-db#863 once pinned) and reproduces exactly as
-written below, and the tour no longer needs its workaround, since
-completing a to-do now writes the concept again with its state done and
-the cardinality-one state succeeds the open one, with no retract.
+Kept as history. Both are fixed at the revision the branch pins now,
+`0cebfc07cdb87017d91fa7e053c2ecb23f7316e7` (dialog-db `feat/notation-poc`).
+Finding 1 was fixed on the notation branch by b423dd78: the head formula
+answers one total per pair. Finding 2 is fixed by dialog-db/dialog-db#863
+("a claim one round of induction both retracts and asserts holds
+afterwards"): the to-do keeps its title and list and is done. Each
+reproduction below now asserts the fixed answer
+(`cargo test -p tonk-analyzer --test notation_findings`), and the tour
+shows the plain forms.
 
 Two behaviours the tour ran into at the pinned dialog revision
 (`7b7484a8cdd8904a2547ae0e2b0c5b935e23151a`, `wip/engine-fold`) and worked
