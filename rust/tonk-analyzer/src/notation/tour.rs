@@ -607,7 +607,7 @@ pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepar
     // over_its_tree`): the notation's `check` writes no syntax itself.
     if !forms.iter().any(|form| form.refused.is_some())
         && let Ok(is) = serde_json::from_value::<dialog_query::AttributeDescriptor>(
-            serde_json::json!({ "the": "syntax.form/is", "as": "record:" }),
+            serde_json::json!({ "the": "syntax.form/is", "as": "composite:map" }),
         )
     {
         let mut kept = 0;
@@ -867,7 +867,7 @@ fn cell(term: &Syntax) -> String {
 /// A value as the notation writes it, records and lists taken apart:
 /// `{:operator {:name /select :type :reference} :type :application ...}`.
 fn said(value: &dialog_corpus::Value) -> String {
-    if let Ok(Some(map)) = dialog_notation::data::entries(value) {
+    if let Ok(Some(map)) = dialog_notation::value::record(value) {
         let mut entries: Vec<(&str, &dialog_corpus::Value)> = map.iter().collect();
         entries.sort_by_key(|(key, _)| *key);
         let inner: Vec<String> = entries
@@ -876,7 +876,7 @@ fn said(value: &dialog_corpus::Value) -> String {
             .collect();
         return format!("{{{}}}", inner.join(" "));
     }
-    if let Ok(Some(items)) = dialog_notation::data::items(value) {
+    if let Ok(Some(items)) = dialog_notation::value::list(value) {
         let inner: Vec<String> = items.iter().map(said).collect();
         return format!("[{}]", inner.join(" "));
     }
@@ -1005,7 +1005,7 @@ fn patch_json(patch: &dialog_notation::Patch) -> Option<serde_json::Value> {
 /// `s<n>` for instances).
 fn marked(shown: &dialog_notation::Shown, slot: usize) -> String {
     use dialog_notation::Content;
-    use dialog_notation::view::tree::Slot;
+    use dialog_notation::view::Slot;
     let Content::Element {
         tag,
         attributes,

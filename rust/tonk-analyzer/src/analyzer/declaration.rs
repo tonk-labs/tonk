@@ -9,8 +9,8 @@ use dialog_query::{
     AttributeDescriptor, Cardinality, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
     concept::query::ConceptQuery,
 };
-use tonk_schema::pick::Reading;
 use std::collections::BTreeMap;
+use tonk_schema::pick::Reading;
 
 use tonk_notation::{Application as SyntaxApplication, Field as SyntaxField, FieldValue, Scalar};
 

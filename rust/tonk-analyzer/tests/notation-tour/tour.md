@@ -6,7 +6,7 @@ Under each result, four sections show the stages: read (the syntax trees, and ea
 
 ## Facts and concepts
 
-A concept names a shape of facts. This one is a to-do: a title, a state that is one of two, and the list it is on. Each line is one attribute, with its type and its cardinality.
+A concept names a shape of facts. This one is a to-do: a title, a state that is one of two, and the list it is on. Each line is one attribute, with its type and its cardinality. Every line of a concept says its cardinality: `:one` keeps the newest claim, `:many` keeps them all.
 
 ```notation
 ; A thing to do.
@@ -32,10 +32,12 @@ Asserting through a concept writes one fact per line. A write says every field.
 (assert (todo todo:seeds title: "Sow the seeds" state: :done list: list:garden))
 ```
 
-And asking reads them back. A variable binds; leaving a field out matches anything.
+And asking reads them back. A variable binds. A read names every field, or ends with `...` to say it leaves the others out on purpose.
 
 ```notation
 (select (todo ?t title: ?title state: ?state list: ?list))
+
+(select (todo ?t title: ?title ...))
 ```
 
 ## Queries
@@ -56,7 +58,7 @@ Negation: lists with nothing open on them. Every variable of an `unless` is boun
   (unless (todo _ state: :open list: ?l ...)))
 ```
 
-Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask for the quick ones, and for pairs that fit in three hours.
+Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask for the quick ones, and for pairs that fit in three hours, with what each pair adds up to.
 
 ```notation
 (concept (estimate ?t hours: ?h)
@@ -72,19 +74,19 @@ Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask f
   (estimate ?t hours: ?h)
   (< ?h : 2))
 
-(select (tour.morning ?a with: ?b)
+(select (tour.morning ?a with: ?b total: (+ ?p : ?q))
   (estimate ?a hours: ?p)
   (estimate ?b hours: ?q)
   (< ?p : ?q)
   (<= (+ ?p : ?q) : 3))
 ```
 
-A fold: a `query` collects with `distinct` and counts. Here, one summary per list with how many things are on it.
+A fold: a `query` collects with `collect` and counts. Here, one summary per list with how many things are on it.
 
 ```notation
 (query (list/summary ?l is: ?summary)
   (list ?l name: ?name)
-  (todo (distinct ?t) list: ?l ...)
+  (todo (collect ?t) list: ?l ...)
   (is ?summary {:name ?name :todos (count ?t)}))
 
 (select (list/summary ?l is: ?summary))
@@ -115,20 +117,16 @@ Rules can recurse. One to-do blocks another; blocking is transitive.
 (select (tour.before ?a then: todo:milk))
 ```
 
-An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Completing a to-do asserts its new state and retracts the old one: two rules of one command, one that asserts and one that retracts. They write the attribute itself, `tour.todo` with only `state:`, as a write through the concept would say every field.
+An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do writes it again with its state done: the state is cardinality one, so the new claim succeeds the open one, and nothing has to be taken back.
 
 ```notation
 (concept (todo/complete todo: ?t)
-  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control))
+  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))
 
 ; Completing a to-do makes it done.
-(rule (assert (tour.todo ?t state: (:last (:entity :done))))
-  (todo/complete todo: ?t))
-
-; And takes back the state it had.
-(rule (retract (tour.todo ?t state: ?was))
+(rule (assert (todo ?t title: ?title state: :done list: ?l))
   (todo/complete todo: ?t)
-  (tour.todo ?t state: ?was))
+  (todo ?t title: ?title state: :open list: ?l))
 ```
 
 Now issue the command, and read the state back in the same cell: the rules fired in the commit that carried it.
@@ -154,6 +152,20 @@ Now issue the command, and read the state back in the same cell: the rules fired
 (select (tagged ?t tag: ?tag))
 ```
 
+A field can elect one of many claims with `max` or `min`. Over a listed type they rank by the listing, which is written least first: `max` elects the case listed last. A to-do's urgency keeps every level it was given, and reads the highest.
+
+```notation
+(concept (urgency ?t level: (max ?u))
+  (tour.todo/urgency of: ?t is: ?u as: [:low :normal :high] cardinality: :many))
+
+(assert (urgency todo:deck level: :normal))
+(assert (urgency todo:deck level: :high))
+(assert (urgency todo:deck level: :low))
+(assert (urgency todo:seeds level: :low))
+
+(select (urgency ?t level: ?level))
+```
+
 ## Patterns over maps and lists
 
 A value can be a record or a list, and a query takes it apart by shape. An open map matches any record that has the keys asked for; `...` names the rest.
@@ -167,6 +179,14 @@ A value can be a record or a list, and a query takes it apart by shape. An open 
 (select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))
 ```
 
+The empty set is written `{:}` (and the empty map `{}`). It is stored as the empty list, so the answer reads it back as `[]`, and a pattern `{:}` finds it.
+
+```notation
+(assert (tour.note note:3 about: {:author "Lin" :tags {:}}))
+
+(select (tour.note ?n about: {:author ?who :tags {:}}))
+```
+
 ## Views
 
 A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, as the notation writes an entity as text: `open:` or `done:` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class.
@@ -178,7 +198,7 @@ A view is a query whose answer is markup. A list's card holds an item per to-do 
 
 (query (list/card ?l is: ?card)
   (list ?l name: ?name)
-  (todo/item _ list: ?l is: (distinct ?items))
+  (todo/item _ list: ?l is: (collect ?items))
   (view ?card [:article [:h3 ?name] [:ul ?items]]))
 
 (select (list/card list:home is: ?card))
@@ -241,6 +261,29 @@ A name nothing defines:
 (rule (tour.seen ?t)
   (todo ?t title: ?title ...)
   (frobnicate ?t))
+```
+
+A line of a concept that says no cardinality:
+
+```notation
+; expect: refused
+(concept (tour.flag ?t on: ?on)
+  (tour.todo/flag of: ?t is: ?on as: :boolean))
+```
+
+A read that leaves fields out without `...`: the refusal names what it leaves out and the read written with `...`.
+
+```notation
+; expect: refused
+(select (todo ?t title: ?title))
+```
+
+`top` is gone from the notation: the refusal says what to write instead.
+
+```notation
+; expect: refused
+(concept (tour.rank ?t level: (top ?u))
+  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))
 ```
 
 A write through a concept that leaves a field out:

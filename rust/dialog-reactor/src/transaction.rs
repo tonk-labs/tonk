@@ -33,7 +33,7 @@
 //! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //! [`Stack::assert`]: dialog_repository::Stack::assert
 
-use dialog_corpus::{Changes, Cardinality, Relation, Statement, Update as _, Value};
+use dialog_corpus::{Cardinality, Changes, Relation, Statement, Update as _, Value};
 use dialog_repository::{Effect, Revision, control_layer};
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;

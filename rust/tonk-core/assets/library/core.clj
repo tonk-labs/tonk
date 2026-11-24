@@ -1,5 +1,5 @@
-; Copied from Dialog's rust/dialog-notation/sketches/core.clj at 7b7484a8cdd8904a2547ae0e2b0c5b935e23151a
-; (branch wip/engine-fold). Change it there and copy it again.
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/core.clj at b423dd7893ee297cbf4f3e27f1645c3171852c90
+; (branch feat/notation-poc). Change it there and copy it again.
 
 ; core: the concepts of tonk's core that the notebook reads and does not
 ; declare, from tonk's rust/tonk-core/assets/library/core.yaml at

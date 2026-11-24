@@ -378,7 +378,7 @@ impl<'a> BranchReference<'a> {
 mod tests {
     use super::ProfileUpgrade;
     use dialog_capability::Principal as _;
-    use dialog_corpus::{Entity, Cardinality, Relation, Statement, Update, Value};
+    use dialog_corpus::{Cardinality, Entity, Relation, Statement, Update, Value};
     use dialog_effects::storage::{Directory, Location};
     use dialog_peer::{Peer, PeerError, StepFuture};
     use dialog_repository::{Branch, Repository};

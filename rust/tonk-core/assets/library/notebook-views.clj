@@ -1,5 +1,5 @@
-; Copied from Dialog's rust/dialog-notation/sketches/notebook-views.clj at 7b7484a8cdd8904a2547ae0e2b0c5b935e23151a
-; (branch wip/engine-fold). Change it there and copy it again.
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook-views.clj at b423dd7893ee297cbf4f3e27f1645c3171852c90
+; (branch feat/notation-poc). Change it there and copy it again.
 
 ; The notebook's views, restated as queries whose answer is markup, as
 ; design/macros/design-queries.md has them (stage 2 of 2026-11-18). Read
@@ -26,8 +26,8 @@
 ; 308-331.
 (query (notebook/ui ?n is: ?ui)
   (notebook/named ?n title: ?title)
-  (notebook/order-item ?n is: (distinct ?order))
-  (notebook/block-row _ notebook: ?n is: (distinct ?rows))
+  (notebook/order-item ?n is: (collect ?order))
+  (notebook/block-row _ notebook: ?n is: (collect ?rows))
   (view ?ui
     [:notebook-save {:style "display: block;"}
       [:tonk-notebook {:data-subject ?n
@@ -58,7 +58,7 @@
 
 ; Every notebook: one index, which stands empty when there is none.
 (query (notebook/directory is: ?directory)
-  (notebook/index-item _ is: (distinct ?items))
+  (notebook/index-item _ is: (collect ?items))
   (view ?directory [:div {:class "notebook-index"} ?items]))
 
 ; The index route: the draft notebook and the directory.
@@ -66,7 +66,7 @@
 ; nested display. A query collected reads this branch. YAML 434.
 (query (notebook/index-page ?site is: ?page)
   (notebook/index-route ?site repo: ?repo branch: ?branch)
-  (notebook/directory is: (distinct ?directory))
+  (notebook/directory is: (collect ?directory))
   (view ?page
     [:tonk-notebook-index {:class "notebook-index"}
       [:notebook-save {:style "display: block;"}
@@ -91,5 +91,5 @@
 ; GAP: read from another branch and space, as above. YAML 463.
 (query (notebook/page ?site is: ?page)
   (notebook/route ?site entity: ?entity repo: ?repo branch: ?branch)
-  (notebook/ui ?entity is: (distinct ?ui))
+  (notebook/ui ?entity is: (collect ?ui))
   (view ?page [:div {:class "notebook-space"} ?ui]))

@@ -137,9 +137,12 @@ async fn in_every_order(
         vec![forward, backward, rotated]
     };
     for order in orders {
-        let peer = open_peer(test_storage().await, Location::profile(unique_name("ranked")))
-            .await
-            .expect("a peer");
+        let peer = open_peer(
+            test_storage().await,
+            Location::profile(unique_name("ranked")),
+        )
+        .await
+        .expect("a peer");
         let operator = peer
             .session(b"ranked")
             .space(peer.state())
@@ -194,7 +197,10 @@ async fn device<E: Env>(branch: &Branch, operator: &E) -> String {
         .try_vec()
         .await
         .expect("the session reads");
-    match rows.first().and_then(|row| row.source().value_of("profile")) {
+    match rows
+        .first()
+        .and_then(|row| row.source().value_of("profile"))
+    {
         Some(Value::Entity(profile)) => profile.to_string(),
         other => panic!("no session profile: {other:?}"),
     }
@@ -227,7 +233,8 @@ async fn an_accounts_status_is_the_best_case_any_rule_derives() {
 }
 
 const SPACE: &str = "space!:\n  this: id:space\n  subject: id:subject\n";
-const REPLICATING: &str = "space/replicating!:\n  this: id:replicating\n  subject: id:subject\n  replicating: true\n";
+const REPLICATING: &str =
+    "space/replicating!:\n  this: id:replicating\n  subject: id:subject\n  replicating: true\n";
 const REPLICA: &str =
     "space/replica!:\n  this: id:replica\n  subject: id:subject\n  profile: {device}\n";
 const SEEDING: &str = "space/replica-status!:\n  this: id:replica\n  status: tonk:blank\n";
@@ -254,7 +261,8 @@ async fn a_spaces_presence_is_the_best_case_any_rule_derives() {
     presence(&[REPLICATING], "case:replicating").await;
 }
 
-const SYNCED: &str = "space/synced!:\n  this: id:space\n  home-address: \"https://sync.example/\"\n";
+const SYNCED: &str =
+    "space/synced!:\n  this: id:space\n  home-address: \"https://sync.example/\"\n";
 const PAUSED: &str = "replica/sync-enabled!:\n  this: id:replica\n  enabled: false\n";
 
 /// A synced space paused on this device reads as paused; synced
@@ -262,7 +270,15 @@ const PAUSED: &str = "replica/sync-enabled!:\n  this: id:replica\n  enabled: fal
 #[dialog_common::test]
 async fn a_spaces_sync_is_the_best_case_any_rule_derives() {
     let sync = |facts: &'static [&'static str], expected: &'static str| async move {
-        in_every_order(facts, "tonk:space/sync", "sync", "id:space", expected, SPACE).await
+        in_every_order(
+            facts,
+            "tonk:space/sync",
+            "sync",
+            "id:space",
+            expected,
+            SPACE,
+        )
+        .await
     };
     sync(&[SYNCED, REPLICA, PAUSED], "case:paused").await;
     sync(&[SYNCED], "case:synced").await;

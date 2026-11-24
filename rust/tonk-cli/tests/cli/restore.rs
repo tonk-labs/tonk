@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dialog_corpus::{Changes, Cardinality, Update, Value};
+use dialog_corpus::{Cardinality, Changes, Update, Value};
 use dialog_repository::Revision;
 use tonk_cli::{
     branches, log,

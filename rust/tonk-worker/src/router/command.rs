@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use dialog_capability::{Command, Provider};
 use dialog_common::{ConditionalSend, ConditionalSync};
-use dialog_corpus::{Changes, Entity, Fact, Cardinality, Update as _, Value};
+use dialog_corpus::{Cardinality, Changes, Entity, Fact, Update as _, Value};
 use dialog_query::ConceptDescriptor;
 use dialog_repository::{
     CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack,

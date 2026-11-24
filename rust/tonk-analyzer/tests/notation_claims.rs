@@ -722,23 +722,29 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // Moved at dialog 7b7484a8 from 107 and 231 identical: the notebook's
     // views are queries now, kept by `notation::live`, and no longer
     // lowered to tonk's `xyz.tonk.view/*` and event claims.
+    // Moved at dialog b423dd78 from 376 YAML claims and 87 identical:
+    // main's notebook.yaml grew, and an attribute is a relation, a type
+    // and a cardinality on both sides now, so the two notations name
+    // more of the same attributes.
     assert_eq!(
         as_it_is,
         Headline {
-            yaml: 376,
-            identical: 87,
-            differently: 207,
-            not_at_all: 82,
-            only_notation: 271,
+            yaml: 390,
+            identical: 211,
+            differently: 112,
+            not_at_all: 67,
+            only_notation: 147,
         }
     );
+    // At b423dd78 the adjustment changes nothing: what it adjusted is how
+    // the notation now writes the notebook as it is.
     assert_eq!(
         read_one,
         Headline {
-            yaml: 376,
+            yaml: 390,
             identical: 211,
-            differently: 107,
-            not_at_all: 58,
+            differently: 112,
+            not_at_all: 67,
             only_notation: 147,
         }
     );

@@ -791,7 +791,8 @@ impl Graph {
                             .or(variable.as_deref()),
                         attribute,
                     );
-                    let application = attribute_application(&plan.descriptor, plan.reading, &entity, name);
+                    let application =
+                        attribute_application(&plan.descriptor, plan.reading, &entity, name);
                     declared.insert(
                         pending.index,
                         DeclaredApplication {

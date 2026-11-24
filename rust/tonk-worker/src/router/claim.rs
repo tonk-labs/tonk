@@ -11,7 +11,7 @@ use ::axum::{
 };
 use axum::extract::Query as AxumQuery;
 use base64::Engine;
-use dialog_corpus::{Entity, Cardinality, Relation, Selector, Statement, Update, Value};
+use dialog_corpus::{Cardinality, Entity, Relation, Selector, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};

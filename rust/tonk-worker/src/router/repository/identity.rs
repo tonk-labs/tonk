@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dialog_corpus::{Entity, Fact, Cardinality, Relation, Selector, Value};
+use dialog_corpus::{Cardinality, Entity, Fact, Relation, Selector, Value};
 use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use futures_util::StreamExt as _;
@@ -184,7 +184,12 @@ pub(super) async fn rekey(
                 continue;
             }
             retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
-            assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Cardinality::Many));
+            assert.push(raw(
+                &claim.the,
+                &claim.of,
+                &follow(&claim.is),
+                Cardinality::Many,
+            ));
         }
 
         let about = select(tonk, batch, Selector::new().of(earlier.clone())).await?;

@@ -950,8 +950,8 @@ mod tests {
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::field_attribute_statements(attr)
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }
@@ -1019,8 +1019,8 @@ mod tests {
                     .expect("descriptor JSON is well-formed");
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::field_attribute_statements(attr)
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }

@@ -703,7 +703,9 @@ impl Statement for AnonymousConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
     }
     fn retract(self, update: &mut impl Update) {
@@ -806,7 +808,9 @@ impl Statement for TransientConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
         dialog_repository::Transient(self.this).assert(update);
     }

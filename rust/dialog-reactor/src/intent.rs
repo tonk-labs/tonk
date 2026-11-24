@@ -43,7 +43,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dialog_corpus::{Change, Changes, Entity, Fact, Cardinality, Relation, Update as _};
+use dialog_corpus::{Cardinality, Change, Changes, Entity, Fact, Relation, Update as _};
 use dialog_query::Value;
 use dialog_repository::{Branch, session_layer};
 use futures_util::TryStreamExt as _;

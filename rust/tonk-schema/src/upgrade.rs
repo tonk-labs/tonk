@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::pick::Reading;
 use dialog_corpus::{
-    Entity, Fact, Cardinality, Relation as CorpusRelation, Selector, Statement, Update, Value,
+    Cardinality, Entity, Fact, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
@@ -400,7 +400,10 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Reading)> 
             serde_json::Value::String(description),
         );
     }
-    Some((serde_json::from_value(serde_json::Value::Object(shape)).ok()?, reading))
+    Some((
+        serde_json::from_value(serde_json::Value::Object(shape)).ok()?,
+        reading,
+    ))
 }
 
 /// Whether a claim about an attribute entity is part of its definition,
