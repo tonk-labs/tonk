@@ -1,0 +1,9 @@
+<main style="max-width: 46rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif;">
+  <h1>Slides</h1>
+  <form on:slide-deck-create=slide-deck/create style="display: flex; gap: .5rem; margin: 1rem 0 2rem;">
+    <input name="title" placeholder="Title of a new deck" required style="flex: 1; padding: .4rem .6rem;">
+    <button type="submit">New deck</button>
+  </form>
+  <ul><tonk-display with="{branch}@{repo}" model=slide-deck/deck view=link></tonk-display></ul>
+  <p style="font-size: 13px; color: #777;">Open a deck at a slide with <code>/slide/&lt;deck&gt;/&lt;n&gt;</code>.</p>
+</main>

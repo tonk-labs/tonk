@@ -1,0 +1,9 @@
+<div style="display: flex; flex-direction: column; height: 100vh; font-family: system-ui, sans-serif;">
+  <nav style="display: flex; gap: 1rem; padding: .35rem .75rem; font-size: 13px;">
+    <a href="/slide">All decks</a>
+    <a href="/slide/edit/{entity}/{slide}">Edit</a>
+  </nav>
+  <slide-deck deck={entity} start={slide} style="flex: 1;">
+    <tonk-display with="{branch}@{repo}" model=slide-deck/open-slide view=row></tonk-display>
+  </slide-deck>
+</div>

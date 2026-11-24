@@ -1,0 +1,12 @@
+<div class="slide-card" data-slide={this} data-deck={deck} data-at={at} style="border: 1px solid #8885; border-radius: 8px; padding: .5rem .75rem; margin-bottom: .75rem;">
+  <div style="display: flex; gap: .4rem; align-items: center; font-size: 12px; margin-bottom: .35rem;">
+    <strong class="slide-number" style="min-width: 1.5em;"></strong>
+    <label><input type="checkbox" checked={below} on:toggle=slide-deck/stack> stacked below the previous slide</label>
+    <span style="flex: 1;"></span>
+    <button data-act="up" title="Move up">↑</button>
+    <button data-act="down" title="Move down">↓</button>
+    <button data-act="add" title="Add a slide after this one">+ after</button>
+    <button on:click=slide-deck/remove title="Remove this slide">✕</button>
+  </div>
+  <slide-editor on:slide-edit=slide-deck/edit>{source}</slide-editor>
+</div>

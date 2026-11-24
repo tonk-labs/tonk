@@ -1,0 +1,607 @@
+# slide-deck: decks of markdown slides, presented and edited in the space.
+#
+# A deck is an entity with a title; each slide is an entity of its own,
+# with its markdown, the deck it belongs to, a fractional position in it
+# (`dialog/position`, so two replicas inserting at once both land), and
+# whether it stacks below the slide before it (a vertical slide). A line
+# `Note:` starts a slide's speaker notes, which are not shown.
+#
+# Pages:
+#   /slide                           every deck, and a form to start one
+#   /slide/<deck>[/<n>]              present it, from slide n (from 1)
+#   /slide/edit/<deck>[/<n>]         edit it, its preview at slide n
+#
+# Three elements, defined below with `element!:`, so installing this
+# component needs nothing from the host: no bundle, no host element, no
+# stylesheet, and nothing loaded from the network.
+#
+#   <slide-deck>   presents the `.slide-part` rows rendered inside it: a
+#                  16:9 stage, slides left and right, stacks up and down,
+#                  its own markdown renderer and code highlighter, and
+#                  ```svg fences drawn as sanitized diagrams.
+#   <slide-board>  the editor's list: orders and numbers the slides of its
+#                  deck, turns their buttons into `slide-insert` and
+#                  `slide-move` events, and moves the preview to a slide
+#                  when its editor takes focus.
+#   <slide-editor> one slide's markdown, with <prose-editor> or
+#                  <code-editor> when the space has them (it asks for them
+#                  with `tonk-element-needed`), else a textarea.
+#
+# A page draws only its own deck: `slide-deck/open-slide` is derived from
+# the site entity, the slides of the deck a tab on this device has open.
+
+concept!: &slide-deck/deck
+  description: A deck of slides, each slide an entity of its own.
+  with:
+    title:
+      description: The deck's title.
+      the: xyz.tonk.slide-deck.deck/title
+      as: text
+
+concept!: &slide-deck/slide
+  description: |
+    One slide of a deck: its own markdown, at a fractional position in
+    its deck, either a slide of its own or stacked below the one before
+    it. Speaker notes are the slide's markdown after a line `Note:`.
+  with:
+    deck:
+      description: The deck the slide belongs to.
+      the: xyz.tonk.slide-deck.slide/deck
+      as: entity
+    at:
+      description: The slide's position in its deck, sorted as text.
+      the: xyz.tonk.slide-deck.slide/at
+      as: text
+    source:
+      description: The slide's markdown.
+      the: xyz.tonk.slide-deck.slide/source
+      as: text
+    below:
+      description: Whether the slide stacks below the slide before it.
+      the: xyz.tonk.slide-deck.slide/below
+      as: boolean
+
+# One field each, so a move, an edit or a toggle writes that field alone.
+concept!: &slide-deck/position
+  description: A slide's position, on its own, for moving it.
+  with:
+    at:
+      description: The position, sorted as text.
+      the: xyz.tonk.slide-deck.slide/at
+      as: text
+
+concept!: &slide-deck/source
+  description: A slide's markdown, on its own, for editing it.
+  with:
+    source:
+      description: The slide's markdown.
+      the: xyz.tonk.slide-deck.slide/source
+      as: text
+
+concept!: &slide-deck/stacking
+  description: Whether a slide stacks below the one before it, on its own.
+  with:
+    below:
+      description: Whether it stacks below.
+      the: xyz.tonk.slide-deck.slide/below
+      as: boolean
+
+# Either end of a deck. `dialog/position` reads `""` as an open bound, so
+# an insert or a move naming the edge lands before the first slide or
+# after the last.
+slide-deck/position!:
+  this: tonk:slide-deck/edge
+  at: ""
+
+command!: &slide-deck/create
+  description: Start a new deck.
+  with:
+    title:
+      description: The new deck's title.
+      the: xyz.tonk.slide-deck.create/title
+      as: text
+    time:
+      description: When it was asked, so two decks of one title differ.
+      the: xyz.tonk.slide-deck.create/time
+      as: float
+
+rule!:
+  description: A created deck has its title.
+  assert!: slide-deck/deck
+  when:
+    - assert: slide-deck/create
+      where: { this: ?this, title: ?title }
+
+command!: &slide-deck/retitle
+  description: Rename a deck.
+  with:
+    subject:
+      description: The deck.
+      the: xyz.tonk.slide-deck.retitle/subject
+      as: entity
+    value:
+      description: Its new title.
+      the: xyz.tonk.slide-deck.retitle/value
+      as: text
+
+rule!:
+  description: A retitle writes the deck's title.
+  assert!: slide-deck/deck
+  when:
+    - assert: slide-deck/retitle
+      where: { subject: ?this, value: ?title }
+
+command!: &slide-deck/insert
+  description: Add a new slide to a deck between two neighbours (`tonk:slide-deck/edge` at either end).
+  with:
+    deck:
+      description: The deck.
+      the: xyz.tonk.slide-deck.insert/deck
+      as: entity
+    prev:
+      description: The slide the new one follows, or the edge.
+      the: xyz.tonk.slide-deck.insert/prev
+      as: entity
+    next:
+      description: The slide the new one precedes, or the edge.
+      the: xyz.tonk.slide-deck.insert/next
+      as: entity
+    time:
+      description: When it was asked, so two inserts differ.
+      the: xyz.tonk.slide-deck.insert/time
+      as: float
+
+rule!:
+  description: An inserted slide is a new slide between its neighbours.
+  assert!: slide-deck/slide
+  when:
+    - assert: slide-deck/insert
+      where: { this: ?this, deck: ?deck, prev: ?prev, next: ?next }
+    - assert: slide-deck/position
+      where: { this: ?prev, at: ?after }
+    - assert: slide-deck/position
+      where: { this: ?next, at: ?before }
+    - assert: dialog/position
+      where: { member: ?this, after: ?after, before: ?before, is: ?at }
+    - assert: "=="
+      where: { this: ?source, is: "## New slide" }
+    - assert: "=="
+      where: { this: ?below, is: false }
+
+command!: &slide-deck/move
+  description: Move a slide between two neighbours (`tonk:slide-deck/edge` at either end).
+  with:
+    subject:
+      description: The slide to move.
+      the: xyz.tonk.slide-deck.move/subject
+      as: entity
+    prev:
+      description: The slide it will follow, or the edge.
+      the: xyz.tonk.slide-deck.move/prev
+      as: entity
+    next:
+      description: The slide it will precede, or the edge.
+      the: xyz.tonk.slide-deck.move/next
+      as: entity
+    time:
+      description: When it was asked, so two moves differ.
+      the: xyz.tonk.slide-deck.move/time
+      as: float
+
+rule!:
+  description: A moved slide takes a position between its new neighbours.
+  assert!: slide-deck/position
+  when:
+    - assert: slide-deck/move
+      where: { subject: ?this, prev: ?prev, next: ?next }
+    - assert: slide-deck/position
+      where: { this: ?prev, at: ?after }
+    - assert: slide-deck/position
+      where: { this: ?next, at: ?before }
+    - assert: dialog/position
+      where: { member: ?this, after: ?after, before: ?before, is: ?at }
+
+command!: &slide-deck/edit
+  description: Write one slide's markdown from its editor.
+  with:
+    subject:
+      description: The slide.
+      the: xyz.tonk.slide-deck.edit/subject
+      as: entity
+    source:
+      description: Its new markdown.
+      the: xyz.tonk.slide-deck.edit/source
+      as: text
+
+rule!:
+  description: An edit writes the slide's markdown.
+  assert!: slide-deck/source
+  when:
+    - assert: slide-deck/edit
+      where: { subject: ?this, source: ?source }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: _, at: _, source: _, below: _ }
+
+command!: &slide-deck/stack
+  description: Set whether a slide stacks below the one before it (a checkbox's toggle).
+  with:
+    subject:
+      description: The slide.
+      the: xyz.tonk.slide-deck.stack/subject
+      as: entity
+    checked:
+      description: Whether it stacks below.
+      the: xyz.tonk.slide-deck.stack/checked
+      as: boolean
+
+rule!:
+  description: Stacking writes the slide's flag.
+  assert!: slide-deck/stacking
+  when:
+    - assert: slide-deck/stack
+      where: { subject: ?this, checked: ?below }
+
+command!: &slide-deck/remove
+  description: Remove a slide from its deck.
+  with:
+    subject:
+      description: The slide.
+      the: xyz.tonk.slide-deck.remove/subject
+      as: entity
+
+rule!:
+  description: A removed slide's facts are retracted.
+  retract!: slide-deck/slide
+  when:
+    - assert: slide-deck/remove
+      where: { subject: ?this }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: ?deck, at: ?at, source: ?source, below: ?below }
+
+event!: &on/slide-deck-create
+  type: "submit"
+  prevent-default: true
+  where:
+    title: ".currentTarget.elements.title.value"
+    time: ".timeStamp"
+
+event!: &on/slide-deck-retitle
+  type: "change"
+  where:
+    subject: ".currentTarget.dataset.deck"
+    value: ".currentTarget.value"
+
+event!: &on/slide-insert
+  type: "slide-insert"
+  where:
+    deck: ".detail.deck"
+    prev: ".detail.prev"
+    next: ".detail.next"
+    time: ".detail.time"
+
+event!: &on/slide-move
+  type: "slide-move"
+  where:
+    subject: ".detail.subject"
+    prev: ".detail.prev"
+    next: ".detail.next"
+    time: ".detail.time"
+
+event!: &on/slide-edit
+  type: "slide-edit"
+  where:
+    subject: "{this}"
+    source: ".detail.source"
+
+# The pages. Each picks its fields off the site entity.
+
+concept!: &slide-deck/index-page
+  this: tonk:slide-deck/index-page
+  description: Every deck in the space (`/slide`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+concept!: &slide-deck/present-page
+  this: tonk:slide-deck/present-page
+  description: A deck presented (`/slide/<deck>`).
+  with:
+    entity:
+      description: The deck from the path.
+      the: xyz.tonk.site/entity
+      as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+concept!: &slide-deck/present-at-page
+  this: tonk:slide-deck/present-at-page
+  description: A deck presented from a given slide (`/slide/<deck>/<n>`).
+  with:
+    entity:
+      description: The deck from the path.
+      the: xyz.tonk.site/entity
+      as: entity
+    slide:
+      description: The slide to open at, counted from 1, stacked slides included.
+      the: xyz.tonk.site/slide
+      as: text
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+concept!: &slide-deck/edit-page
+  this: tonk:slide-deck/edit-page
+  description: A deck's slides, each edited on its own, beside a live preview (`/slide/edit/<deck>`).
+  with:
+    entity:
+      description: The deck from the path.
+      the: xyz.tonk.site/entity
+      as: entity
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+concept!: &slide-deck/edit-at-page
+  this: tonk:slide-deck/edit-at-page
+  description: A deck's editor with its preview at a given slide (`/slide/edit/<deck>/<n>`).
+  with:
+    entity:
+      description: The deck from the path.
+      the: xyz.tonk.site/entity
+      as: entity
+    slide:
+      description: The slide the preview opens at, counted from 1, stacked slides included.
+      the: xyz.tonk.site/slide
+      as: text
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+# What a page draws: the slides of the deck a tab has open, and no other
+# deck's, so neither the presenter nor the editor reads every slide in
+# the space.
+concept!: &slide-deck/open-slide
+  description: A slide of a deck some tab on this device has open, derived from the tab's site entity.
+  with:
+    deck:
+      description: The deck the open page shows.
+      the: xyz.tonk.slide-deck.open/deck
+      as: entity
+    at:
+      description: The slide's position.
+      the: xyz.tonk.slide-deck.open/at
+      as: text
+    source:
+      description: The slide's markdown.
+      the: xyz.tonk.slide-deck.open/source
+      as: text
+    below:
+      description: Whether it stacks below the slide before it.
+      the: xyz.tonk.slide-deck.open/below
+      as: boolean
+
+rule!:
+  description: A slide is open while a tab presents its deck.
+  assert: slide-deck/open-slide
+  when:
+    - assert: site
+      where: { this: ?site, concept: tonk:slide-deck/present-page }
+    - assert: slide-deck/present-page
+      where: { this: ?site, entity: ?deck }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: ?deck, at: ?at, source: ?source, below: ?below }
+
+rule!:
+  description: A slide is open while a tab presents its deck from a given slide.
+  assert: slide-deck/open-slide
+  when:
+    - assert: site
+      where: { this: ?site, concept: tonk:slide-deck/present-at-page }
+    - assert: slide-deck/present-at-page
+      where: { this: ?site, entity: ?deck }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: ?deck, at: ?at, source: ?source, below: ?below }
+
+rule!:
+  description: A slide is open while a tab edits its deck.
+  assert: slide-deck/open-slide
+  when:
+    - assert: site
+      where: { this: ?site, concept: tonk:slide-deck/edit-page }
+    - assert: slide-deck/edit-page
+      where: { this: ?site, entity: ?deck }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: ?deck, at: ?at, source: ?source, below: ?below }
+
+rule!:
+  description: A slide is open while a tab edits its deck at a given slide.
+  assert: slide-deck/open-slide
+  when:
+    - assert: site
+      where: { this: ?site, concept: tonk:slide-deck/edit-at-page }
+    - assert: slide-deck/edit-at-page
+      where: { this: ?site, entity: ?deck }
+    - assert: slide-deck/slide
+      where: { this: ?this, deck: ?deck, at: ?at, source: ?source, below: ?below }
+
+view!:
+  this: slide-deck/deck
+  show:
+    label: |
+      {title}
+    ui: |
+      <p><strong>{title}</strong> · <a href="/slide/{this}">present</a> · <a href="/slide/edit/{this}">edit</a></p>
+    link: |
+      <li><a href="/slide/{this}">{title}</a> · <a href="/slide/edit/{this}">edit</a></li>
+    title-field: |
+      <input data-deck={this} value={title} on:slide-deck-retitle=slide-deck/retitle style="font: inherit; font-size: 1.3rem; font-weight: 700; border: none; border-bottom: 1px dashed #8886; background: transparent; color: inherit; width: 100%;">
+
+# `row` is what <slide-deck> reads; `editor` is one card of <slide-board>.
+view!:
+  this: slide-deck/open-slide
+  show:
+    row: |
+      <div class="slide-part" hidden data-part={this} data-deck={deck} data-at={at} data-below={below}>{source}</div>
+    editor: !include/text ./slide-deck/card.html
+
+view!:
+  this: tonk:slide-deck/index-page
+  show:
+    ui: !include/text ./slide-deck/index.html
+
+view!:
+  this: tonk:slide-deck/present-page
+  show:
+    ui: !include/text ./slide-deck/present.html
+
+view!:
+  this: tonk:slide-deck/present-at-page
+  show:
+    ui: !include/text ./slide-deck/present-at.html
+
+view!:
+  this: tonk:slide-deck/edit-page
+  show:
+    ui: !include/text ./slide-deck/edit.html
+
+view!:
+  this: tonk:slide-deck/edit-at-page
+  show:
+    ui: !include/text ./slide-deck/edit-at.html
+
+# `/slide/edit/...` wins over `/slide/{*entity}/{slide}` for an edit path:
+# the router prefers the route with more literal text. A deck entity with
+# a `/` in it cannot be opened at a slide (a `{*span}` ends at the first
+# `/` before the next segment), so name decks without one.
+route!:
+  this: tonk:slide-deck/route
+  path: "/slide"
+  concept: tonk:slide-deck/index-page
+
+route!:
+  this: tonk:slide-deck/route/present
+  path: "/slide/{*entity}"
+  concept: tonk:slide-deck/present-page
+
+route!:
+  this: tonk:slide-deck/route/present-at
+  path: "/slide/{*entity}/{slide}"
+  concept: tonk:slide-deck/present-at-page
+
+route!:
+  this: tonk:slide-deck/route/edit
+  path: "/slide/edit/{*entity}"
+  concept: tonk:slide-deck/edit-page
+
+route!:
+  this: tonk:slide-deck/route/edit-at
+  path: "/slide/edit/{*entity}/{slide}"
+  concept: tonk:slide-deck/edit-at-page
+
+# The methods in `slide-deck/deck/` are <slide-deck>'s class.
+#
+# Attributes: `deck`, the deck whose rows it presents (rows of another
+# deck are ignored); `start`, the slide to open at, from 1, followed when
+# it changes; `preview`, present, for the editor's side panel (no
+# fullscreen, no keyboard unless focused). `showPart(slide)` moves it to
+# the slide with that entity. Keys: arrows, space, page up and down,
+# home, end, and `f` for fullscreen.
+element!: &slide-deck
+  description: Presents the deck named by its `deck` attribute, reading its markdown from the `.slide-part` rows rendered inside it, slides and vertical stacks on a 16:9 stage, with its own markdown renderer and code highlighter. Loads nothing from the network.
+  method:
+    connected: !include/text ./slide-deck/deck/connected.js
+    disconnected: !include/text ./slide-deck/deck/disconnected.js
+    released: !include/text ./slide-deck/deck/released.js
+    swapped: !include/text ./slide-deck/deck/swapped.js
+    attribute-changed: !include/text ./slide-deck/deck/attribute-changed.js
+    schedule: !include/text ./slide-deck/deck/schedule.js
+    fit: !include/text ./slide-deck/deck/fit.js
+    rebuild: !include/text ./slide-deck/deck/rebuild.js
+    collect: !include/text ./slide-deck/deck/collect.js
+    strip-envelope: !include/text ./slide-deck/deck/strip-envelope.js
+    split-slides: !include/text ./slide-deck/deck/split-slides.js
+    to-html: !include/text ./slide-deck/deck/to-html.js
+    inline: !include/text ./slide-deck/deck/inline.js
+    escape: !include/text ./slide-deck/deck/escape.js
+    safe-url: !include/text ./slide-deck/deck/safe-url.js
+    diagram: !include/text ./slide-deck/deck/diagram.js
+    grammar: !include/text ./slide-deck/deck/grammar.js
+    highlight: !include/text ./slide-deck/deck/highlight.js
+    show: !include/text ./slide-deck/deck/show.js
+    update: !include/text ./slide-deck/deck/update.js
+    step: !include/text ./slide-deck/deck/step.js
+    handle-key: !include/text ./slide-deck/deck/handle-key.js
+    keyboard-ok: !include/text ./slide-deck/deck/keyboard-ok.js
+    go-fullscreen: !include/text ./slide-deck/deck/go-fullscreen.js
+    go-to: !include/text ./slide-deck/deck/go-to.js
+    show-part: !include/text ./slide-deck/deck/show-part.js
+    base-style: !include/text ./slide-deck/deck/base-style.js
+
+# The methods in `slide-deck/board/` are <slide-board>'s class.
+#
+# Attribute: `deck`. It shows only the `.slide-card` rows of that deck, in
+# position order, numbers them, and on focus inside a card calls
+# `showPart` on the <slide-deck> of the same deck.
+element!: &slide-board
+  description: Edits a deck, showing only the `.slide-card` rows of the deck named by its `deck` attribute, in position order and numbered, and turning their up, down and add buttons into `slide-move` and `slide-insert` events naming the neighbours.
+  method:
+    connected: !include/text ./slide-deck/board/connected.js
+    disconnected: !include/text ./slide-deck/board/disconnected.js
+    released: !include/text ./slide-deck/board/released.js
+    swapped: !include/text ./slide-deck/board/swapped.js
+    schedule: !include/text ./slide-deck/board/schedule.js
+    ordered: !include/text ./slide-deck/board/ordered.js
+    arrange: !include/text ./slide-deck/board/arrange.js
+    handle-click: !include/text ./slide-deck/board/handle-click.js
+    handle-focus: !include/text ./slide-deck/board/handle-focus.js
+    emit: !include/text ./slide-deck/board/emit.js
+
+# The methods in `slide-deck/editor/` are <slide-editor>'s class.
+#
+# Its text content is the slide's stored markdown. Attribute: `editor`,
+# `code` to prefer <code-editor> over <prose-editor>.
+element!: &slide-editor
+  description: Edits one slide, its text content being the stored markdown, with <prose-editor> or <code-editor> when the space has them, else a plain textarea; `slide-edit` carries the edit as `detail.source`.
+  method:
+    connected: !include/text ./slide-deck/editor/connected.js
+    disconnected: !include/text ./slide-deck/editor/disconnected.js
+    released: !include/text ./slide-deck/editor/released.js
+    swapped: !include/text ./slide-deck/editor/swapped.js
+    preference: !include/text ./slide-deck/editor/preference.js
+    choose: !include/text ./slide-deck/editor/choose.js
+    stored: !include/text ./slide-deck/editor/stored.js
+    markdown: !include/text ./slide-deck/editor/markdown.js
+    mount-with: !include/text ./slide-deck/editor/mount-with.js
+    render-bar: !include/text ./slide-deck/editor/render-bar.js
+    current: !include/text ./slide-deck/editor/current.js
+    flush-edit: !include/text ./slide-deck/editor/flush-edit.js
+    emit-edit: !include/text ./slide-deck/editor/emit-edit.js
+    adopt-stored: !include/text ./slide-deck/editor/adopt-stored.js
+    editor-style: !include/text ./slide-deck/editor/editor-style.js
