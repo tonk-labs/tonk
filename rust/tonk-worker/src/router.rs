@@ -136,6 +136,7 @@ pub use repository::{
 pub(crate) mod remotes;
 
 mod sync;
+pub(crate) use account_state::ProfileHydration;
 pub use dialog_repository::Revision;
 pub(crate) use sync::ProfileSwaps;
 pub use sync::{
@@ -3926,6 +3927,47 @@ employee:
             .get("conclusions")
             .cloned()
             .expect("snapshot frame carries a conclusions array")
+    }
+
+    /// A stream on profile main opened while the profile takes over an
+    /// account's content says it waits, and answers nothing, until the
+    /// take-over is done (BUG-351): the branch holds no library in that
+    /// time, and a page drawing it rendered its site as a notation dump.
+    /// Its first rows come once the hydration lifts, on the same stream.
+    /// Natively: `router::query::tests::a_profile_stream_waits_out_a_hydration`.
+    #[dialog_common::test]
+    async fn it_answers_pending_on_profile_main_until_hydration_lifts() {
+        use futures_util::FutureExt as _;
+        use std::sync::Arc;
+
+        let tonk = test_state().await;
+        let hydration = tonk.profile_hydration.clone();
+        let branch = tonk.active_branch.clone();
+        let app_state: crate::router::AppState = Arc::new(crate::StateLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state);
+
+        let hydrating = hydration.begin();
+        let mut stream = open_subscription(&app, "profile:tonk", &branch).await;
+        assert_eq!(
+            read_sse_frame(&mut stream).await,
+            serde_json::json!({ "control": "pending" }),
+            "a stream opened mid-hydration says it waits"
+        );
+        // Long enough for a subscription opened regardless to have sent
+        // its snapshot.
+        let _ = crate::r#async::sleep(web_time::Duration::from_millis(200)).await;
+        assert!(
+            stream.next_event().now_or_never().is_none(),
+            "nothing is answered while the hydration holds the branch"
+        );
+
+        drop(hydrating);
+        let frame = read_sse_frame(&mut stream).await;
+        assert_eq!(
+            frame.get("kind").and_then(|kind| kind.as_str()),
+            Some("snapshot"),
+            "the rows follow once it lifts: {frame}"
+        );
     }
 
     /// One-shot `/query` returns the current matches as a JSON

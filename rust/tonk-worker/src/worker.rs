@@ -519,6 +519,10 @@ pub struct TonkShared {
     /// Shared across every profile's state, as the transition lock is:
     /// raised as a swap begins, so syncs give up their guard on the state.
     pub(crate) profile_swaps: crate::router::ProfileSwaps,
+    /// Held while profile main takes over an account's content, so the
+    /// query route answers streams on it `pending` until it is whole.
+    /// See [`crate::router::ProfileHydration`].
+    pub(crate) profile_hydration: crate::router::ProfileHydration,
 }
 
 impl TonkState {
@@ -1977,6 +1981,7 @@ async fn open_state(
             profile_transition: Arc::new(Mutex::new(())),
             context_generation: Arc::new(AtomicU64::new(0)),
             profile_swaps: Default::default(),
+            profile_hydration: Default::default(),
         },
     ))
 }

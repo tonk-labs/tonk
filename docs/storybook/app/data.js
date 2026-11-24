@@ -1798,6 +1798,14 @@ window.STORYBOOK_DATA = {
       "result": "Focused regressions: it_replaces_obsolete_device_grants_and_repairs_a_repeat, it_repairs_obsolete_grants_when_following_an_existing_root, it_retracts_a_device_grant_added_after_the_branch_was_cached. it_keeps_the_current_device_grant_after_account_hydration also passes against a real local access service: old grant revoked, fresh grant installed, first-hydration and already-hydrated cases, bidirectional remote edits without restart. Live passkey and native callback with this patch remain unverified."
     },
     {
+      "claim": "A first sign-in on a browser new to the account says the spaces are arriving, and never draws a half-synced page (Remain in flight, BUG-351).",
+      "device": "fresh-browser + slow link",
+      "file": "verification/accounts.md",
+      "id": "LIFE-31",
+      "priority": "P1",
+      "result": "Browser: it_shows_the_account_arriving_after_a_first_sign_in passes against the dev build and fails without the worker fix with the reported No \\ui\\ view for tonk:site dump. Worker: a_first_contact_never_sends_profile_main_without_its_library, a_profile_stream_waits_out_a_hydration, the_last_navigation_during_a_hydration_wins. CI unverified at the time of writing."
+    },
+    {
       "claim": "Linked browser approves a waiting CLI end to end (Simple case).",
       "device": "hybrid",
       "file": "verification/accounts.md",
@@ -2569,7 +2577,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 16,
+    "other": 17,
     "pass": 3,
     "unrun": 107
   },

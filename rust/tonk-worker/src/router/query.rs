@@ -214,23 +214,37 @@ where
     drop(tokio::spawn(future));
 }
 
-/// The stream a page gets when the branch it subscribes to is about to be
-/// moved to this release's storage format: it opens with
-/// [`UPGRADING_FRAME`] at once, so the page says an upgrade is taking
-/// place rather than loading; the move runs detached from this request;
-/// then the subscription opens and its frames follow on the same stream.
-/// A failed move sends `{"control":"upgrade-failed","reason":…}` and the
-/// subscription still opens, on what the earlier release left.
-fn upgrading_response(
+/// The stream a page gets when the branch it subscribes to cannot answer
+/// yet. It opens with `notice` at once; then, detached from this request,
+/// it waits for `hydration` to lift when one is given, moves the branch to
+/// this release's storage format, and opens the subscription, whose frames
+/// follow on the same stream.
+///
+/// Two callers: a branch an earlier release wrote opens with
+/// [`UPGRADING_FRAME`], so the page says an upgrade is taking place rather
+/// than loading; profile main while it takes over an account's content
+/// opens with [`PENDING_FRAME`] and waits for the
+/// [`crate::router::ProfileHydration`] gate. A failed move sends
+/// `{"control":"upgrade-failed","reason":…}` and the subscription still
+/// opens, on what the earlier release left.
+fn deferred_response(
     state: AppState,
     target: QueryTarget,
     query: dialog_query::ConceptQuery,
     level: u32,
     client: Option<String>,
+    notice: &'static [u8],
+    hydration: Option<crate::router::ProfileHydration>,
 ) -> Response {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
-    let _ = sender.send(Bytes::from_static(UPGRADING_FRAME));
+    let _ = sender.send(Bytes::from_static(notice));
     spawn_detached(async move {
+        // Waited out before the state guard is taken: a profile swap
+        // waits for every guard, and a hydration can take as long as the
+        // account's pull does.
+        if let Some(hydration) = hydration {
+            hydration.settled().await;
+        }
         // The guard is held for the move and the subscribe only: the
         // frames are forwarded below without it, as a stream the request
         // returned directly would be.
@@ -327,6 +341,24 @@ async fn query_on_branch(
             return Ok(retry_later(snapshot));
         }
 
+        // Profile main taking over an account's content holds no library
+        // until the pull lands. The stream says it is waiting, as it does
+        // for a branch that is not here yet, and opens when it is whole.
+        if let QueryTarget::Profile { branch: name } = &target
+            && *name == tonk.active_branch
+            && tonk.profile_hydration.in_progress()
+        {
+            return Ok(deferred_response(
+                state.clone(),
+                target,
+                query,
+                params.level,
+                client,
+                PENDING_FRAME,
+                Some(tonk.profile_hydration.clone()),
+            ));
+        }
+
         // A branch an earlier release wrote is moved to this release's
         // format before it is read. The page hears so first: the stream
         // opens with a notice, and the rows follow the move.
@@ -335,12 +367,14 @@ async fn query_on_branch(
             .await
             .unwrap_or(false)
         {
-            return Ok(upgrading_response(
+            return Ok(deferred_response(
                 state.clone(),
                 target,
                 query,
                 params.level,
                 client,
+                UPGRADING_FRAME,
+                None,
             ));
         }
         let _ = migrate_while_opening(tonk, branch).await;
@@ -536,6 +570,84 @@ mod tests {
             reason: "not replicated here".into(),
         };
         assert_eq!(is_absence(&missing_repo), absent(&missing_repo));
+    }
+
+    /// A stream on profile main opened while the profile takes over an
+    /// account's content opens `pending` and answers nothing until the
+    /// take-over is done, then its rows follow on the same stream
+    /// (BUG-351). The branch holds no library in that time; a page drawing
+    /// it rendered its site as a notation dump.
+    ///
+    /// Native here because its fixture is; in the service worker the same
+    /// route is covered by
+    /// `router::tests::it_answers_pending_on_profile_main_until_hydration_lifts`.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn a_profile_stream_waits_out_a_hydration() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use futures_util::FutureExt as _;
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+
+        let state = crate::router::command::tests::native::test_state().await;
+        let (hydration, branch) = {
+            let tonk = state.read().await;
+            (tonk.profile_hydration.clone(), tonk.active_branch.clone())
+        };
+        let (app, _lsp) = crate::api_router_from_state(state);
+
+        let hydrating = hydration.begin();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/profile:tonk/branch/{branch}/query"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(
+                        crate::helpers::named_concept_wire_query().to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut body = response.into_body();
+        let mut buffered = Vec::<u8>::new();
+        let mut next = async || -> serde_json::Value {
+            loop {
+                if let Some(end) = buffered.windows(2).position(|bytes| bytes == b"\n\n") {
+                    let event: Vec<u8> = buffered.drain(..end + 2).collect();
+                    let text = std::str::from_utf8(&event[..end]).unwrap();
+                    return serde_json::from_str(text.strip_prefix("data: ").unwrap()).unwrap();
+                }
+                let frame = body.frame().await.expect("the stream stays open").unwrap();
+                buffered.extend_from_slice(&frame.into_data().unwrap());
+            }
+        };
+
+        assert_eq!(
+            next().await,
+            serde_json::json!({ "control": "pending" }),
+            "a stream opened mid-hydration says it waits"
+        );
+        // Long enough for a subscription opened regardless to have sent
+        // its snapshot.
+        let _ = crate::r#async::sleep(web_time::Duration::from_millis(200)).await;
+        assert!(
+            next().now_or_never().is_none(),
+            "nothing is answered while the hydration holds the branch"
+        );
+
+        drop(hydrating);
+        let frame = next().await;
+        assert_eq!(
+            frame.get("kind").and_then(|kind| kind.as_str()),
+            Some("snapshot"),
+            "the rows follow once it lifts: {frame}"
+        );
     }
 
     /// A rule an earlier dialog release stored under an entity that is not

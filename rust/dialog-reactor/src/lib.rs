@@ -45,7 +45,9 @@ mod subscribe;
 mod subscription;
 mod transaction;
 
-pub use branch::{BranchReference, BranchSession, BranchState, ProfileUpgrade, Upgraded, migrate};
+pub use branch::{
+    BranchReference, BranchSession, BranchState, DeliveryHold, ProfileUpgrade, Upgraded, migrate,
+};
 pub use command::{Decode, Migrated, control, decode_concept, facts_entity};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,

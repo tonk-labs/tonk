@@ -73,38 +73,93 @@ impl Connection {
     /// last read, as wire frames: the first delivery is the whole result
     /// set and goes as a snapshot, a later one goes as a delta. A
     /// delivery that changed nothing is not sent.
+    ///
+    /// Everything queued since the last read goes as ONE frame, the net
+    /// of the deliveries in order. Deliveries queue when the branch held
+    /// them ([`crate::DeliveryHold`]), or when several polls ran between
+    /// two reads, and a page sent each in turn would draw every state
+    /// between: content withdrawn and restored while a branch was held
+    /// would show as gone, then back.
     pub(crate) fn frames(&self) -> Vec<Bytes> {
         let deltas = match self.reader.lock().as_mut() {
             Some(reader) => reader.poll(),
             None => return Vec::new(),
         };
-        let mut frames = Vec::new();
-        for delta in deltas {
-            let project_all = |rows: &[dialog_query::concept::descriptor::ConceptConclusion]| {
-                rows.iter()
-                    .map(|row| project(row, &self.terms))
-                    .collect::<Vec<Conclusion>>()
-            };
-            let frame = if self.established.swap(true, Ordering::AcqRel) {
-                if delta.is_empty() {
-                    continue;
-                }
-                Frame::Delta {
-                    asserted: project_all(&delta.asserted),
-                    retracted: project_all(&delta.retracted),
-                }
-            } else {
-                Frame::Snapshot {
-                    conclusions: project_all(&delta.asserted),
-                }
-            };
-            match serde_json::to_vec(&frame) {
-                Ok(bytes) => frames.push(Bytes::from(bytes)),
-                Err(error) => log!("[reactor] failed to serialize a frame: {error}"),
+        if deltas.is_empty() {
+            return Vec::new();
+        }
+        let project_all = |rows: &[dialog_query::concept::descriptor::ConceptConclusion]| {
+            rows.iter()
+                .map(|row| project(row, &self.terms))
+                .collect::<Vec<Conclusion>>()
+        };
+        let deltas = deltas
+            .iter()
+            .map(|delta| (project_all(&delta.asserted), project_all(&delta.retracted)))
+            .collect();
+        let established = self.established.swap(true, Ordering::AcqRel);
+        let Some(frame) = fold(established, deltas) else {
+            return Vec::new();
+        };
+        match serde_json::to_vec(&frame) {
+            Ok(bytes) => vec![Bytes::from(bytes)],
+            Err(error) => {
+                log!("[reactor] failed to serialize a frame: {error}");
+                Vec::new()
             }
         }
-        frames
     }
+}
+
+/// The one frame a connection is sent for the deliveries `deltas`, each
+/// `(asserted, retracted)`, oldest first; `None` when they change nothing.
+///
+/// Before the connection's first frame (`established` false) the first
+/// delivery is the whole result set, and the frame is a snapshot of the
+/// set the later ones leave. After it, the frame is the net change: a row
+/// retracted and asserted again in the run is in neither list.
+fn fold(established: bool, deltas: Vec<(Vec<Conclusion>, Vec<Conclusion>)>) -> Option<Frame> {
+    let remove = |rows: &mut Vec<Conclusion>, row: &Conclusion| -> bool {
+        match rows.iter().position(|held| held == row) {
+            Some(index) => {
+                rows.remove(index);
+                true
+            }
+            None => false,
+        }
+    };
+    let mut deltas = deltas.into_iter();
+    if !established {
+        let (mut rows, _) = deltas.next()?;
+        for (asserted, retracted) in deltas {
+            for row in &retracted {
+                remove(&mut rows, row);
+            }
+            rows.extend(asserted);
+        }
+        return Some(Frame::Snapshot { conclusions: rows });
+    }
+    let mut net_asserted = Vec::new();
+    let mut net_retracted = Vec::new();
+    for (asserted, retracted) in deltas {
+        for row in retracted {
+            if !remove(&mut net_asserted, &row) {
+                net_retracted.push(row);
+            }
+        }
+        for row in asserted {
+            if !remove(&mut net_retracted, &row) {
+                net_asserted.push(row);
+            }
+        }
+    }
+    if net_asserted.is_empty() && net_retracted.is_empty() {
+        return None;
+    }
+    Some(Frame::Delta {
+        asserted: net_asserted,
+        retracted: net_retracted,
+    })
 }
 
 /// A branch's record of one connection: where its frames go, whose it
@@ -229,5 +284,89 @@ impl futures_util::Stream for Frames {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Bytes>> {
         self.get_mut().receiver.poll_recv(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(this: &str) -> Conclusion {
+        Conclusion {
+            this: this.to_owned(),
+            fields: Default::default(),
+        }
+    }
+
+    fn names(rows: &[Conclusion]) -> Vec<&str> {
+        rows.iter().map(|row| row.this.as_str()).collect()
+    }
+
+    fn rows(frame: &Frame) -> (Vec<&str>, Vec<&str>) {
+        match frame {
+            Frame::Snapshot { conclusions } => (names(conclusions), Vec::new()),
+            Frame::Delta {
+                asserted,
+                retracted,
+            } => (names(asserted), names(retracted)),
+        }
+    }
+
+    /// A branch whose content was withdrawn and then restored while its
+    /// delivery was held: the page is sent nothing, not "gone" then "back".
+    #[dialog_common::test]
+    fn it_sends_nothing_for_rows_withdrawn_and_restored_in_one_run() {
+        let view = row("view:site");
+        let frame = fold(
+            true,
+            vec![(vec![], vec![view.clone()]), (vec![view.clone()], vec![])],
+        );
+        assert!(
+            frame.is_none(),
+            "a net-nothing run sends no frame: {frame:?}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_sends_the_net_change_of_a_run() {
+        let frame = fold(
+            true,
+            vec![
+                (vec![row("a"), row("b")], vec![row("old")]),
+                (vec![row("c")], vec![row("a")]),
+            ],
+        )
+        .expect("a change");
+        assert!(matches!(frame, Frame::Delta { .. }));
+        assert_eq!(rows(&frame), (vec!["b", "c"], vec!["old"]));
+    }
+
+    #[dialog_common::test]
+    fn it_folds_a_first_run_into_one_snapshot() {
+        let frame = fold(
+            false,
+            vec![
+                (vec![row("a"), row("b")], vec![]),
+                (vec![], vec![row("a")]),
+                (vec![row("a"), row("c")], vec![]),
+            ],
+        )
+        .expect("a snapshot");
+        assert!(matches!(frame, Frame::Snapshot { .. }));
+        assert_eq!(rows(&frame).0, vec!["b", "a", "c"]);
+    }
+
+    /// The first frame is the result set even when that set is empty:
+    /// it is what tells the page the answer is "nothing".
+    #[dialog_common::test]
+    fn it_sends_an_empty_first_snapshot() {
+        let frame = fold(false, vec![(vec![], vec![])]).expect("a snapshot");
+        assert_eq!(rows(&frame), (Vec::<&str>::new(), Vec::new()));
+    }
+
+    #[dialog_common::test]
+    fn it_sends_nothing_for_no_deliveries() {
+        assert!(fold(true, Vec::new()).is_none());
+        assert!(fold(false, Vec::new()).is_none());
     }
 }

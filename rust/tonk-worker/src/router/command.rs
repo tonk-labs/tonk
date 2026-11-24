@@ -1880,6 +1880,7 @@ pub(crate) mod tests {
                     profile_transition: Default::default(),
                     context_generation: Default::default(),
                     profile_swaps: Default::default(),
+                    profile_hydration: Default::default(),
                 },
             );
             crate::router::repository::bootstrap_profile(&state)
