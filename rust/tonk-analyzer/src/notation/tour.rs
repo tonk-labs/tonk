@@ -85,6 +85,9 @@ pub struct FormOutcome {
     /// Why the notation refused it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refused: Option<Refusal>,
+    /// What the analyzer warns about it, which refuses nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A refusal and where it is.
@@ -165,15 +168,24 @@ fn kind_of(tree: &Syntax) -> String {
             }
         }
         Some(head) => head.to_owned(),
+        None if matches!(tree, Syntax::Tuple(_)) => "macro use".into(),
         None => "form".into(),
     }
 }
 
 /// The diagnostics of `checked` as text, and the refusal of each form.
-fn diagnostics(checked: &Checked, text: &str) -> (String, BTreeMap<usize, Refusal>) {
+fn diagnostics(
+    checked: &Checked,
+    text: &str,
+) -> (
+    String,
+    BTreeMap<usize, Refusal>,
+    BTreeMap<usize, Vec<String>>,
+) {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = String::new();
     let mut refused = BTreeMap::new();
+    let mut warned: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for diagnostic in &checked.diagnostics {
         let severity = match diagnostic.severity() {
             Severity::Error => "refused",
@@ -188,6 +200,16 @@ fn diagnostics(checked: &Checked, text: &str) -> (String, BTreeMap<usize, Refusa
             _ => "-".into(),
         };
         out.push_str(&format!("{severity} at {place}: {}\n", diagnostic.message));
+        if diagnostic.severity() == Severity::Warning {
+            let at = match diagnostic.path.first() {
+                Some(dialog_notation::Segment::Item(at)) => *at,
+                _ => 0,
+            };
+            warned
+                .entry(at)
+                .or_default()
+                .push(format!("{place}: {}", diagnostic.message));
+        }
         if diagnostic.severity() == Severity::Error {
             let at = match diagnostic.path.first() {
                 Some(dialog_notation::Segment::Item(at)) => *at,
@@ -209,7 +231,7 @@ fn diagnostics(checked: &Checked, text: &str) -> (String, BTreeMap<usize, Refusa
     if out.is_empty() {
         out.push_str("no diagnostics\n");
     }
-    (out, refused)
+    (out, refused, warned)
 }
 
 fn declarations(checked: &Checked) -> String {
@@ -407,7 +429,7 @@ pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepar
     read.push_str("\n;; each tree as data (Syntax::value), the record the notation keeps it as\n");
     for tree in &parsed.trees {
         match tree.value() {
-            Ok(value) => read.push_str(&format!("{}\n", Syntax::Constant(value))),
+            Ok(value) => read.push_str(&format!("{}\n", said(&value))),
             Err(error) => read.push_str(&format!(";; {error}\n")),
         }
     }
@@ -432,7 +454,7 @@ pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepar
                 .collect()
         },
     });
-    let (diagnosed, refused) = diagnostics(&checked, text);
+    let (diagnosed, refused, warned) = diagnostics(&checked, text);
     answer.stages.push(Stage {
         name: "analysis".into(),
         note: "what the cell declares, and what the analyzer says about it".into(),
@@ -467,6 +489,11 @@ pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepar
                 refused: Some(refusal),
                 ..FormOutcome::default()
             }),
+        }
+    }
+    for (at, warnings) in warned {
+        if at < forms.len() {
+            forms[at].warnings = warnings;
         }
     }
     for (declaration, at) in checked.declarations.iter().zip(&checked.declaration_forms) {
@@ -835,4 +862,23 @@ fn cell(term: &Syntax) -> String {
         Syntax::Constant(dialog_corpus::Value::String(text)) => text.clone(),
         other => other.to_string(),
     }
+}
+
+/// A value as the notation writes it, records and lists taken apart:
+/// `{:operator {:name /select :type :reference} :type :application ...}`.
+fn said(value: &dialog_corpus::Value) -> String {
+    if let Ok(Some(map)) = dialog_notation::data::entries(value) {
+        let mut entries: Vec<(&str, &dialog_corpus::Value)> = map.iter().collect();
+        entries.sort_by_key(|(key, _)| *key);
+        let inner: Vec<String> = entries
+            .into_iter()
+            .map(|(key, value)| format!(":{key} {}", said(value)))
+            .collect();
+        return format!("{{{}}}", inner.join(" "));
+    }
+    if let Ok(Some(items)) = dialog_notation::data::items(value) {
+        let inner: Vec<String> = items.iter().map(said).collect();
+        return format!("[{}]", inner.join(" "));
+    }
+    Syntax::Constant(value.clone()).to_string()
 }

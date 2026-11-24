@@ -9,7 +9,8 @@
         "head": "concept declares todo with list: state: title:",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "concept",
@@ -17,7 +18,8 @@
         "head": "concept declares list with name:",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -37,7 +39,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -45,7 +48,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -53,7 +57,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -61,7 +66,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -69,7 +75,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -77,7 +84,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -85,7 +93,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -105,7 +114,8 @@
         "head": "select 4 answer(s)",
         "rows": 4,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -125,7 +135,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -145,7 +156,8 @@
         "head": "select 1 answer(s)",
         "rows": 1,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -165,7 +177,8 @@
         "head": "concept declares estimate with hours:",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -173,7 +186,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -181,7 +195,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -189,7 +204,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -197,7 +213,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -205,7 +222,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -213,7 +231,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -233,7 +252,8 @@
         "head": "query defines the query list/summary",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -241,7 +261,8 @@
         "head": "select 3 answer(s)",
         "rows": 3,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -261,7 +282,8 @@
         "head": "deductive rule kept the comment above it as its description, installed a deductive rule on the branch",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -269,7 +291,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -289,7 +312,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -297,7 +321,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "deductive rule",
@@ -305,7 +330,8 @@
         "head": "deductive rule installed a deductive rule on the branch",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "deductive rule",
@@ -313,7 +339,8 @@
         "head": "deductive rule installed a deductive rule on the branch",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -321,7 +348,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -341,7 +369,8 @@
         "head": "concept declares the command todo/complete",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "inductive rule",
@@ -349,7 +378,8 @@
         "head": "inductive rule kept the comment above it as its description, installed an inductive rule: it fires when a commit lands",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "inductive rule",
@@ -357,7 +387,8 @@
         "head": "inductive rule kept the comment above it as its description, installed an inductive rule: it fires when a commit lands",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -377,7 +408,8 @@
         "head": "assert issued 1 command(s), held one tick",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -385,7 +417,8 @@
         "head": "select 1 answer(s)",
         "rows": 1,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -405,7 +438,8 @@
         "head": "concept declares tagged with tag:",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -413,7 +447,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -421,7 +456,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -429,7 +465,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -437,7 +474,8 @@
         "head": "select 3 answer(s)",
         "rows": 3,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -457,7 +495,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "assert",
@@ -465,7 +504,8 @@
         "head": "assert asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -473,7 +513,8 @@
         "head": "select 2 answer(s)",
         "rows": 2,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -481,7 +522,8 @@
         "head": "select 1 answer(s)",
         "rows": 1,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -501,7 +543,8 @@
         "head": "query defines the view todo/item",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "query",
@@ -509,7 +552,8 @@
         "head": "query defines the view list/card",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -517,7 +561,8 @@
         "head": "select rendered 1 instance(s) of the view",
         "rows": 0,
         "printed": 1,
-        "html": true
+        "html": true,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -537,15 +582,17 @@
         "head": "macro defines a macro: a rule over syntax the analyzer runs",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
-        "kind": "form",
+        "kind": "macro use",
         "outcome": "ok",
-        "head": "form asserted 1 statement(s)",
+        "head": "macro use asserted 1 statement(s)",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
@@ -553,7 +600,38 @@
         "head": "select 1 answer(s)",
         "rows": 1,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
+      }
+    ],
+    "stages": [
+      "read",
+      "expanded",
+      "analysis",
+      "compiled"
+    ]
+  },
+  {
+    "source": "; expect: warning\n(rule (warning \"a to-do written as done already: is that what you meant?\")\n  (expand (todo ?t title: ?x state: :done list: ?l) in: :head))\n\n(assert (todo todo:bill title: \"Pay the bill\" state: :done list: list:home))",
+    "state": "ran",
+    "forms": [
+      {
+        "kind": "check",
+        "outcome": "ok",
+        "head": "check defines a check: a rule over syntax that warns",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 0
+      },
+      {
+        "kind": "assert",
+        "outcome": "ok",
+        "head": "assert asserted 1 statement(s)",
+        "rows": 0,
+        "printed": 0,
+        "html": false,
+        "warnings": 1
       }
     ],
     "stages": [
@@ -573,7 +651,8 @@
         "head": "select 3 answer(s)",
         "rows": 3,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -590,18 +669,20 @@
       {
         "kind": "select",
         "outcome": "ok",
-        "head": "select 6 answer(s)",
-        "rows": 6,
+        "head": "select 7 answer(s)",
+        "rows": 7,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       },
       {
         "kind": "select",
         "outcome": "ok",
-        "head": "select 4 answer(s)",
-        "rows": 4,
+        "head": "select 5 answer(s)",
+        "rows": 5,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -621,7 +702,8 @@
         "head": "deductive rule refused",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [
@@ -641,7 +723,8 @@
         "head": "assert refused",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 1
       }
     ],
     "stages": [
@@ -661,7 +744,8 @@
         "head": "deductive rule refused",
         "rows": 0,
         "printed": 0,
-        "html": false
+        "html": false,
+        "warnings": 0
       }
     ],
     "stages": [

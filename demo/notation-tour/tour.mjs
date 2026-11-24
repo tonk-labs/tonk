@@ -111,6 +111,7 @@ try {
                 rows: f.querySelectorAll('.notation-rows tbody tr').length,
                 printed: f.querySelector('.notation-printed')?.textContent.trim().split('\n').filter(Boolean).length || 0,
                 html: !!f.querySelector('.notation-html-rendered'),
+                warnings: f.querySelectorAll('.notation-warning').length,
               })),
               stages: [...result.querySelectorAll('.notation-stage')].map((s) => s.dataset.stage),
             };
@@ -125,8 +126,9 @@ try {
     const answered = outcome.forms
       .filter((f) => f.kind === 'select' || f.kind === 'query')
       .every((f) => f.rows + f.printed + (f.html ? 1 : 0) > 0 || f.kind === 'query');
+    const warned = !outcome.source.includes('; expect: warning') || outcome.forms.some((f) => f.warnings > 0);
     check(
-      outcome.state === expected && answered && outcome.stages.length === 4,
+      outcome.state === expected && answered && warned && outcome.stages.length === 4,
       `cell ${at + 1}: ${outcome.state} (${outcome.forms.map((f) => `${f.kind}: ${f.head}`).join('; ')})`,
     );
   }

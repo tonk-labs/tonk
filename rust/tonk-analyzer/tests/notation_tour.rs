@@ -74,6 +74,11 @@ async fn every_cell_of_the_tour_runs() {
                 }
             ));
         }
+        if source.contains("; expect: warning")
+            && !answer.forms.iter().any(|form| !form.warnings.is_empty())
+        {
+            failures.push(format!("cell {}: no warning\n{source}\n{json}", at + 1));
+        }
         // A cell that asks something and runs clean answers something.
         for form in &answer.forms {
             if form.refused.is_none()

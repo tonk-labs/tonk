@@ -84,6 +84,9 @@ struct FormOutcome {
     /// Why the notation refused it.
     #[serde(default)]
     refused: Option<Refusal>,
+    /// What the analyzer warns about it.
+    #[serde(default)]
+    warnings: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -290,6 +293,12 @@ fn render(answer: &Answer, _with: &str) -> String {
             escape(&form.kind),
             escape(&form.summary)
         ));
+        for warning in &form.warnings {
+            out.push_str(&format!(
+                "<div class=\"notation-warning\"><strong>warning</strong> {}</div>",
+                escape(warning)
+            ));
+        }
         if let Some(refused) = &form.refused {
             let place = match (refused.line, refused.column) {
                 (Some(line), Some(column)) => format!(" at line {line}, column {column}"),
@@ -373,6 +382,7 @@ pub(crate) const CSS: &str = r#"
 .notation-rows th, .notation-rows td { border: 1px solid rgba(127,127,127,.35); padding: .15rem .5rem; text-align: left; }
 .notation-refusal { color: var(--wa-color-danger-on-quiet, #b42318); }
 .notation-refusal pre, .notation-stage pre, .notation-printed, .notation-html-source { white-space: pre-wrap; font-size: .75rem; margin: .25rem 0; }
+.notation-warning { color: var(--wa-color-warning-on-quiet, #93370d); }
 .notation-error { color: var(--wa-color-danger-on-quiet, #b42318); }
 .notation-stages { display: flex; flex-direction: column; gap: .1rem; margin-top: .25rem; }
 .notation-stage summary { cursor: pointer; font-size: .75rem; }

@@ -198,6 +198,16 @@ The notation is made of rules all the way down: `select`, `concept` and commands
 (select (todo todo:bread title: ?title state: ?state list: ?l))
 ```
 
+A check is a rule over syntax too. This one says something about a form without refusing it: a to-do written as done already. The assert below still runs; its warning comes from the rule above it. (The analyzer's own "no rule reads this command" is a rule of the same kind, in its prelude.)
+
+```notation
+; expect: warning
+(rule (warning "a to-do written as done already: is that what you meant?")
+  (expand (todo ?t title: ?x state: :done list: ?l) in: :head))
+
+(assert (todo todo:bill title: "Pay the bill" state: :done list: list:home))
+```
+
 The comment above a rule is kept as data about it, on the branch, and a query reads it like any other fact.
 
 ```notation
