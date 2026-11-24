@@ -871,6 +871,14 @@ window.STORYBOOK_DATA = {
       "id": "UI-05",
       "title": "Recover from service-worker or deployment failure; inspect /doctor and copy an agent debug bundle.",
       "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard."
+    },
+    {
+      "evidence": "Route tests through /transact + /query with the palette's claim shape: a followed rename is answered, a refused one fails with why, a later command keeps the first, an unstamped command leaves no invocation; schema tests that core.yaml and profile.yaml declare the same invocation block and every attribute; markup test for the bar's status slot; library lowering test for tasks.yaml; a manual Playwright run against the PR preview (WEB-19).",
+      "gaps": "No committed real-browser test drives the palette's status line or /console/tasks; invocations never expire and a worker restart forgets them rather than marking them aborted; commands run on the profile are not listed in a space's console.",
+      "group": "Browser shell and runtime",
+      "id": "UI-06",
+      "title": "Run a command from the command palette and see what became of it: the bar says it is working, then done, failed with why, or that nothing handled it; a space with the tasks component lists its recent commands at /console/tasks.",
+      "variants": "Provider succeeds/fails/reports progress; rule-handled (notebook retitle); nothing handles it; palette on a space page or the hub."
     }
   ],
   "schemaVersion": 1,
@@ -1271,6 +1279,24 @@ window.STORYBOOK_DATA = {
       ],
       "status": "captured",
       "summary": "Opening a space's address with no access of one's own, when the space keeps no public ticket (never published, or made private again), ends on the private wall rather than a failure.",
+      "surface": "browser"
+    },
+    {
+      "area": "Spaces",
+      "artifact": "app/screens/web-19-command-status.png",
+      "capture": "running product",
+      "id": "WEB-19",
+      "journey_ids": [
+        "UI-06"
+      ],
+      "name": "Command status in the bar",
+      "source_paths": [
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-worker/src/router/command.rs"
+      ],
+      "status": "captured",
+      "summary": "A command run from the command palette reports in the bar where it got to; a refused one says why instead of vanishing.",
       "surface": "browser"
     },
     {
