@@ -1,7 +1,7 @@
 # Findings from the notation tour
 
 Kept as history. Both are fixed at the revision the branch pins now,
-`efb250dee90cd259f27d5745f8853d6241aa8bbb` (dialog-db `feat/notation-poc`);
+`1574ceeb383f6db79b3a4bbe4cc1a39a37266fd0` (dialog-db `feat/notation-poc`);
 finding 2 since `0cebfc07`.
 Finding 1 was fixed on the notation branch by b423dd78: the head formula
 answers one total per pair. Finding 2 is fixed by dialog-db/dialog-db#863
@@ -130,7 +130,7 @@ it is the question; at this revision the retract wins.
 The tour writes the attribute alone instead, which works:
 
 ```clojure
-(rule (assert (tour.todo ?t state: (:last (:entity :done))))
+(rule (assert (tour.todo/state of: ?t is: :done as: :entity cardinality: :one))
   (todo/complete todo: ?t))
 
 (rule (retract (tour.todo ?t state: ?was))
