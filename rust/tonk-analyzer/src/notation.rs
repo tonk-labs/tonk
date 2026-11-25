@@ -187,14 +187,14 @@ pub async fn notation_library_claims<Env: QueryEnv>(
             .or_insert_with(|| diagnostic.message.clone());
     }
     let mut steps: BTreeMap<usize, Vec<Step>> = BTreeMap::new();
-    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
+    for (step, at) in checked.steps().iter().zip(checked.step_forms()) {
         steps.entry(*at).or_default().push(step.clone());
     }
     let declared: BTreeMap<usize, &Declaration> = checked
-        .declaration_forms
+        .declaration_forms()
         .iter()
         .copied()
-        .zip(&checked.declarations)
+        .zip(checked.declarations())
         .collect();
 
     let mut all = Changes::new();
@@ -309,7 +309,7 @@ pub async fn notation_library_claims<Env: QueryEnv>(
         durable: all.into_instructions(),
         transient: all_transient.into_instructions(),
         forms,
-        declarations: checked.declarations,
+        declarations: checked.declarations().to_vec(),
     })
 }
 

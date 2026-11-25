@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 
 pub use dialog_notation::apply::Stage as Staged;
-use dialog_notation::apply::{self, Did, DocumentReport, Writer};
+use dialog_notation::apply::{self, Did, DocumentReport, Installation, Writer};
 use dialog_notation::live::{Live, Reader};
 use dialog_notation::{
     Analyzer, Checked, Declaration, Rendered, Severity, Step, Syntax, check_forms, parse_document,
@@ -188,7 +188,7 @@ fn diagnostics(
     let mut out = String::new();
     let mut refused = BTreeMap::new();
     let mut warned: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for diagnostic in &checked.diagnostics {
+    for diagnostic in checked.diagnostics() {
         let severity = match diagnostic.severity() {
             Severity::Error => "refused",
             Severity::Warning => "warning",
@@ -238,7 +238,7 @@ fn diagnostics(
 
 fn declarations(checked: &Checked) -> String {
     let mut out = String::new();
-    for declaration in &checked.declarations {
+    for declaration in checked.declarations() {
         match declaration {
             Declaration::Concept(concept) => {
                 let what = if concept.command {
@@ -303,7 +303,7 @@ fn json<T: Serialize>(value: &T) -> String {
 
 fn compiled(checked: &Checked) -> String {
     let mut out = String::new();
-    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
+    for (step, at) in checked.steps().iter().zip(checked.step_forms()) {
         let (name, body) = match step {
             Step::Assert(statement) => ("assert", json(statement)),
             Step::Retract(statement) => ("retract", json(statement)),
@@ -383,7 +383,7 @@ impl Prepared {
                             Did::Asserted(_)
                                 | Did::Retracted(_)
                                 | Did::Issued(_)
-                                | Did::Installed(_)
+                                | Did::Installed(..)
                         )
                     }))
     }
@@ -462,11 +462,11 @@ pub fn prepare(cell: &Cell) -> Prepared {
         name: "expanded".into(),
         note: "every form expanded to a rule of the kernel (macros and core forms rewritten)"
             .into(),
-        text: if checked.analyzed.is_empty() {
+        text: if checked.analyzed().is_empty() {
             "nothing: the cell expands to no rule\n".into()
         } else {
             checked
-                .analyzed
+                .analyzed()
                 .iter()
                 .map(|tree| format!("{tree}\n"))
                 .collect()
@@ -514,7 +514,11 @@ pub fn prepare(cell: &Cell) -> Prepared {
             forms[at].warnings = warnings;
         }
     }
-    for (declaration, at) in checked.declarations.iter().zip(&checked.declaration_forms) {
+    for (declaration, at) in checked
+        .declarations()
+        .iter()
+        .zip(checked.declaration_forms())
+    {
         if let Some(at) = outcome(&mut forms, *at) {
             forms[at].summary = match declaration {
                 Declaration::Concept(concept) if concept.command => {
@@ -585,22 +589,10 @@ async fn finish<E: Reader>(
     let outcome = |forms: &mut Vec<FormOutcome>, at: usize| -> Option<usize> {
         (at < forms.len()).then_some(at)
     };
-    // The report says a rule was installed; the step says which kind.
-    let mut installs: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
-    let mut asks: Vec<(Step, usize)> = Vec::new();
-    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
-        match step {
-            Step::Deduce(_) => installs.entry(*at).or_default().push("deductive rule"),
-            Step::Induce(_) => installs.entry(*at).or_default().push("inductive rule"),
-            Step::Transient(_) => installs.entry(*at).or_default().push("transient"),
-            Step::Query(_) | Step::Select(_) | Step::View(_) => asks.push((step.clone(), *at)),
-            _ => {}
-        }
-    }
     let mut written: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
+    let mut asks: Vec<usize> = Vec::new();
     let mut same: Vec<(usize, usize)> = Vec::new();
     for form in &report.forms {
-        let mut installed = installs.remove(&form.form).unwrap_or_default().into_iter();
         for did in &form.did {
             match did {
                 Did::Read => {
@@ -609,19 +601,25 @@ async fn finish<E: Reader>(
                 Did::Asserted(_) => written.entry(form.form).or_default().push("assert"),
                 Did::Retracted(_) => written.entry(form.form).or_default().push("retract"),
                 Did::Issued(_) => written.entry(form.form).or_default().push("issue"),
-                Did::Installed(_) => written
-                    .entry(form.form)
-                    .or_default()
-                    .push(installed.next().unwrap_or("deductive rule")),
-                Did::Same(earlier) => same.push((form.form, *earlier)),
-                Did::Asked => {}
+                Did::Installed(installation, _) => {
+                    written
+                        .entry(form.form)
+                        .or_default()
+                        .push(match installation {
+                            Installation::Deduction => "deductive rule",
+                            Installation::Induction => "inductive rule",
+                            Installation::Transient => "transient",
+                        })
+                }
+                Did::Repeats(earlier) => same.push((form.form, *earlier)),
+                Did::Asked => asks.push(form.form),
             }
         }
     }
     let same_asks: Vec<(usize, usize)> = same
         .iter()
         .copied()
-        .filter(|(_, earlier)| asks.iter().any(|(_, at)| at == earlier))
+        .filter(|(_, earlier)| asks.contains(earlier))
         .collect();
     for (at, earlier) in same {
         if same_asks.iter().any(|(form, _)| *form == at) {
@@ -679,17 +677,6 @@ async fn finish<E: Reader>(
     // that fails does not take the others with it. A form that asks the
     // same as an earlier one (`Did::Same`) gets no entry of its own: it
     // shows the earlier form's answer.
-    let kinds: BTreeMap<usize, &'static str> = asks
-        .iter()
-        .map(|(step, at)| {
-            let kind = match step {
-                Step::Query(_) => "query",
-                Step::Select(_) => "selection",
-                _ => "view",
-            };
-            (*at, kind)
-        })
-        .collect();
     let answered: BTreeMap<usize, Result<apply::Answer, String>> =
         apply::answer(branch, checked, env)
             .await
@@ -697,7 +684,7 @@ async fn finish<E: Reader>(
             .into_iter()
             .map(|form| (form.form, form.answered.map_err(|error| error.to_string())))
             .collect();
-    let mut asked: Vec<(usize, usize)> = kinds.keys().map(|at| (*at, *at)).collect();
+    let mut asked: Vec<(usize, usize)> = asks.iter().map(|at| (*at, *at)).collect();
     asked.extend(same_asks.iter().copied());
     for (at, from) in asked {
         let (Some(at), Some(answer)) = (outcome(forms, at), answered.get(&from)) else {
@@ -727,10 +714,12 @@ async fn finish<E: Reader>(
                     .collect();
             }
             Err(error) => {
-                forms[at].summary = match kinds.get(&from).copied().unwrap_or("query") {
-                    "view" => format!("rendering failed: {error}"),
-                    kind => format!("the {kind} failed: {error}"),
+                let kind = if forms[at].kind == "query" {
+                    "query"
+                } else {
+                    "selection"
                 };
+                forms[at].summary = format!("the {kind} failed: {error}");
             }
         }
     }
@@ -870,7 +859,7 @@ pub fn watch_cell(branch: &Branch, cell: &Cell) -> Result<LiveCell, String> {
         return Err(format!("the cell is refused: {}", refused.message));
     }
     let plan = checked
-        .steps
+        .steps()
         .iter()
         .find_map(|step| match step {
             Step::View(plan) => Some((**plan).clone()),

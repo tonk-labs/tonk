@@ -20,7 +20,6 @@ use dialog_notation::view::Slot;
 use dialog_notation::{
     Analyzer, Content, Patch, Plan, Rendered, Shown, Step, compile, parse, read,
 };
-use dialog_query::query::Output as _;
 use dialog_repository::Branch;
 
 /// Where an instance stands in a view's tree: for each level from the
@@ -77,47 +76,6 @@ pub enum ViewPatch {
         /// The command it posts now.
         command: String,
     },
-}
-
-/// The answers of `call`, asked once on `branch` after `documents`
-/// (their definitions only), each printed in the notation: what a person
-/// or an agent asking gets, `(notebook/named ?n title: ?title)`.
-pub async fn select<E: Reader>(
-    branch: &Branch,
-    documents: &[&str],
-    call: &str,
-    env: &E,
-) -> Result<Vec<String>, String> {
-    let tree = analyzed(documents, call)?;
-    match compile(&tree)
-        .map_err(|error| error.to_string())?
-        .as_slice()
-    {
-        [Step::Select(selection)] => Ok(Live::new(branch.clone())
-            .select(selection, env)
-            .await
-            .map_err(|error| error.to_string())?
-            .iter()
-            .map(ToString::to_string)
-            .collect()),
-        [Step::Query(query)] => {
-            let mut layer = branch.query();
-            if let Some(rule) = &query.rule {
-                layer = layer.with(rule.clone());
-            }
-            let rows: Vec<dialog_query::ConceptConclusion> = layer
-                .select(query.select.clone())
-                .perform(env)
-                .try_vec()
-                .await
-                .map_err(|error| error.to_string())?;
-            rows.iter()
-                .map(|row| query.row(row).map(|row| row.to_string()))
-                .collect::<Result<_, _>>()
-                .map_err(|error| error.to_string())
-        }
-        other => Err(format!("{call} is no selection: {} steps", other.len())),
-    }
 }
 
 /// `(select call)` after the definitions of `documents`, analyzed.
