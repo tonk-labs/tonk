@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | The maintainer's problem statement (the agent's draft stands in). The numbers for columns B-E. Whether F is worth building. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | The numbers for columns B-E. Whether F is worth building. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -170,3 +170,17 @@ column without a build.
 
 **Backtracked.** None; Delimiting was skipped on the maintainer's call,
 and the statement is a draft until he takes it or rewrites it.
+
+## 2026-11-25, Delimiting: the problem and the objective
+
+**Asked.** Who writes the problem statement? Irakli: the agent does. The
+objective: local errors to zero.
+
+**Learned.** Zero is a different bar from fewer. A retry with a cap fails
+once the cap runs out, which happened at saturation (64 of 64 lost), so
+a capped retry cannot meet it on its own; an option meets it only if a
+write that keeps losing eventually stops competing.
+
+**Decided.** The problem statement in the topic stands, without the draft
+marker. Objective: no local write fails because another overlapped it.
+Not yet said: how long a write may wait instead of failing.

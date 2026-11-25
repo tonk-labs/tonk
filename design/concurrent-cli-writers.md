@@ -34,17 +34,16 @@ in tonk for MCP servers (`tonk-agent-peer`); the CLI does not use it.
 
 ## Problem
 
-*A draft by the agent (2026-11-25), not yet the maintainer's; Irakli chose
-to try options before stating it.*
+Agents on one machine, each running the tonk CLI against one replica,
+need every write they make to land. When writes overlap, all but one
+fail: eval treats a head that moved while it ran as an error, the file
+store refuses a writer that finds the head locked instead of making it
+wait, and a write that is run again against frequent short writes can
+lose every time. With 16 writers at once, 85% of writes fail, and the
+agent is left to retry by hand.
 
-Agents on one machine, each running the tonk CLI against one replica, need
-every write they make to land, and to know what it changed. When writes
-overlap, all but one fail: eval treats a head that moved while it ran as
-an error, the file store refuses a writer that finds the head locked
-instead of making it wait, and every command starts with cold caches,
-which lengthens the time each write is exposed. With 16 writers at once,
-85% fail. An agent's only recourse is to run the write again, and a long
-write run again against frequent short ones does not land at all.
+**Objective** (Irakli, 2026-11-25): no write on one machine fails because
+another local writer overlapped it. Zero, not fewer.
 
 ## Approach
 

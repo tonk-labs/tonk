@@ -34,3 +34,13 @@ hypotheses hold:
   (an error not from the commit).
 - **Nothing fails** at N = 16 in three runs: the symptom is not local, and
   the diagnosis moves to the remote (H3 and the shared upstream).
+
+## Bars for the options (set 2026-11-25, before their results)
+
+- **Success:** zero failed evals in every run: 2, 4, 8 and 16 writers,
+  three rounds, and the 500-note eval against 8 back-to-back writers. Zero
+  lost writes.
+- **Failure:** any failed eval from a local overlap, in any run.
+- **The middle**, for the maintainer: among options that reach zero, the
+  time a small write takes at 16 writers and how long the long eval holds
+  the others up.
