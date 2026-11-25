@@ -70,18 +70,25 @@ try {
   log('opening the hub and following its link to the notation tour');
   await page.goto(`${BASE}/`);
   const hub = await frameWith(page, () => !!document.querySelector('a[href*="notation-tour"]'));
-  const via = await hub.evaluate(() => {
-    const links = [...document.querySelectorAll('a[href*="notation-tour"]')];
-    const shown = links.find((link) => link.getClientRects().length);
-    if (shown) {
-      shown.click();
-      return 'the empty list';
-    }
-    document.querySelector('[aria-controls="help-body"]')?.click();
-    document.querySelector('[aria-controls="help-without"]')?.click();
-    const folded = document.querySelector('#help-without a[href*="notation-tour"]');
-    folded?.click();
-    return folded ? 'the troubleshooting fold' : 'nothing';
+  const via = await hub.evaluate(async () => {
+    // Open the fold as a person would: troubleshooting, then the question.
+    // The hub's script may still be starting, so try until each opens.
+    const wait = () => new Promise((r) => setTimeout(r, 500));
+    const open = async (id) => {
+      for (let i = 0; i < 40 && document.querySelector(`#${id}`)?.inert; i++) {
+        if (document.querySelector(`[aria-controls="${id}"]`)?.getAttribute('aria-expanded') !== 'true') {
+          document.querySelector(`[aria-controls="${id}"]`)?.click();
+        }
+        await wait();
+      }
+    };
+    await open('help-body');
+    await open('help-without');
+    const link = document.querySelector('#help-without a[href*="notation-tour"]');
+    const opened = !document.querySelector('#help-without')?.closest('[inert]');
+    if (!link || !opened) return 'nothing';
+    link.click();
+    return 'the troubleshooting fold';
   });
   log('followed the link in', via);
   check(via !== 'nothing', 'the hub links to the notation tour');

@@ -819,7 +819,7 @@
     ]
   },
   {
-    "source": "; expect: refused\n(concept (tour.flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))",
+    "source": "; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))",
     "state": "refused",
     "forms": [
       {
@@ -861,7 +861,7 @@
     ]
   },
   {
-    "source": "; expect: refused\n(concept (tour.rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))",
+    "source": "; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))",
     "state": "refused",
     "forms": [
       {
