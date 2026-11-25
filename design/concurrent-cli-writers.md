@@ -70,11 +70,15 @@ read-modify-write updates and report no conflicts); retry and backoff
 alone (a long write never lands); age priority (reaches zero, slower than
 the queue everywhere).
 
+Decided since (2026-11-25): a command that finds no daemon starts one;
+the queue per branch is an `flock` on a lock file that the daemon and the
+CLI both take, so a command that cannot start the daemon takes the lock
+itself and stays ordered (one writer at a time, no first-come promise),
+without warm caches or background sync.
+
 Open for the design phase: where the daemon's lifecycle comes from
 (sapling's modules, or tonk-agent-peer's owner), how the CLI finds and
-talks to it, what a command does when the daemon cannot be started (a command
-with no daemon running starts one, as sapling's CLI does: decided), the
-idle period, the bound after which sync interleaves,
+talks to it, the idle period, the bound after which sync interleaves,
 and the shared checkout index that collides under concurrent writers.
 
 ## Related

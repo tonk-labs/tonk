@@ -4,8 +4,8 @@
 
 |  | Understanding | Activity |
 |---|---|---|
-| **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts) and were reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest; hybrid and age priority reach zero slower; retry and backoff starve a long write; writer branches lose read-modify-write updates. A commit in a process that stays open is ~8 ms against ~36 ms. | Designing: the approach is decided (queue per branch now, a daemon that stays up and syncs in the background). |
-| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, the fallback when the daemon cannot start (the shared lock file, proposed), the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
+| **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts), reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest. A commit in a process that stays open is ~8 ms against ~36 ms. Writer branches lose read-modify-write updates. | Designing. Approach decided: a queue per branch (an `flock` the daemon and the CLI share), a daemon a command starts, that stays up for warm caches and syncs in the background; the lock alone is the fallback. |
+| **Agenda** | The daemon's lifecycle (sapling's modules or tonk-agent-peer's owner); how the CLI finds and talks to it; the idle period; the bound for interleaving sync; the shared checkout index that collides under concurrent writers; whether the agent harnesses tonk targets let a daemon outlive a command. | One design matrix per implementation decision, in a later session; build the per-branch lock first. |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -376,3 +376,16 @@ its turn), but that is not a guarantee.
 
 **Decided.** Not decided: whether one-at-a-time is enough, or the queue
 must also be first-come-first-served.
+
+## 2026-11-25, Designing: the lock is the fallback
+
+**Asked.** Is one writer at a time enough, or must writers be served in
+arrival order?
+
+**Learned.** Irakli: the `flock` approach is good enough; build the daemon
+anyway, with the lock as its fallback.
+
+**Decided.** The queue per branch is an `flock` the daemon and the CLI
+both take; the daemon is built on it for warm caches and background sync.
+This sitting ends here: the next starts with the implementation decisions
+on the agenda, after this is read cold.
