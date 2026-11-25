@@ -76,3 +76,19 @@ talks to it, what a command does when the daemon cannot be started (a command
 with no daemon running starts one, as sapling's CLI does: decided), the
 idle period, the bound after which sync interleaves,
 and the shared checkout index that collides under concurrent writers.
+
+## Related
+
+- Bugs in the tonk-team space: **BUG-350** (multi-agent write contention:
+  shared heads, local locks and checkpoint limitations), the report this
+  topic reproduces; BUG-213 (a pull does not move the branch head until the
+  new head is ready); BUG-214 (the worker state lock held across network
+  round trips); BUG-266 (stop an agent's write when someone changed the
+  item after the agent read it).
+- Measurements: [research/concurrent-cli-writes](../research/concurrent-cli-writes.md).
+- In dialog-db's `design/`: `file-writers.md` (writers on one archive,
+  per-branch locks, retry), `replay-avoidance.md` (skip a replay when what a
+  transaction read did not change), `query-isolation.md` (a transaction
+  pins the head it opened on), `held-across-pull.md` (what a pull fetches,
+  and `Pull::retry`).
+- Prior art: [prior-art.md](concurrent-cli-writers/prior-art.md).
