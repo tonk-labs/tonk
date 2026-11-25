@@ -105,3 +105,10 @@
 /in-agent/*
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=31536000, immutable
+
+# OpenAI's domain verification token for Tonk's app in ChatGPT. It has no
+# extension, so name its type; never cache it, so a reissued token is
+# seen on the next check.
+/.well-known/openai-apps-challenge
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: no-store
