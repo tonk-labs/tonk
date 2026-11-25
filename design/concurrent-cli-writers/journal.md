@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | Whether G is kept, and if so how it reports conflicts. Whether age priority (H) is worth a column. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Whether the lost-update result settles G. Whether to test the same loss between two synced replicas. Building D/F, in a later session. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -279,3 +279,24 @@ exists that was not measured: priority by age kept across retries
 (Clojure, Greedy).
 
 **Decided.** Not decided.
+
+## 2026-11-25, Directing: writer branches lose updates
+
+**Asked.** Irakli: writer branches that pull main and reconcile locally,
+with the reconciler taking them from a queue, make a hybrid like peers
+syncing; pulls should run rules.
+
+**Learned.** Built and measured on the guide's counter. No failures, but
+4 concurrent increments end at count 1, and running rules after every
+pull does not help: an `increment` is a command, commands are not stored,
+so by the time branches merge there is nothing left to run the rule on.
+The queue counted every increment. This is not specific to local
+branches: two peers incrementing apart and then syncing should lose them
+the same way (open hypothesis), so the remote problem, set aside, holds
+the same trap.
+
+Age priority (H) reached zero and was slower than the queue everywhere.
+
+**Decided.** Not decided by the maintainer. On the evidence, writer
+branches are ruled out for read-modify-write rules unless what they read
+is derived from stored, commutative facts.

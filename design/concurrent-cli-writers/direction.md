@@ -44,3 +44,10 @@ long eval, at most 2 tries; slower than D everywhere (p95 285 against
 233 ms at 16 writers; small writes p95 4 s behind a 2000-note eval). It
 answers starvation without a lock, which matters only where a lock cannot
 be shared.
+
+G2, Irakli's hybrid (writer branches pull main and run rules; the
+reconciler takes them in queued order and runs rules after each pull),
+measured 2026-11-25 on the counter: no failures, but 4 increments end at
+1 and 8 at 1 or 2; the queue ends at 4 and 8. 🔴 for any rule that reads
+a value to write the next, which tonk's commands and the guide's own
+example are built on.

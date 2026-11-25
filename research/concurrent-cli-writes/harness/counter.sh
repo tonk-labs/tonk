@@ -57,7 +57,7 @@ case "$VARIANT" in
   branch|branch+rules)
     export TONK_RECONCILE_QUEUE="$WORK/queue"
     [ "$VARIANT" = branch+rules ] && export TONK_INDUCE_ON_PULL=1
-    TONK_RECONCILE_STOP="$WORK/stop" "$TONK" eval -c x 2> "$DIR/reconcile.log" > /dev/null &
+    TONK_RECONCILER=1 TONK_RECONCILE_STOP="$WORK/stop" "$TONK" eval -c x 2> "$DIR/reconcile.log" > /dev/null &
     RECONCILER=$! ;;
 esac
 

@@ -1,7 +1,7 @@
 From b24a5f6411ea93c4605bbcfe752346437d871c2c Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:33:25 +0000
-Subject: [PATCH 1/4] experiment: TONK_EVAL_POLICY chooses how eval handles a
+Subject: [PATCH 1/5] experiment: TONK_EVAL_POLICY chooses how eval handles a
  lost race
 
 ---
@@ -307,7 +307,7 @@ index 2d44e49..895db3d 100644
 From 6de2dfa89af477fb73a29e9c31a5cb48a617ef47 Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:35:36 +0000
-Subject: [PATCH 2/4] experiment: TONK_EVAL_WARM times repeated commits in one
+Subject: [PATCH 2/5] experiment: TONK_EVAL_WARM times repeated commits in one
  process
 
 ---
@@ -352,7 +352,7 @@ index 3ca5efa..f6be1af 100644
 From 6e10f1d71b85a81be1423b992abe7a522523d0c9 Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 05:33:38 +0000
-Subject: [PATCH 3/4] experiment: writer branches (TONK_BRANCH) and a
+Subject: [PATCH 3/5] experiment: writer branches (TONK_BRANCH) and a
  reconciler (TONK_RECONCILE)
 
 ---
@@ -491,7 +491,7 @@ index ed36bd3..31b3077 100644
 From 22583debad6750bd90defd10b8c530fea30ee3bb Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 15:19:58 +0000
-Subject: [PATCH 4/4] experiment: age priority (TONK_EVAL_POLICY=age)
+Subject: [PATCH 4/5] experiment: age priority (TONK_EVAL_POLICY=age)
 
 ---
  rust/tonk-cli/src/eval.rs | 73 ++++++++++++++++++++++++++++++++++++++-
@@ -613,6 +613,154 @@ index cb09801..adece57 100644
 +        let _ = std::fs::remove_file(self.dir.join(&self.name));
 +    }
 +}
+-- 
+2.43.0
+
+
+From f3793a85c433a4a31c50a49cbce93805cedaba5e Mon Sep 17 00:00:00 2001
+From: "R. Daneel Olivaw" <rdaneel@gozala.io>
+Date: Wed, 25 Nov 2026 15:31:11 +0000
+Subject: [PATCH 5/5] experiment: queued reconciler, rules after pull
+
+---
+ rust/tonk-cli/src/bin/tonk.rs | 80 +++++++++++++++++++++++++++++++++++
+ rust/tonk-cli/src/eval.rs     | 25 +++++++++++
+ 2 files changed, 105 insertions(+)
+
+diff --git a/rust/tonk-cli/src/bin/tonk.rs b/rust/tonk-cli/src/bin/tonk.rs
+index 974e89a..40dd0f0 100644
+--- a/rust/tonk-cli/src/bin/tonk.rs
++++ b/rust/tonk-cli/src/bin/tonk.rs
+@@ -1932,6 +1932,86 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
+     // auto-sync off so a preview can't pull the remote in either.
+     let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
+     let session = auto_sync::WriteSession::begin(&site, sync).await;
++    // Experiment only: TONK_RECONCILER=1 with TONK_RECONCILE_QUEUE=<file> takes writer branches in
++    // the order writers appended them, pulls each into main (running rules
++    // after, with TONK_INDUCE_ON_PULL), and logs how long each write took
++    // to reach main and whether main simply took the writer's head.
++    if std::env::var("TONK_RECONCILER").is_ok()
++        && let Ok(queue) = std::env::var("TONK_RECONCILE_QUEUE")
++    {
++        let stop = std::env::var("TONK_RECONCILE_STOP").unwrap_or_default();
++        let induce = std::env::var("TONK_INDUCE_ON_PULL").is_ok();
++        let main = match site.branch().await {
++            Ok(session) => session,
++            Err(e) => return print_error(format!("acquire main: {e}")),
++        };
++        let mut offset = 0usize;
++        loop {
++            let stopping = std::path::Path::new(&stop).exists();
++            let text = std::fs::read_to_string(&queue).unwrap_or_default();
++            let fresh = text.get(offset..).unwrap_or("").to_owned();
++            let complete = fresh.rfind('\n').map(|i| i + 1).unwrap_or(0);
++            offset += complete;
++            let mut pending: Vec<(String, u128)> = Vec::new();
++            for line in fresh[..complete].lines() {
++                let mut parts = line.split('\t');
++                let (Some(name), Some(at)) = (parts.next(), parts.next()) else {
++                    continue;
++                };
++                let at: u128 = at.parse().unwrap_or(0);
++                // One pull covers every queued write of a branch.
++                match pending.iter_mut().find(|(n, _)| n == name) {
++                    Some(entry) => entry.1 = entry.1.min(at),
++                    None => pending.push((name.to_owned(), at)),
++                }
++            }
++            for (name, at) in pending {
++                let started = std::time::Instant::now();
++                let writer = match site
++                    .reactor
++                    .repository(tonk_cli::site::REPO_NAME)
++                    .branch(&name)
++                    .acquire(&site.operator)
++                    .await
++                {
++                    Ok(writer) => writer,
++                    Err(e) => {
++                        eprintln!("reconcile\terror\t{name}\tacquire: {e}");
++                        continue;
++                    }
++                };
++                let _ = writer.handle().refresh(&site.operator).await;
++                if let Err(e) = main
++                    .handle()
++                    .pull(dialog_repository::Download::MinimalRanges)
++                    .from(writer.handle())
++                    .perform(&site.operator)
++                    .await
++                {
++                    eprintln!("reconcile\terror\t{name}\t{e}");
++                    continue;
++                }
++                let adopted = main.handle().revision() == writer.handle().revision();
++                if induce && let Err(e) = main.handle().induce(&site.operator).await {
++                    eprintln!("reconcile\terror\t{name}\tinduce: {e}");
++                }
++                let now = std::time::SystemTime::now()
++                    .duration_since(std::time::UNIX_EPOCH)
++                    .map(|d| d.as_nanos())
++                    .unwrap_or(0);
++                eprintln!(
++                    "reconcile\tmerged\t{name}\t{}\t{}\t{}",
++                    now.saturating_sub(at) / 1000,
++                    u8::from(adopted),
++                    started.elapsed().as_micros()
++                );
++            }
++            if stopping && complete == 0 {
++                return ExitCode::Success;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
++        }
++    }
+     // Experiment only: TONK_RECONCILE=a,b,... pulls each named branch into
+     // main, over and over, until the file TONK_RECONCILE_STOP exists, then
+     // once more. Prints one line per pass that moved main.
+diff --git a/rust/tonk-cli/src/eval.rs b/rust/tonk-cli/src/eval.rs
+index adece57..e25c48d 100644
+--- a/rust/tonk-cli/src/eval.rs
++++ b/rust/tonk-cli/src/eval.rs
+@@ -216,6 +216,13 @@ pub async fn run_documents(
+             .perform(&site.operator)
+             .await
+             .map_err(|e| EvalError::Io(format!("pull main: {e}")))?;
++        // Experiment only: run rules over what the pull brought in.
++        if std::env::var("TONK_INDUCE_ON_PULL").is_ok() {
++            branch
++                .induce(&site.operator)
++                .await
++                .map_err(|e| EvalError::Io(format!("induce after pull: {e}")))?;
++        }
+     }
+     let policy = Policy::from_env();
+     let lock_path = site.root.join("eval.lock");
+@@ -326,6 +333,24 @@ pub async fn run_documents(
+         match published {
+             Ok(revision_after) => {
+                 session.state.stack().schedule_poll();
++                // Experiment only: tell the reconciler this branch moved.
++                if let (Ok(queue), Ok(name)) = (
++                    std::env::var("TONK_RECONCILE_QUEUE"),
++                    std::env::var("TONK_BRANCH"),
++                ) {
++                    use std::io::Write as _;
++                    let now = std::time::SystemTime::now()
++                        .duration_since(std::time::UNIX_EPOCH)
++                        .map(|d| d.as_nanos())
++                        .unwrap_or(0);
++                    if let Ok(mut file) = std::fs::OpenOptions::new()
++                        .create(true)
++                        .append(true)
++                        .open(&queue)
++                    {
++                        let _ = file.write_all(format!("{name}\t{now}\n").as_bytes());
++                    }
++                }
+                 break (
+                     EvaluateResponse {
+                         revision_before,
 -- 
 2.43.0
 
