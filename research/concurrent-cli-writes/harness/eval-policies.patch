@@ -1,7 +1,7 @@
 From b24a5f6411ea93c4605bbcfe752346437d871c2c Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:33:25 +0000
-Subject: [PATCH 1/3] experiment: TONK_EVAL_POLICY chooses how eval handles a
+Subject: [PATCH 1/4] experiment: TONK_EVAL_POLICY chooses how eval handles a
  lost race
 
 ---
@@ -307,7 +307,7 @@ index 2d44e49..895db3d 100644
 From 6de2dfa89af477fb73a29e9c31a5cb48a617ef47 Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:35:36 +0000
-Subject: [PATCH 2/3] experiment: TONK_EVAL_WARM times repeated commits in one
+Subject: [PATCH 2/4] experiment: TONK_EVAL_WARM times repeated commits in one
  process
 
 ---
@@ -352,7 +352,7 @@ index 3ca5efa..f6be1af 100644
 From 6e10f1d71b85a81be1423b992abe7a522523d0c9 Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 05:33:38 +0000
-Subject: [PATCH 3/3] experiment: writer branches (TONK_BRANCH) and a
+Subject: [PATCH 3/4] experiment: writer branches (TONK_BRANCH) and a
  reconciler (TONK_RECONCILE)
 
 ---
@@ -484,6 +484,135 @@ index ed36bd3..31b3077 100644
          let branch = self.reactor.repository(REPO_NAME).branch(&name);
          let session = branch.acquire(&self.operator).await.map_err(|error| {
              let text = error.to_string();
+-- 
+2.43.0
+
+
+From 22583debad6750bd90defd10b8c530fea30ee3bb Mon Sep 17 00:00:00 2001
+From: "R. Daneel Olivaw" <rdaneel@gozala.io>
+Date: Wed, 25 Nov 2026 15:19:58 +0000
+Subject: [PATCH 4/4] experiment: age priority (TONK_EVAL_POLICY=age)
+
+---
+ rust/tonk-cli/src/eval.rs | 73 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/rust/tonk-cli/src/eval.rs b/rust/tonk-cli/src/eval.rs
+index cb09801..adece57 100644
+--- a/rust/tonk-cli/src/eval.rs
++++ b/rust/tonk-cli/src/eval.rs
+@@ -221,6 +221,10 @@ pub async fn run_documents(
+     let lock_path = site.root.join("eval.lock");
+     let mut attempt: u32 = 0;
+     let mut escalated = false;
++    // Age priority: registered once, so the eval keeps its age across tries.
++    let age = (policy == Policy::Age)
++        .then(|| Age::register(&site.root.join("eval.age")))
++        .transpose()?;
+ 
+     let (response, committed) = loop {
+         attempt += 1;
+@@ -307,6 +311,9 @@ pub async fn run_documents(
+                 false,
+             );
+         }
++        if let Some(age) = &age {
++            age.wait_for_older().await;
++        }
+         // Hybrid: an optimistic writer reads without the lock and
+         // publishes under it, so a writer that holds it cannot lose.
+         let _publishing = if policy == Policy::Hybrid && !escalated {
+@@ -488,6 +495,9 @@ enum Policy {
+     Queue,
+     /// Optimistic first, publishing under the lock; after one loss, queued.
+     Hybrid,
++    /// No lock: an eval defers its publish while an older eval is in
++    /// flight, and keeps its age across tries, so the oldest wins.
++    Age,
+ }
+ 
+ impl Policy {
+@@ -497,6 +507,7 @@ impl Policy {
+             Ok("backoff") => Self::Backoff,
+             Ok("queue") => Self::Queue,
+             Ok("hybrid") => Self::Hybrid,
++            Ok("age") => Self::Age,
+             _ => Self::Once,
+         }
+     }
+@@ -506,7 +517,7 @@ impl Policy {
+             Self::Once => 1,
+             Self::Hybrid => 2,
+             Self::Queue => 3,
+-            Self::Retry | Self::Backoff => 64,
++            Self::Retry | Self::Backoff | Self::Age => 64,
+         }
+     }
+ }
+@@ -523,3 +534,63 @@ fn lock(path: &std::path::Path) -> Result<std::fs::File, EvalError> {
+         .map_err(|e| EvalError::Io(format!("take eval lock: {e}")))?;
+     Ok(file)
+ }
++
++/// Experiment only: an eval's entry in the space's age registry, a file
++/// named by its start time and pid, removed when the eval ends.
++struct Age {
++    dir: std::path::PathBuf,
++    name: String,
++}
++
++impl Age {
++    fn register(dir: &std::path::Path) -> Result<Self, EvalError> {
++        std::fs::create_dir_all(dir).map_err(|e| EvalError::Io(format!("age registry: {e}")))?;
++        let started = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map(|d| d.as_nanos())
++            .unwrap_or(0);
++        let name = format!("{started:024}-{:010}", std::process::id());
++        std::fs::write(dir.join(&name), b"")
++            .map_err(|e| EvalError::Io(format!("age registry: {e}")))?;
++        Ok(Self {
++            dir: dir.to_owned(),
++            name,
++        })
++    }
++
++    /// Whether an eval that started before this one is still running.
++    fn older_in_flight(&self) -> bool {
++        let Ok(entries) = std::fs::read_dir(&self.dir) else {
++            return false;
++        };
++        entries.flatten().any(|entry| {
++            let name = entry.file_name().to_string_lossy().into_owned();
++            if name >= self.name {
++                return false;
++            }
++            let alive = name
++                .rsplit('-')
++                .next()
++                .and_then(|pid| pid.parse::<u32>().ok())
++                .is_some_and(|pid| std::path::Path::new(&format!("/proc/{pid}")).exists());
++            if !alive {
++                let _ = std::fs::remove_file(entry.path());
++            }
++            alive
++        })
++    }
++
++    /// Defer while an older eval is in flight, for at most five seconds.
++    async fn wait_for_older(&self) {
++        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++        while self.older_in_flight() && std::time::Instant::now() < deadline {
++            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
++        }
++    }
++}
++
++impl Drop for Age {
++    fn drop(&mut self) {
++        let _ = std::fs::remove_file(self.dir.join(&self.name));
++    }
++}
 -- 
 2.43.0
 
