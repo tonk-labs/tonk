@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | Prior art (Dolt, SQLite, jj, Datomic, STM contention managers). Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Whether G is kept, and if so how it reports conflicts. Whether age priority (H) is worth a column. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -267,3 +267,15 @@ Dolt do this; what other prior art is there?
 one-shot pull keeps a sync base, so each merge was incremental.
 
 **Decided.** Backoff as above.
+
+## 2026-11-25, Directing: prior art
+
+**Learned.** [prior-art.md](prior-art.md). Dolt matches direction F
+closely: a server the CLI finds through a file, a commit lock per branch,
+merges computed outside the lock; but it fails a commit after 5 retries.
+Dolt and jj both keep writer branches or heads apart and report conflicts
+as data, which the G prototype does not. A third remedy for starvation
+exists that was not measured: priority by age kept across retries
+(Clojure, Greedy).
+
+**Decided.** Not decided.
