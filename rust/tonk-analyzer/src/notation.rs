@@ -225,6 +225,11 @@ pub async fn notation_library_claims<Env: QueryEnv>(
         };
         let mut changes = Changes::new();
         let mut transients = Changes::new();
+        // A library is lowered with no branch, so a write that reads what
+        // is stored (a `when` over stored facts, a retract by entity
+        // alone) finds nothing and would be installed as nothing: it is
+        // refused instead, naming itself.
+        let mut reads_nothing: Option<String> = None;
         if !refused.contains_key(&at) {
             if let Some(Declaration::Concept(concept)) = declared.get(&at)
                 && matches!(kind, "concept" | "command")
@@ -251,6 +256,13 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                             .try_vec()
                             .await
                             .map_err(|error| format!("a write's `when`: {error}"))?;
+                        if rows.is_empty() {
+                            reads_nothing = Some(format!(
+                                "{} reads what is stored, and a library is installed with \
+                                 nothing stored to read: it would write nothing",
+                                part.trim()
+                            ));
+                        }
                         for row in &rows {
                             let statement =
                                 write.statement(row).map_err(|error| error.to_string())?;
@@ -264,6 +276,10 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                 }
             }
         }
+        if reads_nothing.is_some() {
+            changes = Changes::new();
+            transients = Changes::new();
+        }
         all.merge(changes.clone());
         all_transient.merge(transients.clone());
         let form = NotationForm {
@@ -271,7 +287,7 @@ pub async fn notation_library_claims<Env: QueryEnv>(
             key,
             durable: changes,
             transient: transients,
-            refused: refused.get(&at).cloned(),
+            refused: refused.get(&at).cloned().or(reads_nothing),
         };
         // An element is many asserts in the notation and one form in
         // the YAML: its asserts are one form here.

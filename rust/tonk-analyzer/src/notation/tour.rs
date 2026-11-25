@@ -618,7 +618,15 @@ async fn finish<E: Reader>(
             }
         }
     }
+    let same_asks: Vec<(usize, usize)> = same
+        .iter()
+        .copied()
+        .filter(|(_, earlier)| asks.iter().any(|(_, at)| at == earlier))
+        .collect();
     for (at, earlier) in same {
+        if same_asks.iter().any(|(form, _)| *form == at) {
+            continue;
+        }
         if let Some(at) = outcome(forms, at)
             && forms[at].summary.is_empty()
         {
@@ -667,33 +675,43 @@ async fn finish<E: Reader>(
     }
 
     // Ask: after the commit, so a query reads what the cell wrote. Each
-    // form is answered on its own, so its answers stay under it and one
-    // that fails does not take the others with it.
-    for (step, at) in asks {
-        let Some(at) = outcome(forms, at) else {
+    // form's answer is its own, so its answers stay under it and one
+    // that fails does not take the others with it. A form that asks the
+    // same as an earlier one (`Did::Same`) gets no entry of its own: it
+    // shows the earlier form's answer.
+    let kinds: BTreeMap<usize, &'static str> = asks
+        .iter()
+        .map(|(step, at)| {
+            let kind = match step {
+                Step::Query(_) => "query",
+                Step::Select(_) => "selection",
+                _ => "view",
+            };
+            (*at, kind)
+        })
+        .collect();
+    let answered: BTreeMap<usize, Result<apply::Answer, String>> =
+        apply::answer(branch, checked, env)
+            .await
+            .forms
+            .into_iter()
+            .map(|form| (form.form, form.answered.map_err(|error| error.to_string())))
+            .collect();
+    let mut asked: Vec<(usize, usize)> = kinds.keys().map(|at| (*at, *at)).collect();
+    asked.extend(same_asks.iter().copied());
+    for (at, from) in asked {
+        let (Some(at), Some(answer)) = (outcome(forms, at), answered.get(&from)) else {
             continue;
         };
-        let mut one = checked.clone();
-        one.steps = vec![step.clone()];
-        one.step_forms = vec![at];
-        let answered = apply::answer(branch, &one, env).await;
-        match (step, answered) {
-            (Step::Query(_) | Step::Select(_), Ok(answered)) => {
-                tabulate(&mut forms[at], &answered.answers);
-            }
-            (Step::Query(_), Err(error)) => {
-                forms[at].summary = format!("the query failed: {error}");
-            }
-            (Step::Select(_), Err(error)) => {
-                forms[at].summary = format!("the selection failed: {error}");
-            }
-            (Step::View(_), Ok(answered)) => {
-                let roots: Vec<_> = answered
-                    .rendered
-                    .into_iter()
-                    .flat_map(|tree| tree.roots)
-                    .collect();
-                let tree = Rendered { roots };
+        match answer {
+            Ok(apply::Answer::Rows(rows)) => tabulate(&mut forms[at], rows),
+            Ok(apply::Answer::Rendered(rendered)) => {
+                let tree = Rendered {
+                    roots: rendered
+                        .iter()
+                        .flat_map(|tree| tree.roots.clone())
+                        .collect(),
+                };
                 forms[at].summary =
                     format!("rendered {} instance(s) of the view", tree.roots.len());
                 forms[at].html = Some(super::live::rendered_html(&tree));
@@ -708,10 +726,12 @@ async fn finish<E: Reader>(
                     })
                     .collect();
             }
-            (Step::View(_), Err(error)) => {
-                forms[at].summary = format!("rendering failed: {error}");
+            Err(error) => {
+                forms[at].summary = match kinds.get(&from).copied().unwrap_or("query") {
+                    "view" => format!("rendering failed: {error}"),
+                    kind => format!("the {kind} failed: {error}"),
+                };
             }
-            _ => {}
         }
     }
     for form in forms.iter_mut() {

@@ -1,7 +1,7 @@
 # Findings from the notation tour
 
 Kept as history. Both are fixed at the revision the branch pins now,
-`13956c5d513356545c2970cb1e51e03538ac4c21` (dialog-db `feat/notation-poc`);
+`a00ea1ecb36c6162be258c808f20194ff59f4000` (dialog-db `feat/notation-poc`);
 finding 2 since `0cebfc07`.
 Finding 1 was fixed on the notation branch by b423dd78: the head formula
 answers one total per pair. Finding 2 is fixed by dialog-db/dialog-db#863
