@@ -1125,6 +1125,172 @@ async fn it_installs_the_tree_inspector_from_the_palette() {
     installs_from_the_palette("install tree", "tree-inspector").await;
 }
 
+/// The slide deck installs from the palette like any component: "install
+/// slide" completes to it.
+#[dialog_common::test]
+async fn it_installs_the_slide_deck_from_the_palette() {
+    installs_from_the_palette("install slide", "slide-deck").await;
+}
+
+/// The slide deck's commands do what its editor asks of them: a created
+/// deck has its title, an insert at the edge or between two slides lands
+/// a new slide in order, a move reorders, an edit and a stack each write
+/// their one field, and a remove takes the slide out of the deck.
+#[dialog_common::test]
+async fn it_edits_a_slide_deck_with_its_commands() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/slides",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    send(
+        &app,
+        "POST",
+        &format!("{space}/evaluate"),
+        "application/yaml",
+        CORE.into(),
+    )
+    .await;
+    {
+        let tonk = state.read().await;
+        super::repository::install_component(&tonk, &key, "main", "/library/slide-deck.yaml")
+            .await
+            .expect("the slide deck installs");
+    }
+    let evaluate = async |text: String| {
+        send(
+            &app,
+            "POST",
+            &format!("{space}/evaluate"),
+            "application/yaml",
+            text,
+        )
+        .await
+    };
+    let decks = async || -> Vec<Value> {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "title": { "the": "xyz.tonk.slide-deck.deck/title", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": { "?": { "name": "this" } }, "title": { "?": { "name": "title" } } }
+            })
+            .to_string(),
+        )
+        .await;
+        rows.as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .clone()
+    };
+    // Each slide of the deck, in position order: (entity, source, below).
+    let slides = async |deck: &str| -> Vec<(String, String, bool)> {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{space}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "deck": { "the": "xyz.tonk.slide-deck.slide/deck", "as": "Entity", "cardinality": "one" },
+                    "at": { "the": "xyz.tonk.slide-deck.slide/at", "as": "Text", "cardinality": "one" },
+                    "source": { "the": "xyz.tonk.slide-deck.slide/source", "as": "Text", "cardinality": "one" },
+                    "below": { "the": "xyz.tonk.slide-deck.slide/below", "as": "Boolean", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": { "?": { "name": "this" } },
+                    "deck": deck,
+                    "at": { "?": { "name": "at" } },
+                    "source": { "?": { "name": "source" } },
+                    "below": { "?": { "name": "below" } }
+                }
+            })
+            .to_string(),
+        )
+        .await;
+        let mut rows: Vec<(String, String, String, bool)> = rows
+            .as_array()
+            .unwrap_or_else(|| panic!("rows: {rows}"))
+            .iter()
+            .map(|row| {
+                (
+                    row["fields"]["at"].as_str().unwrap().to_owned(),
+                    row["this"].as_str().unwrap().to_owned(),
+                    row["fields"]["source"].as_str().unwrap().to_owned(),
+                    row["fields"]["below"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows.into_iter()
+            .map(|(_, this, source, below)| (this, source, below))
+            .collect()
+    };
+
+    evaluate("slide-deck/create!:\n  title: \"Community call\"\n  time: 1\n".into()).await;
+    let found = decks().await;
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["fields"]["title"], json!("Community call"));
+    let deck = found[0]["this"].as_str().unwrap().to_owned();
+
+    let edge = "tonk:slide-deck/edge";
+    evaluate(format!(
+        "slide-deck/insert!:\n  deck: {deck}\n  prev: {edge}\n  next: {edge}\n  time: 2\n"
+    ))
+    .await;
+    let one = slides(&deck).await;
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert_eq!((one[0].1.as_str(), one[0].2), ("## New slide", false));
+    let first = one[0].0.clone();
+
+    evaluate(format!(
+        "slide-deck/insert!:\n  deck: {deck}\n  prev: {first}\n  next: {edge}\n  time: 3\n"
+    ))
+    .await;
+    let two = slides(&deck).await;
+    assert_eq!(two.len(), 2, "{two:?}");
+    assert_eq!(
+        two[0].0, first,
+        "the new slide follows the one it was added after"
+    );
+    let second = two[1].0.clone();
+
+    evaluate(format!(
+        "slide-deck/move!:\n  subject: {second}\n  prev: {edge}\n  next: {first}\n  time: 4\n"
+    ))
+    .await;
+    let moved: Vec<String> = slides(&deck).await.into_iter().map(|s| s.0).collect();
+    assert_eq!(
+        moved,
+        vec![second.clone(), first.clone()],
+        "the moved slide comes first"
+    );
+
+    evaluate(format!(
+        "slide-deck/edit!:\n  subject: {first}\n  source: \"# Hello\"\n"
+    ))
+    .await;
+    evaluate(format!(
+        "slide-deck/stack!:\n  subject: {first}\n  checked: true\n"
+    ))
+    .await;
+    evaluate(format!("slide-deck/remove!:\n  subject: {second}\n")).await;
+    assert_eq!(
+        slides(&deck).await,
+        vec![(first, "# Hello".to_owned(), true)],
+        "the edit and the stack wrote their fields, and the removed slide is gone"
+    );
+}
+
 /// Type `typed` in a fresh space's palette, check the top reading is
 /// `install [<component>]`, run it, and wait for the space to record the
 /// component's install.

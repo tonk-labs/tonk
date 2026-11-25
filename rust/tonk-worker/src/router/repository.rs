@@ -6044,6 +6044,9 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/prose-editor.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/prose-editor.yaml").to_owned())
         }
+        "/library/slide-deck.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/slide-deck.yaml").to_owned())
+        }
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
@@ -17621,6 +17624,10 @@ mod library_quarantine_tests {
             (
                 "prose-editor",
                 include_str!("../../../tonk-core/assets/library/prose-editor.yaml"),
+            ),
+            (
+                "slide-deck",
+                include_str!("../../../tonk-core/assets/library/slide-deck.yaml"),
             ),
             (
                 "table",

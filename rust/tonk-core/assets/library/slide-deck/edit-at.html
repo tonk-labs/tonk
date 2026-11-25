@@ -1,0 +1,18 @@
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 1rem; height: 100vh; box-sizing: border-box; padding: .75rem; font-family: system-ui, sans-serif;">
+  <section style="overflow: auto; padding-right: .5rem;">
+    <nav style="display: flex; gap: 1rem; font-size: 13px; margin-bottom: .75rem;">
+      <a href="/slide">All decks</a>
+      <a href="/slide/{entity}/{slide}">Present</a>
+    </nav>
+    <tonk-display with="{branch}@{repo}" entity={entity} model=slide-deck/deck view=title-field></tonk-display>
+    <p style="font-size: 13px; color: #777; margin: .5rem 0 1rem;">Each box is one slide; focus one to show it in the preview. A line <code>Note:</code> starts its speaker notes.</p>
+    <slide-board deck={entity} on:slide-insert=slide-deck/insert on:slide-move=slide-deck/move>
+      <p data-when="empty">No slides yet.</p>
+      <p><button data-act="start">+ slide at the start</button></p>
+      <tonk-display with="{branch}@{repo}" model=slide-deck/open-slide view=editor style="display: flex; flex-direction: column;"></tonk-display>
+    </slide-board>
+  </section>
+  <slide-deck deck={entity} start={slide} preview style="border-radius: 8px; height: min(100%, 60vw);">
+    <tonk-display with="{branch}@{repo}" model=slide-deck/open-slide view=row></tonk-display>
+  </slide-deck>
+</div>

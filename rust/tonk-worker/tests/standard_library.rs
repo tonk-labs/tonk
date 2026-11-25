@@ -51,6 +51,7 @@ const TREE_INSPECTOR_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/tree-inspector.yaml");
 const VERSION_CONTROL_LIBRARY: &str =
     include_str!("../../tonk-core/assets/library/version-control.yaml");
+const SLIDE_DECK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/slide-deck.yaml");
 const TASKS_LIBRARY: &str = include_str!("../../tonk-core/assets/library/tasks.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
@@ -1582,6 +1583,16 @@ async fn it_lowers_the_prose_editor_library() {
 async fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
         .await;
+}
+
+#[dialog_common::test]
+async fn it_lowers_the_slide_deck_library() {
+    assert_component_library_lowers(
+        "slide-deck library (slide-deck.yaml)",
+        "slide-deck.yaml",
+        SLIDE_DECK_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]
