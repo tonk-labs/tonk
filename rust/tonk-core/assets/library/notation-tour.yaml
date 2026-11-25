@@ -1132,12 +1132,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-15
   notebook: notebook:notation-tour
-  source: "A fold: a `query` collects with `collect` and counts. Here, one summary per list with how many things are on it."
+  source: "A fold: a `query` gathers with `distinct` and counts. Here, one summary per list with how many things are on it."
 
 notebook/block!:
   this: id:notation-tour/block-16
   notebook: notebook:notation-tour
-  source: "```notation\n(query (list/summary ?l is: ?summary)\n  (list ?l name: ?name)\n  (todo (collect ?t) list: ?l ...)\n  (is ?summary {:name ?name :todos (count ?t)}))\n\n(select (list/summary ?l is: ?summary))\n```"
+  source: "```notation\n(query (list/summary ?l is: ?summary)\n  (list ?l name: ?name)\n  (todo (distinct ?t) list: ?l ...)\n  (is ?summary {:name ?name :todos (count ?t)}))\n\n(select (list/summary ?l is: ?summary))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-17
@@ -1227,7 +1227,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-34
   notebook: notebook:notation-tour
-  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (collect ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
+  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-35

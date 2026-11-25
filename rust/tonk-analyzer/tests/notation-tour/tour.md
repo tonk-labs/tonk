@@ -81,12 +81,12 @@ Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask f
   (<= (+ ?p : ?q) : 3))
 ```
 
-A fold: a `query` collects with `collect` and counts. Here, one summary per list with how many things are on it.
+A fold: a `query` gathers with `distinct` and counts. Here, one summary per list with how many things are on it.
 
 ```notation
 (query (list/summary ?l is: ?summary)
   (list ?l name: ?name)
-  (todo (collect ?t) list: ?l ...)
+  (todo (distinct ?t) list: ?l ...)
   (is ?summary {:name ?name :todos (count ?t)}))
 
 (select (list/summary ?l is: ?summary))
@@ -203,7 +203,7 @@ A view is a query whose answer is markup. A list's card holds an item per to-do 
 
 (query (list/card ?l is: ?card)
   (list ?l name: ?name)
-  (todo/item _ list: ?l is: (collect ?items))
+  (todo/item _ list: ?l is: (distinct ?items))
   (view ?card [:article [:h3 ?name] [:ul ?items]]))
 
 (select (list/card list:home is: ?card))

@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at 76ba00c70df8ac1d9b234832e3479d9d374418ac
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at 8ebe755f713643bc3026c5745d133f5faa2fbb26
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; notebook: a <tonk-notebook> document whose ```dialog-yaml fences are live
