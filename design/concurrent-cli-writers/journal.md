@@ -360,3 +360,19 @@ today, or wait for a daemon.
 **Decided.** Not decided. Proposed: the per-branch queue is a lock file
 shared by the daemon and the CLI; the daemon is how commands get warm
 caches and background sync, not how they get ordered.
+
+## 2026-11-25, Designing: how processes share the queue
+
+**Asked.** Irakli: how do multiple processes share the queue, or manage
+ordering?
+
+**Learned.** The prototype's queue is an exclusive `flock` on a lock file
+per space: the kernel lets one process hold it, blocks the others until
+it is released, and releases it when the holder exits, so a crash cannot
+leave it held. It orders writers one at a time; it does not promise who
+goes next. What we measured showed no writer left behind (the longest
+wait at 16 writers was ~316 ms, and the long eval waited ~50-80 ms for
+its turn), but that is not a guarantee.
+
+**Decided.** Not decided: whether one-at-a-time is enough, or the queue
+must also be first-come-first-served.
