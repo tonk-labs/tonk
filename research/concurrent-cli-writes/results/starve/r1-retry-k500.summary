@@ -1,1 +1,0 @@
-policy=retry K=500 S=8 big_attempts=64 big_final_code=4 big_total_ms=31442 small_ok=1203 small_failed=2472

@@ -42,6 +42,11 @@ Commits: harness at `c0ec36e`-based branch.
 
 ## How to reproduce
 
+Harness scripts, experiment patches and per-run rows are not kept in the
+repository; they are at [`9e36f0e`](https://github.com/tonk-labs/tonk/tree/9e36f0e/research/concurrent-cli-writes) (`harness/`, `results/`), the
+commit before they were taken out of tonk-labs/tonk#1368.
+
+
 ```bash
 cargo build -p tonk-cli --bin tonk
 ```

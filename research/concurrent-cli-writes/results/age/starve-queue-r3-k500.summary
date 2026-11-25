@@ -1,1 +1,0 @@
-policy=native K=500 S=8 big_attempts=1 big_final_code=0 big_total_ms=301 small_ok=45 small_failed=0

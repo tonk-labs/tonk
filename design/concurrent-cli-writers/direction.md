@@ -10,7 +10,7 @@ second axis: Chronicle removes lock refusals under every column and
 changes nothing else measured.
 
 Columns B to E are switches of one experimental build,
-`TONK_EVAL_POLICY` ([patch](../../research/concurrent-cli-writes/harness/eval-policies.patch));
+`TONK_EVAL_POLICY` ([patch](https://github.com/tonk-labs/tonk/tree/9e36f0e/research/concurrent-cli-writes/harness/eval-policies.patch), kept out of the repository);
 F is not built.
 
 | criterion \ approach | A. Status quo: eval tries once | B. Retry: eval evaluates again over the new head at once, up to 64 tries | C. Backoff: as B, after a jittered pause doubling from 2 to 128 ms | D. Queue: every eval holds a machine-wide lock on the space from read to publish | E. Hybrid: evaluate without the lock, publish under it; after one loss, queued | F. Owner process: one process keeps the space open, takes every write in order through a queue per branch, and syncs when local writers recede (fetch and rebase outside the queue, swap the root under it) | G. Writer branches: each writer commits to a branch of its own; a reconciler merges them into main |
