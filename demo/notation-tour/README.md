@@ -96,7 +96,7 @@ Scaffolding:
   which shows the notebook; no route of the notation's is involved, and the
   notebook installed is `notebook.yaml`, not `notebook.clj`;
 - the Dialog pin is one exact revision of dialog-db's `feat/notation-poc`
-  (`ff19a1fe`), the same in the workspace and in the three crates outside
+  (`76ba00c7`), the same in the workspace and in the three crates outside
   it;
 - the space's title pill at the top right is tonk's own chrome and overlaps
   the first lines of a long notebook; left as it is.
