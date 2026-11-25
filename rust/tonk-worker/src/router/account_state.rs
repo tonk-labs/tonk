@@ -1058,14 +1058,47 @@ pub(crate) async fn push_after_answer(app: crate::router::AppState) {
     }
 }
 
+// DIAGNOSTIC, to be reverted: names which await of the account sweep does
+// not return, for the hosted-agent end-to-end failure on the notation demo
+// branch. Each line carries milliseconds on a monotonic clock since the
+// first mark of the process.
+fn sweep_mark(step: &str, at: &str) {
+    static ORIGIN: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+    let origin = ORIGIN.get_or_init(web_time::Instant::now);
+    log!(
+        "account sweep: {at} {step} t={}ms",
+        origin.elapsed().as_millis()
+    );
+}
+
+/// DIAGNOSTIC, to be reverted: `future`, with a mark before and after it.
+async fn sweep_step<T>(step: &str, future: impl std::future::Future<Output = T>) -> T {
+    sweep_mark(step, "before");
+    let out = future.await;
+    sweep_mark(step, "after");
+    out
+}
+
+/// DIAGNOSTIC, to be reverted: marks leaving the serialized section when
+/// the sweep's guard drops, whichever way it returns.
+struct SweepLeave;
+
+impl Drop for SweepLeave {
+    fn drop(&mut self) {
+        sweep_mark("ENSURE", "leave");
+    }
+}
+
 async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<(), String> {
-    let session = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| format!("account branch unavailable: {error}"))?;
+    let session = sweep_step(
+        "acquire account branch",
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator),
+    )
+    .await
+    .map_err(|error| format!("account branch unavailable: {error}"))?;
     // Adopt the upstream head and materialize the OPERATIONAL regions.
     //
     // `Download::Everything` walked every block the revision references,
@@ -1081,18 +1114,25 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
     // The download is also ordered BEFORE the head advance, so a failed
     // or offline download leaves the local revision untouched rather
     // than pointing at blocks the store lacks.
-    session
-        .handle()
-        .pull(dialog_repository::Download::Operational)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| format!("account pull failed: {error}"))?;
-    migrate_adopted_profile_head(tonk).await;
+    sweep_step(
+        "pull account",
+        session
+            .handle()
+            .pull(dialog_repository::Download::Operational)
+            .perform(&tonk.operator),
+    )
+    .await
+    .map_err(|error| format!("account pull failed: {error}"))?;
+    sweep_step(
+        "migrate adopted profile head",
+        migrate_adopted_profile_head(tonk),
+    )
+    .await;
     // The account's own sync is not enough on its own: the operator proves
     // from the PROFILE's access branch, so authority that arrived in the
     // account above is present but unusable until the access branch adopts
     // it. Runs on every sweep, and is a no-op once the upstream is set.
-    adopt_account_access(tonk).await;
+    sweep_step("adopt account access", adopt_account_access(tonk)).await;
     // The pull above went through, which is the gate saying this account
     // is served. Recorded on THIS arm too, not only on first hydration:
     // the browser that enrolled already holds the trusted marker, so it
@@ -1100,28 +1140,36 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
     // "awaiting confirmation" row waited on a fact nothing on that device
     // would ever write, so opening the emailed link left the screen that
     // sent you there unchanged.
-    super::customer::record_activation(tonk).await;
+    sweep_step(
+        "record activation",
+        super::customer::record_activation(tonk),
+    )
+    .await;
     // After the pull, so the seed sees what other devices already recorded,
     // and before the push, so anything it writes leaves with this sweep.
-    if seed_sealed_inbox(tonk).await {
+    if sweep_step("seed sealed inbox", seed_sealed_inbox(tonk)).await {
         log!("published the account sealed-inbox address in the account space");
     }
-    describe_own_device(tonk).await;
-    if let Err(error) = converge_account_state(tonk).await {
+    sweep_step("describe own device", describe_own_device(tonk)).await;
+    if let Err(error) = sweep_step("converge", converge_account_state(tonk)).await {
         log!("account-state convergence after sync failed: {error}");
     }
-    let reconciliation = super::repository::reconcile_profile_library(tonk).await;
+    let reconciliation = sweep_step(
+        "reconcile profile library",
+        super::repository::reconcile_profile_library(tonk),
+    )
+    .await;
     let push = match publish {
         // Pushed through the session this function already holds, rather
         // than `push_account_main`, which acquires one of its own for the
         // hydrate arm.
-        Publish::Now => session
-            .handle()
-            .push()
-            .perform(&tonk.operator)
-            .await
-            .map(|_| ())
-            .map_err(|error| format!("account push failed: {error}")),
+        Publish::Now => sweep_step(
+            "push account",
+            session.handle().push().perform(&tonk.operator),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("account push failed: {error}")),
         Publish::Later => Ok(()),
     };
     finish_account_sweep(reconciliation, push)
@@ -1171,23 +1219,36 @@ async fn sweep_account_state(
     // access branch can tear an artifact — a branch head referencing a
     // blob that never landed, which wedges the worker at the next boot.
     static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    sweep_mark("ENSURE", "enter");
     let _serialized = ENSURE.lock().await;
+    sweep_mark("ENSURE", "held");
+    let _leave = SweepLeave;
 
     // An account with somewhere to sync. A root exists from the moment
     // a passkey does, so the root alone does not mean the account is
     // configured; an address does, and it comes from the customer fact,
     // the resolved DID document, or the link.
-    let Ok(root) = super::identity::local_root(tonk).await else {
+    let Ok(root) = sweep_step("local root", super::identity::local_root(tonk)).await else {
         return (AccountStateStatus::Unconfigured, Ok(()));
     };
-    if !account_configured(tonk).await {
+    if !sweep_step("account configured", account_configured(tonk)).await {
         return (AccountStateStatus::Unconfigured, Ok(()));
     }
-    if let Err(error) = super::customer::migrate_customer_record(tonk, &root.root_did).await {
+    if let Err(error) = sweep_step(
+        "migrate customer record",
+        super::customer::migrate_customer_record(tonk, &root.root_did),
+    )
+    .await
+    {
         log!("legacy customer record did not migrate: {error}");
     }
 
-    let key = match configure_account_upstream(tonk, &root.root_did).await {
+    let key = match sweep_step(
+        "configure account upstream",
+        configure_account_upstream(tonk, &root.root_did),
+    )
+    .await
+    {
         Ok(key) => key,
         Err(error) => {
             log!("account upstream configuration failed: {error}");
@@ -1208,13 +1269,13 @@ async fn sweep_account_state(
         }
     }
 
-    match trusted_marker(tonk).await {
+    match sweep_step("trusted marker", trusted_marker(tonk)).await {
         Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
             let swept = sync_ready(tonk, &key, publish).await;
             (AccountStateStatus::Ready, swept)
         }
-        Ok(_) => match hydrate_untrusted(tonk).await {
-            Ok(()) => match mark_trusted(tonk, &root.root_did).await {
+        Ok(_) => match sweep_step("hydrate untrusted", hydrate_untrusted(tonk)).await {
+            Ok(()) => match sweep_step("mark trusted", mark_trusted(tonk, &root.root_did)).await {
                 Ok(()) => {
                     // The path a freshly created account takes, where the
                     // ready sweep above has not run yet.
@@ -1231,7 +1292,9 @@ async fn sweep_account_state(
                     // that never opened the link, since it learns from the
                     // sync it was already doing.
                     super::customer::record_activation(tonk).await;
-                    if let Err(error) = converge_account_state(tonk).await {
+                    if let Err(error) =
+                        sweep_step("converge after hydration", converge_account_state(tonk)).await
+                    {
                         log!("account-state convergence after hydration failed: {error}");
                     }
                     // Push what this sweep just made durable, when this
@@ -1242,7 +1305,10 @@ async fn sweep_account_state(
                     // to it (see `Publish`).
                     let reconciliation = super::repository::reconcile_profile_library(tonk).await;
                     let pushed = match publish {
-                        Publish::Now => push_account_main(tonk).await,
+                        Publish::Now => {
+                            sweep_step("push account after hydration", push_account_main(tonk))
+                                .await
+                        }
                         Publish::Later => Ok(()),
                     };
                     (
