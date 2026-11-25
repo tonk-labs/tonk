@@ -2349,6 +2349,32 @@ async fn watch_repo(
             log!("{repo} is no longer watched: its branch was replaced");
             return;
         }
+        // DIAGNOSTIC, to be reverted: each observation of the watch, with
+        // the head it carries, the head this handle knows of the remote and
+        // the local branch's, so a trace shows whether a head the account
+        // moved to arrived as Advanced, Diverged, Stale or not at all.
+        {
+            static ORIGIN: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+            let origin = ORIGIN.get_or_init(web_time::Instant::now);
+            let head = |revision: Option<&dialog_repository::Revision>| {
+                revision.map_or_else(
+                    || "none".to_owned(),
+                    |revision| format!("{:?}", revision.version()),
+                )
+            };
+            let (variant, observed_head) = match &observed {
+                Ok(Observation::Advanced(revision)) => ("Advanced", head(Some(revision))),
+                Ok(Observation::Diverged) => ("Diverged", "-".to_owned()),
+                Ok(Observation::Stale) => ("Stale", "-".to_owned()),
+                Err(_) => ("Error", "-".to_owned()),
+            };
+            log!(
+                "watch observation: {variant} repo={repo} observed={observed_head} known={} held={} t={}ms",
+                head(upstream.revision().as_ref()),
+                head(branch.branch.revision().as_ref()),
+                origin.elapsed().as_millis()
+            );
+        }
         match observed {
             Ok(Observation::Advanced(_)) => {
                 // Wakes its loop, which pulls the head just recorded now
