@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | Whether the lost-update result settles G. Whether to test the same loss between two synced replicas. Building D/F, in a later session. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Whether G is kept for commutative data only, or dropped. Whether tonk's notation can count stored facts. Building D/F, in a later session. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -300,3 +300,20 @@ Age priority (H) reached zero and was slower than the queue everywhere.
 **Decided.** Not decided by the maintainer. On the evidence, writer
 branches are ruled out for read-modify-write rules unless what they read
 is derived from stored, commutative facts.
+
+## 2026-11-25, Directing: the counter is modeled wrong
+
+**Asked.** Does the lost-update result settle writer branches?
+
+**Learned.** Irakli: peers lose increments the same way, because the
+counter is modeled wrong; asserting a count lets one count win; a counter
+type that keeps every increment, like a set, and counts them preserves
+all, which is not what the guide's example models. So the measurement
+indicts the model, not the merge. Two things stand beside that: the
+counter is the guide's own example, so agents write it that way; and some
+invariants cannot be made commutative (the next bug ident, claiming a
+task). The queue keeps both locally; writer branches and peers keep
+neither.
+
+**Decided.** Not decided. A modeling guideline (keep events, derive
+counts) and fixing the guide's example are separate from this topic.
