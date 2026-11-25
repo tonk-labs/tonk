@@ -1,0 +1,305 @@
+From b24a5f6411ea93c4605bbcfe752346437d871c2c Mon Sep 17 00:00:00 2001
+From: "R. Daneel Olivaw" <rdaneel@gozala.io>
+Date: Wed, 25 Nov 2026 03:33:25 +0000
+Subject: [PATCH] experiment: TONK_EVAL_POLICY chooses how eval handles a lost
+ race
+
+---
+ rust/tonk-cli/src/eval.rs | 271 +++++++++++++++++++++++++-------------
+ 1 file changed, 180 insertions(+), 91 deletions(-)
+
+diff --git a/rust/tonk-cli/src/eval.rs b/rust/tonk-cli/src/eval.rs
+index 2d44e49..895db3d 100644
+--- a/rust/tonk-cli/src/eval.rs
++++ b/rust/tonk-cli/src/eval.rs
+@@ -200,103 +200,142 @@ pub async fn run_documents(
+         .await
+         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
+     let branch = session.handle();
+-    let revision_before = branch.revision();
+-
+-    let mut txn = branch.transaction();
+-    let mut writes = false;
+-    let mut matches_before = Vec::new();
+-    let mut matches_after = Vec::new();
+-    let mut commits = CommitSummary::default();
+-    for (label, location, text) in documents {
+-        // A parse error names its document at every diagnostic; the
+-        // others need the name when there is more than one document.
+-        let named = |error: EvalError| match error {
+-            EvalError::Analyze(message) if several => {
+-                EvalError::Analyze(format!("{label}: {message}"))
+-            }
+-            EvalError::Commit(message) if several => {
+-                EvalError::Commit(format!("{label}: {message}"))
+-            }
+-            other => other,
++    let policy = Policy::from_env();
++    let lock_path = site.root.join("eval.lock");
++    let mut attempt: u32 = 0;
++    let mut escalated = false;
++
++    let (response, committed) = loop {
++        attempt += 1;
++        // Queue, and a hybrid writer that lost once: hold the space's eval
++        // lock from reading to publishing, so no other eval moves the head.
++        let _held = if policy == Policy::Queue || escalated {
++            Some(lock(&lock_path)?)
++        } else {
++            None
+         };
+-        let mut syntax = parse_or_diagnose(&label, location, &text)?;
+-        let blobs = expand_includes(&label, &mut syntax).await?;
+-        let mut evaluated = syntax
+-            .evaluate(txn)
+-            .perform(&site.operator)
+-            .await
+-            .map_err(|e| named(map_evaluate_error(e)))?;
+-        for blob in &blobs {
+-            evaluated.txn = crate::blob::describe(evaluated.txn, blob);
++        // The handle's head was read when the branch opened: read it again
++        // on a retry, and once the lock is held, so a queued eval starts
++        // from the head its predecessor left.
++        if attempt > 1 || _held.is_some() {
++            branch
++                .refresh(&site.operator)
++                .await
++                .map_err(|e| EvalError::Io(format!("refresh branch: {e}")))?;
+         }
+-
+-        // Compute the post-evaluation match view by re-running the
+-        // analyzer's queries against the txn overlay. The overlay
+-        // reflects every applied write plus the induce pass, so this
+-        // is the same answer a post-commit branch query would give —
+-        // computed *before* commit so we don't need the branch after
+-        // the txn is consumed.
+-        matches_after.extend(
+-            evaluated
+-                .matches_after(&site.operator)
++        let revision_before = branch.revision();
++        let mut txn = branch.transaction();
++        let mut writes = false;
++        let mut matches_before = Vec::new();
++        let mut matches_after = Vec::new();
++        let mut commits = CommitSummary::default();
++        for (label, location, text) in documents.clone() {
++            // A parse error names its document at every diagnostic; the
++            // others need the name when there is more than one document.
++            let named = |error: EvalError| match error {
++                EvalError::Analyze(message) if several => {
++                    EvalError::Analyze(format!("{label}: {message}"))
++                }
++                EvalError::Commit(message) if several => {
++                    EvalError::Commit(format!("{label}: {message}"))
++                }
++                other => other,
++            };
++            let mut syntax = parse_or_diagnose(&label, location, &text)?;
++            let blobs = expand_includes(&label, &mut syntax).await?;
++            let mut evaluated = syntax
++                .evaluate(txn)
++                .perform(&site.operator)
+                 .await
+-                .map_err(|e| named(map_evaluate_error(e)))?,
+-        );
+-        writes |= evaluated.analysis.analysis.has_statements();
+-        matches_before.extend(evaluated.matches);
+-        commits.claims += evaluated.commits.claims;
+-        commits.entities.extend(evaluated.commits.entities);
+-        txn = evaluated.txn;
+-    }
++                .map_err(|e| named(map_evaluate_error(e)))?;
++            for blob in &blobs {
++                evaluated.txn = crate::blob::describe(evaluated.txn, blob);
++            }
+ 
+-    // Commit only a mutating document that wasn't run as a dry
+-    // run. Pure-query docs and `--dry-run` short-circuit so we
+-    // don't pay for (or apply) a commit.
+-    let (response, committed) = if !options.dry_run && writes {
+-        // One try, failing on a lost race: the documents were evaluated
+-        // against the head this transaction opened at, and the response
+-        // reports what they matched there. Committing them over a head
+-        // that won meanwhile would land writes the response does not
+-        // describe, so a lost race is reported as a failed commit.
++            // Compute the post-evaluation match view by re-running the
++            // analyzer's queries against the txn overlay. The overlay
++            // reflects every applied write plus the induce pass, so this
++            // is the same answer a post-commit branch query would give —
++            // computed *before* commit so we don't need the branch after
++            // the txn is consumed.
++            matches_after.extend(
++                evaluated
++                    .matches_after(&site.operator)
++                    .await
++                    .map_err(|e| named(map_evaluate_error(e)))?,
++            );
++            writes |= evaluated.analysis.analysis.has_statements();
++            matches_before.extend(evaluated.matches);
++            commits.claims += evaluated.commits.claims;
++            commits.entities.extend(evaluated.commits.entities);
++            txn = evaluated.txn;
++        }
++
++
++        if options.dry_run || !writes {
++            // Pure-query or dry-run: drop the transaction. The
++            // pre-mutation matches double as "after" because nothing
++            // landed. Zero `claims` so the summary reflects what *did*
++            // commit (nothing), not what *would* have — same contract
++            // the worker's `transact=false` preview honors.
++            commits.claims = 0;
++            break (
++                EvaluateResponse {
++                    revision_before: revision_before.clone(),
++                    revision_after: revision_before,
++                    matches_before: matches_before.clone(),
++                    matches_after: matches_before,
++                    commits,
++                },
++                false,
++            );
++        }
++        // Hybrid: an optimistic writer reads without the lock and
++        // publishes under it, so a writer that holds it cannot lose.
++        let _publishing = if policy == Policy::Hybrid && !escalated {
++            Some(lock(&lock_path)?)
++        } else {
++            None
++        };
+         #[allow(deprecated)]
+-        let revision_after = txn
+-            .commit()
+-            .publish()
+-            .perform(&site.operator)
+-            .await
+-            .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+-        // The commit went through the branch handle, outside its stack:
+-        // schedule the stack's subscriptions, so the reactor's commit
+-        // contract holds. The CLI opens none, so nothing settles them.
+-        session.state.stack().schedule_poll();
+-        (
+-            EvaluateResponse {
+-                revision_before,
+-                revision_after: Some(revision_after),
+-                matches_before,
+-                matches_after,
+-                commits,
+-            },
+-            true,
+-        )
+-    } else {
+-        // Pure-query or dry-run: drop the transaction. The
+-        // pre-mutation matches double as "after" because nothing
+-        // landed. Zero `claims` so the summary reflects what *did*
+-        // commit (nothing), not what *would* have — same contract
+-        // the worker's `transact=false` preview honors.
+-        commits.claims = 0;
+-        (
+-            EvaluateResponse {
+-                revision_before: revision_before.clone(),
+-                revision_after: revision_before,
+-                matches_before: matches_before.clone(),
+-                matches_after: matches_before,
+-                commits,
+-            },
+-            false,
+-        )
++        let published = txn.commit().publish().perform(&site.operator).await;
++        match published {
++            Ok(revision_after) => {
++                session.state.stack().schedule_poll();
++                break (
++                    EvaluateResponse {
++                        revision_before,
++                        revision_after: Some(revision_after),
++                        matches_before,
++                        matches_after,
++                        commits,
++                    },
++                    true,
++                );
++            }
++            Err(error) => {
++                let message = error.to_string();
++                let lost = message.contains("Version mismatch") || message.contains("Lock error");
++                if !lost || attempt >= policy.tries() {
++                    return Err(EvalError::Io(format!("commit failed: {message}")));
++                }
++                if policy == Policy::Hybrid {
++                    escalated = true;
++                }
++                if policy == Policy::Backoff {
++                    let base = 1u64 << attempt.min(6);
++                    let jitter = std::time::SystemTime::now()
++                        .duration_since(std::time::UNIX_EPOCH)
++                        .map(|d| u64::from(d.subsec_nanos()) % base.max(1))
++                        .unwrap_or(0);
++                    tokio::time::sleep(std::time::Duration::from_millis(base + jitter)).await;
++                }
++            }
++        }
+     };
++    if attempt > 1 {
++        eprintln!("eval: committed on attempt {attempt}");
++    }
+ 
+     let stdout = output::render(&response, options.format, options.quiet)
+         .map_err(|e| EvalError::Io(format!("output rendering failed: {e}")))?;
+@@ -417,3 +456,53 @@ fn map_evaluate_error(error: EvaluateError) -> EvalError {
+         EvaluateError::Query(message) => EvalError::Commit(message),
+     }
+ }
++
++/// Experiment only: how an eval that lost its race is handled, from
++/// `TONK_EVAL_POLICY`.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++enum Policy {
++    /// One try (main).
++    Once,
++    /// Evaluate again over the new head at once, up to 64 tries.
++    Retry,
++    /// As `Retry`, after a jittered exponential pause (2-128 ms).
++    Backoff,
++    /// Every eval holds the space's eval lock from read to publish.
++    Queue,
++    /// Optimistic first, publishing under the lock; after one loss, queued.
++    Hybrid,
++}
++
++impl Policy {
++    fn from_env() -> Self {
++        match std::env::var("TONK_EVAL_POLICY").as_deref() {
++            Ok("retry") => Self::Retry,
++            Ok("backoff") => Self::Backoff,
++            Ok("queue") => Self::Queue,
++            Ok("hybrid") => Self::Hybrid,
++            _ => Self::Once,
++        }
++    }
++
++    fn tries(self) -> u32 {
++        match self {
++            Self::Once => 1,
++            Self::Hybrid => 2,
++            Self::Queue => 3,
++            Self::Retry | Self::Backoff => 64,
++        }
++    }
++}
++
++/// Take the space's eval lock, waiting for it.
++fn lock(path: &std::path::Path) -> Result<std::fs::File, EvalError> {
++    let file = std::fs::OpenOptions::new()
++        .create(true)
++        .truncate(false)
++        .write(true)
++        .open(path)
++        .map_err(|e| EvalError::Io(format!("open eval lock: {e}")))?;
++    file.lock()
++        .map_err(|e| EvalError::Io(format!("take eval lock: {e}")))?;
++    Ok(file)
++}
+-- 
+2.43.0
+

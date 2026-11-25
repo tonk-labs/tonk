@@ -4,6 +4,8 @@
 #   retry  - a writer whose eval exits 4 runs it again at once (no backoff),
 #            the big one up to 64 attempts: optimistic, document re-run
 #   queue  - every eval runs under a blocking flock: serialized
+#   native - each eval runs once; how a lost race is handled is up to the
+#            eval itself (TONK_EVAL_POLICY on the experiment build)
 # Usage: TONK=... starve.sh <policy> <K> <S> <label> <out-dir>
 # Writes <out>/<label>/{big.tsv (attempt, code, ms), small.tsv, summary}
 set -euo pipefail
@@ -44,6 +46,7 @@ for a in $(seq 1 64); do
   set +e; run "$BIG" > /dev/null 2> "$DIR/big-$a.err"; code=$?; set -e
   printf '%s\t%s\t%s\n' "$a" "$code" $(( ($(date +%s%N) - t) / 1000000 )) >> "$DIR/big.tsv"
   [ "$code" = 0 ] && break
+  [ "$POLICY" = native ] && break
 done
 total=$(( ($(date +%s%N) - start) / 1000000 ))
 touch "$DONE"; wait
