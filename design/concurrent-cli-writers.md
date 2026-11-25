@@ -1,6 +1,6 @@
 # Agents running the CLI on one space at once fail one another's writes
 
-**Phase: Directing.**
+**Phase: Directing** (approach chosen; the alternative being measured).
 
 ## Description
 
@@ -47,4 +47,10 @@ another local writer overlapped it. Zero, not fewer.
 
 ## Approach
 
-Not chosen yet.
+Decided 2026-11-25 (Irakli), at the level of strategy: one process owns a
+space on the machine and takes every local write, sync included, through
+a queue per branch. Sync is scheduled for when local writers recede and
+interleaved when they do not; it fetches and rebases outside the queue
+and holds it only to swap the root. Per-writer branches with a reconciler
+are measured as the alternative. The measurements are in
+[direction.md](concurrent-cli-writers/direction.md).

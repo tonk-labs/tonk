@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | Whether every local writer, not only eval, must take the queue's lock for zero to hold. Whether F is built now or later. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | What "a queue with backoff" means. Whether the per-branch lock is built before the owner process or only inside it. G: what a merge of writer branches does, measured. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -200,3 +200,38 @@ out the browser's warm-cache numbers.
 local queue, with F (an owner process) as the separate answer to
 latency, built on D's ordering rather than instead of it. Open: the
 writers that bypass D's lock.
+
+## 2026-11-25, Directing: Irakli's direction
+
+**Asked.** Take the queue? Must every writer go through it?
+
+**Learned.** Irakli's answers, as given:
+
+- Every local writer goes through the same queue, sync included.
+- The queue is per branch of a repository, not one lock for everything.
+- The queue should also back off.
+- The owner process (F) is the right approach: it can schedule sync for
+  when local writers recede, and interleave sync with them when they do
+  not recede for long.
+- Sync fetches without holding the queue, and rebases outside it too, so
+  the lock is held only to swap the root.
+- An alternative to assess by experiment (G): each writer writes to a
+  branch of its own, so writers never meet, and a reconciler keeps merging
+  those branches, so no writer waits. More unknowns.
+
+Checked against the ledger:
+
+- A sync that rebases outside the lock and swaps under it is an
+  optimistic writer: if a local write lands between the rebase and the
+  swap, the rebase is redone. Against busy local writers it can lose
+  every time, which is the starvation measured on 2026-11-24.
+  "Interleave if they do not recede for long" is the escape: after a
+  bound, the sync rebases under the lock. That is hybrid (E) for the
+  syncer, which measured well for one loss then queued.
+- Backing off inside a queue needs a meaning. A writer blocked on a lock
+  waits in line; one that polls the lock with backoff can lose it to
+  newcomers every time, which is starvation again. Asked.
+
+**Decided.** By Irakli: one queue per branch for every local writer;
+direction F, an owner process that schedules sync around local writes and
+holds the lock only for the root swap. G stays a column to measure.
