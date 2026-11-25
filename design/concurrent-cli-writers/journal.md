@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts) and were reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest; hybrid and age priority reach zero slower; retry and backoff starve a long write; writer branches lose read-modify-write updates. A commit in a process that stays open is ~8 ms against ~36 ms. | Designing: the approach is decided (queue per branch now, a daemon that stays up and syncs in the background). |
-| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, what a command does without one, the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
+| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, what a command does when the daemon cannot be started, the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -331,3 +331,14 @@ writers are idle and interleaves when they are not.
 **Decided.** The approach, in the topic's Approach section. Phase moves
 to Designing; the implementation decisions it opens are on the agenda.
 Building starts in a later session, after this is read cold.
+
+## 2026-11-25, Designing: no daemon running
+
+**Asked.** What does a command do when no daemon is running? The agent
+suggested taking the queue lock in the CLI.
+
+**Learned.** Irakli: it brings the daemon up. Left open: what it does
+when the daemon cannot be started (a sandbox that kills a command's
+children), where taking the lock in-process or failing are the choices.
+
+**Decided.** A command that finds no daemon starts one.

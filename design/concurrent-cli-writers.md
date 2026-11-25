@@ -72,6 +72,7 @@ the queue everywhere).
 
 Open for the design phase: where the daemon's lifecycle comes from
 (sapling's modules, or tonk-agent-peer's owner), how the CLI finds and
-talks to it, what a command does when no daemon runs (the CLI takes the
-queue itself), the idle period, the bound after which sync interleaves,
+talks to it, what a command does when the daemon cannot be started (a command
+with no daemon running starts one, as sapling's CLI does: decided), the
+idle period, the bound after which sync interleaves,
 and the shared checkout index that collides under concurrent writers.
