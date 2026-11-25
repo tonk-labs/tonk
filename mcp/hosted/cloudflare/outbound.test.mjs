@@ -104,7 +104,7 @@ test('deployment provider is exact and isolated from other environments', async 
   );
   for (const origin of [
     'https://tonk.foundation',
-    'https://staging.tonk.xyz',
+    'https://tonk.spot',
     'https://tonk.network',
     env.TONK_PROVIDER_ORIGIN + '.attacker.test',
   ]) {

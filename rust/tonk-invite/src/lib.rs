@@ -819,7 +819,7 @@ mod tests {
     async fn it_reads_the_remote_from_the_delegation_meta() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
-        let remote = Url::parse("https://staging.tonk.xyz/ucan/").unwrap();
+        let remote = Url::parse("https://tonk.spot/ucan/").unwrap();
         let chain = make_chain_with_remote(&ISSUER_SEED, &audience, &subject, &remote).await;
 
         // No `remote=` parameter on the URL at all: the chain names it.
@@ -953,7 +953,7 @@ mod tests {
     async fn it_prefers_the_signed_remote_over_the_url_parameter() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
-        let signed = Url::parse("https://staging.tonk.xyz/ucan/").unwrap();
+        let signed = Url::parse("https://tonk.spot/ucan/").unwrap();
         let tampered = Url::parse("https://attacker.example/ucan/").unwrap();
         let chain = make_chain_with_remote(&ISSUER_SEED, &audience, &subject, &signed).await;
 

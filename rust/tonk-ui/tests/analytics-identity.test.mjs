@@ -87,7 +87,6 @@ test("opt-out never initializes PostHog", () => {
 test("environment follows the deployment's hostname", () => {
   for (const [hostname, environment] of [
     ["tonk.network", "production"],
-    ["staging.tonk.xyz", "staging"],
     ["tonk.spot", "staging"],
     ["tonk.foundation", "dev"],
     ["localhost", "dev"],

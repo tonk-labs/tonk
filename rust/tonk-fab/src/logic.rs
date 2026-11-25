@@ -2363,10 +2363,10 @@ mod invite {
         assert!(body.contains("xyz.tonk.agent-handoff/link"));
         assert!(body.contains("xyz.tonk.agent-handoff/mode"));
         let link = "https://example.test/join?agent=grants#tonk-agent-v2=secret";
-        let prompt = tool_connection_prompt(link, "https://staging.tonk.xyz");
+        let prompt = tool_connection_prompt(link, "https://tonk.spot");
         assert!(prompt.contains(link));
         assert!(prompt.contains("Agent connection confirmed"));
-        assert!(prompt.contains("npx --yes @tonk/cli join --via \"https://staging.tonk.xyz\""));
+        assert!(prompt.contains("npx --yes @tonk/cli join --via \"https://tonk.spot\""));
         assert_eq!(prompt.matches(link).count(), 1);
         let production = tool_connection_prompt(link, "https://tonk.network");
         assert!(production.contains("npx --yes @tonk/cli join"));

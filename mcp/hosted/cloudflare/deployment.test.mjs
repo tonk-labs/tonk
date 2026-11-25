@@ -15,7 +15,7 @@ test('deployment channels bind distinct issuers, storage and matching providers'
       provider: 'https://tonk-access-service-pr-1092.tonk.workers.dev',
     },
     { channel: 'dev', provider: 'https://tonk.foundation' },
-    { channel: 'staging', provider: 'https://staging.tonk.xyz' },
+    { channel: 'staging', provider: 'https://tonk.spot' },
     { channel: 'stable', provider: 'https://tonk.network' },
   ].map((input) => deployment({ ...base, ...input }));
   for (const field of ['TONK_MCP_ISSUER'])

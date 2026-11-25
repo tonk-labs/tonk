@@ -20,7 +20,7 @@ export function deployment({ channel, pullRequest, provider, subdomain, accountI
   const issuer = `https://${domain ?? `${name}.${subdomain}.workers.dev`}`;
   const expectedProvider = {
     dev: 'https://tonk.foundation',
-    staging: 'https://staging.tonk.xyz',
+    staging: 'https://tonk.spot',
     stable: 'https://tonk.network',
   }[channel];
   provider = providerOrigin(provider);
