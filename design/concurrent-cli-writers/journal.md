@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | What "a queue with backoff" means. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Prior art (Dolt, SQLite, jj, Datomic, STM contention managers). Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -254,3 +254,16 @@ and its pull of main.
 
 **Decided.** Not decided. G meets the objective and moves the cost from
 waiting to visibility and conflict reporting.
+
+## 2026-11-25, Directing: backoff, and two tradeoffs
+
+**Asked.** What backoff means in a queue. Irakli: a pause after a queued
+write loses to a writer outside the queue, and spacing sync while local
+writers are busy; not polling the lock. Irakli: the queue and writer
+branches are different tradeoffs. Did G set upstreams and push? How does
+Dolt do this; what other prior art is there?
+
+**Learned.** G used one-shot pulls both ways, no upstreams, no pushes; a
+one-shot pull keeps a sync base, so each merge was incremental.
+
+**Decided.** Backoff as above.
