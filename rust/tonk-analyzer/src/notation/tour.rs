@@ -26,8 +26,8 @@
 
 use std::collections::BTreeMap;
 
-use dialog_notation::apply::{self, Did, DocumentReport, Writer};
 pub use dialog_notation::apply::Stage as Staged;
+use dialog_notation::apply::{self, Did, DocumentReport, Writer};
 use dialog_notation::live::{Live, Reader};
 use dialog_notation::{
     Analyzer, Checked, Declaration, Rendered, Severity, Step, Syntax, check_forms, parse_document,
@@ -372,12 +372,20 @@ impl Prepared {
     pub fn writes(&self) -> bool {
         !self.done
             && (!self.kept.is_empty()
-                || self.report.forms.iter().flat_map(|form| &form.did).any(|did| {
-                    matches!(
-                        did,
-                        Did::Asserted(_) | Did::Retracted(_) | Did::Issued(_) | Did::Installed(_)
-                    )
-                }))
+                || self
+                    .report
+                    .forms
+                    .iter()
+                    .flat_map(|form| &form.did)
+                    .any(|did| {
+                        matches!(
+                            did,
+                            Did::Asserted(_)
+                                | Did::Retracted(_)
+                                | Did::Issued(_)
+                                | Did::Installed(_)
+                        )
+                    }))
     }
 
     /// Say the commit failed: nothing is asked.
@@ -614,8 +622,7 @@ async fn finish<E: Reader>(
         if let Some(at) = outcome(forms, at)
             && forms[at].summary.is_empty()
         {
-            forms[at].summary =
-                format!("the same as form {}, installed there once", earlier + 1);
+            forms[at].summary = format!("the same as form {}, installed there once", earlier + 1);
         }
     }
     for (at, what) in written {
