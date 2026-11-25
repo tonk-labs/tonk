@@ -47,6 +47,6 @@ runs, in the journal's "Where things stand"; they change together.
 ## Topics
 
 - [Concurrent CLI writes on one replica](concurrent-cli-writes.md):
-  **Exploring.** Which of N concurrent `tonk eval` processes fail, with
-  which error, and whether any write is lost.
+  **Building.** Concurrent evals fail from two writers; of seven ways to
+  handle a lost race, a queue per branch reaches zero failures fastest.
 

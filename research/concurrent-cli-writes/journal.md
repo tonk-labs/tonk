@@ -2,6 +2,9 @@
 
 ## Where things stand
 
+Building (2026-11-25): decided on a queue per branch, then a daemon; the
+report is in the topic's file.
+
 Exploring. No upstream: H1 and H2 hold from N = 2; at N = 16, 81% of
 evals fail; no write that reported success was lost. An unexplained head
 publish before the eval's own commit appears only under contention (H5).

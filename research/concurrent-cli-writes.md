@@ -1,6 +1,6 @@
 # Concurrent CLI writes on one replica
 
-**Status: Exploring.** First round in: [results/2026-11-24](concurrent-cli-writes/results/2026-11-24.md). Answers the diagnosis of
+**Status: Building.** Decided 2026-11-25: a queue per branch, then a daemon. First round in: [results/2026-11-24](concurrent-cli-writes/results/2026-11-24.md). Answers the diagnosis of
 [design/concurrent-cli-writers](../design/concurrent-cli-writers.md).
 
 ## The question
@@ -44,3 +44,29 @@ hypotheses hold:
 - **The middle**, for the maintainer: among options that reach zero, the
   time a small write takes at 16 writers and how long the long eval holds
   the others up.
+
+## Report (2026-11-25)
+
+Decided: a queue per branch for every local writer now, then a daemon
+that stays up for a while ([design topic](../design/concurrent-cli-writers.md)).
+The numbers that decided it, all on tonk `c0ec36e`, dev profile, 4 cores,
+an empty space, three interleaved rounds per table
+([results/2026-11-24](concurrent-cli-writes/results/2026-11-24.md),
+[results/2026-11-25](concurrent-cli-writes/results/2026-11-25.md)):
+
+| option | failed, 2-16 writers | a long eval against 8 back-to-back writers | ms per eval at 16, p50 / p95 | a counter, 8 increments |
+|---|---|---|---|---|
+| once (main) | 50-83% | fails | 125 / 147 | - |
+| retry | 0 | never lands (64 tries) | 257 / 336 | - |
+| backoff | 0 | never lands (64 tries) | 198 / 368 | - |
+| queue | 0 | lands first try, ~0.3 s | 151-194 / 233-293 | 8 |
+| hybrid | 0 | lands after one loss, ~0.6 s | 194 / 274-287 | - |
+| age priority | 0 | lands, ~0.4 s (K = 500) | 186 / 285 | - |
+| writer branches | 0 | lands, ~0.6 s | 164 / 188 | 1-2 |
+
+On Chronicle the lock refusals and missing checkout entries go away and
+nothing else measured changes. A commit in a process that stays open:
+~8 ms, against ~36 ms in its own.
+
+Left open: cold start on a space of realistic size; whether tonk's
+notation can count stored facts; the remote head.
