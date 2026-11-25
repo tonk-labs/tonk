@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | The numbers for columns B-E. Whether F is worth building. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | Whether every local writer, not only eval, must take the queue's lock for zero to hold. Whether F is built now or later. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -184,3 +184,19 @@ write that keeps losing eventually stops competing.
 **Decided.** The problem statement in the topic stands, without the draft
 marker. Objective: no local write fails because another overlapped it.
 Not yet said: how long a write may wait instead of failing.
+
+## 2026-11-25, Directing: the options measured
+
+**Asked.** Which options reach zero local failures?
+
+**Learned.** [Results](../../research/concurrent-cli-writes/results/2026-11-25.md).
+Retry and backoff reach zero for small writes, but spend all 64 tries on a
+long eval: they fail the objective. Queue and hybrid reach zero in every
+run; queue was as fast or faster everywhere and never retried. A commit in
+a process that stays open takes ~8 ms against ~36 ms cold, which bears
+out the browser's warm-cache numbers.
+
+**Decided.** Not decided by the maintainer. The matrix points at D, a
+local queue, with F (an owner process) as the separate answer to
+latency, built on D's ordering rather than instead of it. Open: the
+writers that bypass D's lock.

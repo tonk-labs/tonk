@@ -8,6 +8,9 @@ publish before the eval's own commit appears only under contention (H5).
 Next: the same with a local upstream (H3), and a cold eval on a space of
 realistic size.
 
+Update 2026-11-25: of five policies, queue and hybrid reach zero failures
+in every run; queue was as fast or faster. See results/2026-11-25.
+
 ## Datasets
 
 None: each run builds a fresh replica with one concept and asserts one
@@ -43,3 +46,18 @@ cargo build -p tonk-cli --bin tonk
 ```bash
 for r in 1 2 3; do for n in 2 4 8 16; do TONK=$PWD/target/debug/tonk research/concurrent-cli-writes/harness/run.sh $n r$r /tmp/runs; done; done
 ```
+
+## 2026-11-25 — policies for a lost race
+
+**Question.** Which of once, retry, backoff, queue, hybrid reach zero
+failures, small writes and a long one?
+
+**Method.** `harness/eval-policies.patch`; `run.sh` at N = 2-16 and
+`starve.sh native 500 8`, three rounds, interleaved; `TONK_EVAL_WARM`
+for a commit in a process that stays open. An earlier start was stopped
+and discarded: a build ran during it.
+
+**Results.** [results/2026-11-25](results/2026-11-25.md).
+
+**Decision.** Queue and hybrid pass the bars; retry and backoff fail on
+the long eval; once fails everywhere.
