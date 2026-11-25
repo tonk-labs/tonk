@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | What "a queue with backoff" means. Whether the per-branch lock is built before the owner process or only inside it. G: what a merge of writer branches does, measured. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Agenda** | What "a queue with backoff" means. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -235,3 +235,22 @@ Checked against the ledger:
 **Decided.** By Irakli: one queue per branch for every local writer;
 direction F, an owner process that schedules sync around local writes and
 holds the lock only for the root swap. G stays a column to measure.
+
+## 2026-11-25, Directing: writer branches measured
+
+**Asked.** Does G, a branch per writer and a reconciler, reach zero
+without waiting?
+
+**Learned.** It reaches zero, nothing went missing from main, and its
+writers were a little faster than the queue's under load (p95 188 against
+259 ms at 16). The long eval landed every time, slower than under the
+queue (522-726 against 270-300 ms). The price is elsewhere: a write is on
+main a reconcile pass later, and a pass over 16 branches took 282 ms;
+concurrent writes to a one-valued field are both kept with no conflict
+reported, so an agent cannot tell its write was contested; merges run no
+rules; the shared checkout index collides across branches. The writers'
+p50 is no better than the queue's: each eval still pays the cold start,
+and its pull of main.
+
+**Decided.** Not decided. G meets the objective and moves the cost from
+waiting to visibility and conflict reporting.
