@@ -25,7 +25,10 @@ research/
 ```
 
 A topic has the working files it needs; a proposed one has none, and one
-in progress always has a journal.
+in progress always has a journal. Harnesses, patches, raw rows and
+rendered charts are not kept here: they live on the topic's
+`research/<topic>-artifacts` branch and are linked by commit (see the
+skill).
 
 ## Statuses
 
