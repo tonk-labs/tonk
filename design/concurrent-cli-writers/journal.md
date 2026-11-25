@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts), reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest. A commit in a process that stays open is ~8 ms against ~36 ms. Writer branches lose read-modify-write updates. | Designing. Approach decided: a queue per branch (an `flock` the daemon and the CLI share), a daemon a command starts, that stays up for warm caches and syncs in the background; the lock alone is the fallback. |
-| **Agenda** | The daemon's lifecycle (sapling's modules or tonk-agent-peer's owner); how the CLI finds and talks to it; the idle period; the bound for interleaving sync; the shared checkout index that collides under concurrent writers; whether the agent harnesses tonk targets let a daemon outlive a command. | One design matrix per implementation decision, in a later session; build the per-branch lock first. |
+| **Agenda** | Open question: what remembering a head on *read* is for (a read writes the checkout index, which no per-branch queue orders). Then: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner); how the CLI finds and talks to it; the idle period; the bound for interleaving sync; whether the agent harnesses tonk targets let a daemon outlive a command. | One design matrix per implementation decision, the checkout index first, since it decides the first build's scope; confirm the build order (the per-branch lock first, then the daemon). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -389,3 +389,33 @@ anyway, with the lock as its fallback.
 both take; the daemon is built on it for warm caches and background sync.
 This sitting ends here: the next starts with the implementation decisions
 on the agenda, after this is read cold.
+
+## 2026-11-26, Designing: the checkout index, read cold
+
+**Asked.** The sitting opened with the four questions, answered from the
+files: we know the approach and that an `flock` queue alone met the
+objective; we are designing; we need the implementation decisions on the
+agenda; we are going to one matrix each, then the queue's build. Before
+the first matrix, reading `account_authority.rs` cold turned up the
+question this entry ends on.
+
+**Learned.** Two things the ledger had wrong or missing:
+
+- The retain warning that H5 rests on does not follow only a head
+  publish. The `Resolve` provider also calls `remember_head`
+  (`account_authority.rs:323-340`), so every command that reads a branch
+  head writes the checkout index. A failed eval that printed the warning
+  may only have read the head; H5's "publishes a head before its own
+  commit" is now a reading to re-test, not the only one.
+- The checkout index is one space per repository (`tonk/revisions`), not
+  per branch. A queue per branch does not order its writers, and reads,
+  decided as not queued, are among them. Those two decisions and the
+  index cannot all stand as they are.
+
+Sapling's repository (`dialog-db/sapling`) could not be attached to this
+session, so the lifecycle matrix cannot yet cite its modules from source;
+the ledger's row on them stays a hypothesis.
+
+**Decided.** Not decided. Open, asked of Irakli: what is remembering a
+head on read for? The answer decides whether reads stop writing the index
+or the index gets an order of its own.
