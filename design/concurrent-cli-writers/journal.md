@@ -5,7 +5,7 @@
 |  | Understanding | Activity |
 |---|---|---|
 | **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts) and were reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest; hybrid and age priority reach zero slower; retry and backoff starve a long write; writer branches lose read-modify-write updates. A commit in a process that stays open is ~8 ms against ~36 ms. | Designing: the approach is decided (queue per branch now, a daemon that stays up and syncs in the background). |
-| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, what a command does when the daemon cannot be started, the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
+| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, the fallback when the daemon cannot start (the shared lock file, proposed), the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -342,3 +342,21 @@ when the daemon cannot be started (a sandbox that kills a command's
 children), where taking the lock in-process or failing are the choices.
 
 **Decided.** A command that finds no daemon starts one.
+
+## 2026-11-25, Designing: when the daemon cannot start
+
+**Asked.** What does a command do when it cannot bring the daemon up?
+Irakli: then the shared queue cannot work, a fallback is needed, and he
+does not know what it is.
+
+**Learned.** That conflicts with the measurements: the queue that reached
+zero was a lock file taken by each CLI process, with no daemon. A queue
+per branch can be a lock file both the daemon and an in-process command
+take, so a command that cannot start the daemon takes the branch's lock
+itself and stays ordered with everything else. It loses warm caches and
+background sync, not correctness. Sync then has to run in the command, as
+today, or wait for a daemon.
+
+**Decided.** Not decided. Proposed: the per-branch queue is a lock file
+shared by the daemon and the CLI; the daemon is how commands get warm
+caches and background sync, not how they get ordered.
