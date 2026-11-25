@@ -1,7 +1,7 @@
 From b24a5f6411ea93c4605bbcfe752346437d871c2c Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:33:25 +0000
-Subject: [PATCH 1/2] experiment: TONK_EVAL_POLICY chooses how eval handles a
+Subject: [PATCH 1/3] experiment: TONK_EVAL_POLICY chooses how eval handles a
  lost race
 
 ---
@@ -307,7 +307,7 @@ index 2d44e49..895db3d 100644
 From 6de2dfa89af477fb73a29e9c31a5cb48a617ef47 Mon Sep 17 00:00:00 2001
 From: "R. Daneel Olivaw" <rdaneel@gozala.io>
 Date: Wed, 25 Nov 2026 03:35:36 +0000
-Subject: [PATCH 2/2] experiment: TONK_EVAL_WARM times repeated commits in one
+Subject: [PATCH 2/3] experiment: TONK_EVAL_WARM times repeated commits in one
  process
 
 ---
@@ -345,6 +345,145 @@ index 3ca5efa..f6be1af 100644
      match tonk_cli::eval::run_documents(&site, sources, options).await {
          Ok(outcome) => {
              let mut stdout = std::io::stdout().lock();
+-- 
+2.43.0
+
+
+From 6e10f1d71b85a81be1423b992abe7a522523d0c9 Mon Sep 17 00:00:00 2001
+From: "R. Daneel Olivaw" <rdaneel@gozala.io>
+Date: Wed, 25 Nov 2026 05:33:38 +0000
+Subject: [PATCH 3/3] experiment: writer branches (TONK_BRANCH) and a
+ reconciler (TONK_RECONCILE)
+
+---
+ rust/tonk-cli/src/bin/tonk.rs | 54 +++++++++++++++++++++++++++++++++++
+ rust/tonk-cli/src/eval.rs     | 17 +++++++++++
+ rust/tonk-cli/src/site.rs     | 19 +++++++-----
+ 3 files changed, 83 insertions(+), 7 deletions(-)
+
+diff --git a/rust/tonk-cli/src/bin/tonk.rs b/rust/tonk-cli/src/bin/tonk.rs
+index f6be1af..974e89a 100644
+--- a/rust/tonk-cli/src/bin/tonk.rs
++++ b/rust/tonk-cli/src/bin/tonk.rs
+@@ -1932,6 +1932,60 @@ async fn eval(args: EvalArgs, space: Option<&str>) -> ExitCode {
+     // auto-sync off so a preview can't pull the remote in either.
+     let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
+     let session = auto_sync::WriteSession::begin(&site, sync).await;
++    // Experiment only: TONK_RECONCILE=a,b,... pulls each named branch into
++    // main, over and over, until the file TONK_RECONCILE_STOP exists, then
++    // once more. Prints one line per pass that moved main.
++    if let Ok(names) = std::env::var("TONK_RECONCILE") {
++        let stop = std::env::var("TONK_RECONCILE_STOP").unwrap_or_default();
++        let main = match site.branch().await {
++            Ok(session) => session,
++            Err(e) => return print_error(format!("acquire main: {e}")),
++        };
++        let names: Vec<String> = names.split(',').map(str::to_owned).collect();
++        let mut last = false;
++        loop {
++            if !last && std::path::Path::new(&stop).exists() {
++                last = true;
++            }
++            let started = std::time::Instant::now();
++            let mut moved = 0;
++            for name in &names {
++                let writer = match site
++                    .reactor
++                    .repository(tonk_cli::site::REPO_NAME)
++                    .branch(name)
++                    .acquire(&site.operator)
++                    .await
++                {
++                    Ok(writer) => writer,
++                    Err(e) => {
++                        eprintln!("reconcile\terror\t{name}\tacquire: {e}");
++                        continue;
++                    }
++                };
++                let _ = writer.handle().refresh(&site.operator).await;
++                let _ = main.handle().refresh(&site.operator).await;
++                match main
++                    .handle()
++                    .pull(dialog_repository::Download::MinimalRanges)
++                    .from(writer.handle())
++                    .perform(&site.operator)
++                    .await
++                {
++                    Ok(Some(_)) => moved += 1,
++                    Ok(None) => {}
++                    Err(e) => eprintln!("reconcile\terror\t{name}\t{e}"),
++                }
++            }
++            if moved > 0 {
++                eprintln!("reconcile\tpass\t{moved}\t{}", started.elapsed().as_micros());
++            }
++            if last {
++                return ExitCode::Success;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++        }
++    }
+     // Experiment only: TONK_EVAL_WARM=k commits the inline document k more
+     // times in this process, `{i}` replaced by the iteration, and prints
+     // each commit's time, so a warm write can be timed against a cold one.
+diff --git a/rust/tonk-cli/src/eval.rs b/rust/tonk-cli/src/eval.rs
+index 895db3d..cb09801 100644
+--- a/rust/tonk-cli/src/eval.rs
++++ b/rust/tonk-cli/src/eval.rs
+@@ -200,6 +200,23 @@ pub async fn run_documents(
+         .await
+         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
+     let branch = session.handle();
++    // Experiment only: a writer on a branch of its own starts from what
++    // main holds, so its reads include what the reconciler merged.
++    if std::env::var("TONK_BRANCH").is_ok_and(|name| !name.is_empty() && name != "main") {
++        let main = site
++            .reactor
++            .repository(crate::site::REPO_NAME)
++            .branch("main")
++            .acquire(&site.operator)
++            .await
++            .map_err(|e| EvalError::Io(format!("acquire main: {e}")))?;
++        branch
++            .pull(dialog_repository::Download::MinimalRanges)
++            .from(main.handle())
++            .perform(&site.operator)
++            .await
++            .map_err(|e| EvalError::Io(format!("pull main: {e}")))?;
++    }
+     let policy = Policy::from_env();
+     let lock_path = site.root.join("eval.lock");
+     let mut attempt: u32 = 0;
+diff --git a/rust/tonk-cli/src/site.rs b/rust/tonk-cli/src/site.rs
+index ed36bd3..31b3077 100644
+--- a/rust/tonk-cli/src/site.rs
++++ b/rust/tonk-cli/src/site.rs
+@@ -383,13 +383,18 @@ impl TonkSite {
+     ///
+     /// [`BranchReference::migrate_once`]: dialog_reactor::BranchReference::migrate_once
+     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
+-        let name = crate::branches::active_name(self).await.map_err(|error| {
+-            ReactorError::BranchNotFound {
+-                repo: REPO_NAME.to_owned(),
+-                branch: "active".to_owned(),
+-                reason: error.to_string(),
+-            }
+-        })?;
++        // Experiment only: TONK_BRANCH puts this process on a branch of its
++        // own, whatever the replica's active branch is.
++        let name = match std::env::var("TONK_BRANCH") {
++            Ok(name) if !name.is_empty() => name,
++            _ => crate::branches::active_name(self).await.map_err(|error| {
++                ReactorError::BranchNotFound {
++                    repo: REPO_NAME.to_owned(),
++                    branch: "active".to_owned(),
++                    reason: error.to_string(),
++                }
++            })?,
++        };
+         let branch = self.reactor.repository(REPO_NAME).branch(&name);
+         let session = branch.acquire(&self.operator).await.map_err(|error| {
+             let text = error.to_string();
 -- 
 2.43.0
 
