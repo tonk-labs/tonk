@@ -4,8 +4,8 @@
 
 |  | Understanding | Activity |
 |---|---|---|
-| **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
-| **Agenda** | Whether G is kept for commutative data only, or dropped. Whether tonk's notation can count stored facts. Building D/F, in a later session. Whether the per-branch lock is built before the owner process or only inside it. Whether G's silent conflicts and visibility lag are acceptable to agents. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Status** | Local failures have four causes (eval's one try, the fs lock refusing, starvation under retry, cold starts) and were reproduced from two writers up. Of seven options measured, a queue per branch reaches zero failures fastest; hybrid and age priority reach zero slower; retry and backoff starve a long write; writer branches lose read-modify-write updates. A commit in a process that stays open is ~8 ms against ~36 ms. | Designing: the approach is decided (queue per branch now, a daemon that stays up and syncs in the background). |
+| **Agenda** | Implementation decisions: the daemon's lifecycle (sapling's modules or tonk-agent-peer's owner), how the CLI finds it, what a command does without one, the idle period, the bound for interleaving sync, the shared checkout index. Whether tonk's notation can count stored facts (a separate task). | A design matrix per implementation decision, in a later session; then build the queue first. |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -317,3 +317,17 @@ neither.
 
 **Decided.** Not decided. A modeling guideline (keep events, derive
 counts) and fixing the guide's example are separate from this topic.
+
+## 2026-11-25, Directing: the approach
+
+**Asked.** Keep writer branches for commutative data and peers, the queue
+for local writes?
+
+**Learned.** Irakli: the queue now is right; a daemon like sapling's,
+which stays up for a while, is the way to go, because it keeps caches
+warm; reads are not serialized; the daemon syncs in the background when
+writers are idle and interleaves when they are not.
+
+**Decided.** The approach, in the topic's Approach section. Phase moves
+to Designing; the implementation decisions it opens are on the agenda.
+Building starts in a later session, after this is read cold.

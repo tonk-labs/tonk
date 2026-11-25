@@ -56,7 +56,8 @@ Backtracking moves a topic to an earlier phase and says so in its journal.
 ## Topics
 
 - [Agents running the CLI on one space at once fail one another's writes](concurrent-cli-writers.md):
-  **Directing.** Several `tonk` processes on one replica; eval commits
-  with one try, the head lock refuses at once, and every write pulls and
-  pushes.
+  **Designing.** A queue per branch for every local writer, now; then a
+  daemon that stays up for a while, keeps caches warm and syncs in the
+  background. Measured against retry, backoff, hybrid, age priority and
+  writer branches.
 

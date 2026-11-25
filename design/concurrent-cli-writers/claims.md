@@ -66,3 +66,5 @@ an ancestor, so lines may differ slightly).
 | The guide's counter models a count as one asserted value, so only one count wins a merge; a counter should keep its increments and count them | opinion | Irakli, 2026-11-25 | - |
 | Tonk's notation can derive a count from stored facts (a fold), so a counter can be modeled that way today | hypothesis | dialog has `count` folds (`CHANGELOG.md`, "A standing fold"); whether tonk's notation exposes one is not checked; `notebook.yaml:106` mentions an aggregate in a rule | open |
 | Some invariants are not commutative and no merge keeps them: the next `BUG-<n>` ident (the tonk-bug skill computes max + 1), two agents claiming one task (BUG-350, item 4) | hypothesis | under writer branches or peers both writers read the same max or the same unclaimed task; test: N concurrent bug filings under each option | open |
+| Reads are not serialized: only writes take the queue | opinion, decided | Irakli, 2026-11-25 | - |
+| A daemon that stays up for a while, as sapling's does, is the way to keep caches warm | opinion, decided | Irakli, 2026-11-25; backed by ~8 ms against ~36 ms per commit (results 2026-11-25) | - |

@@ -1,6 +1,6 @@
 # Agents running the CLI on one space at once fail one another's writes
 
-**Phase: Directing** (approach chosen; the alternative being measured).
+**Phase: Designing.**
 
 ## Description
 
@@ -47,10 +47,31 @@ another local writer overlapped it. Zero, not fewer.
 
 ## Approach
 
-Decided 2026-11-25 (Irakli), at the level of strategy: one process owns a
-space on the machine and takes every local write, sync included, through
-a queue per branch. Sync is scheduled for when local writers recede and
-interleaved when they do not; it fetches and rebases outside the queue
-and holds it only to swap the root. Per-writer branches with a reconciler
-are measured as the alternative. The measurements are in
-[direction.md](concurrent-cli-writers/direction.md).
+Decided 2026-11-25 (Irakli), at the level of strategy, from the options
+measured in [direction.md](concurrent-cli-writers/direction.md):
+
+- **A queue per branch, now.** Every local writer, sync included, takes
+  its branch's turn from reading to publishing; writers on other branches
+  never wait. A write that still loses to something outside the queue
+  backs off and runs again. Reads are not queued: they read a pinned
+  revision, as they do now.
+- **A daemon that stays up for a while**, as sapling's does: started by
+  the first command that needs it, gone after an idle period. It holds the
+  space open, so caches stay warm across commands (a commit ~8 ms in a
+  process that stays open, against ~36 ms in a process of its own), and
+  takes local writes through the queue.
+- **Sync in the background.** The daemon syncs when local writers are
+  idle, and interleaves sync with them when no idle moment comes; it
+  fetches and rebases outside the queue and holds it only to swap the
+  root, falling back to rebasing in its turn when it keeps losing.
+
+Not taken: writer branches with a reconciler (no failures, but they lose
+read-modify-write updates and report no conflicts); retry and backoff
+alone (a long write never lands); age priority (reaches zero, slower than
+the queue everywhere).
+
+Open for the design phase: where the daemon's lifecycle comes from
+(sapling's modules, or tonk-agent-peer's owner), how the CLI finds and
+talks to it, what a command does when no daemon runs (the CLI takes the
+queue itself), the idle period, the bound after which sync interleaves,
+and the shared checkout index that collides under concurrent writers.
