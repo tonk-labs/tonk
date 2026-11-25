@@ -32,6 +32,9 @@ jobs:
           fi
           echo "TONK_DESKTOP_VERSION=$version" >> "$GITHUB_ENV"
       - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            fallback = true
       - name: Install generation dependencies
         run: nix --accept-flake-config develop .#ci -c npm --prefix mcp ci --ignore-scripts
       - name: Test Desktop
