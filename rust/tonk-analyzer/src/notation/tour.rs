@@ -923,11 +923,12 @@ impl LiveCell {
     /// marked HTML on the first poll, the driver's patches after, and
     /// nothing when nothing the view reads moved.
     pub async fn poll<E: Reader>(&mut self, env: &E) -> Result<Option<serde_json::Value>, String> {
-        let patches = self
-            .driven
-            .poll(env)
-            .await
-            .map_err(|error| error.to_string())?;
+        // An error is told in the author's terms, a derived attribute by
+        // the name it was written with.
+        let patches = match self.driven.poll(env).await {
+            Ok(patches) => patches,
+            Err(error) => return Err(self.driven.told(&error)),
+        };
         if self.first {
             self.first = false;
             let html: String = self

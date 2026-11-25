@@ -219,7 +219,7 @@ try {
     );
     log('click in the live view:', JSON.stringify(clicked));
     check(
-      clicked.before.cls === 'open:' && clicked.after === 'done:' && clicked.patches > clicked.before.patches && clicked.same,
+      clicked.before.cls === 'open' && clicked.after === 'done' && clicked.patches > clicked.before.patches && clicked.same,
       'a click in the watched view posted its command and came back as a patch',
     );
     await page.screenshot({ path: path.join(SHOTS, '93-clicked.png') });

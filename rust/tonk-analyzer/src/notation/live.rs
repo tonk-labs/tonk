@@ -202,11 +202,12 @@ impl Watched {
     /// What moved since the last poll, as patches. The first poll gives
     /// the whole view as inserts. Empty when nothing it reads moved.
     pub async fn poll<E: Reader>(&mut self, env: &E) -> Result<Vec<ViewPatch>, String> {
-        let patches = self
-            .driven
-            .poll(env)
-            .await
-            .map_err(|error| error.to_string())?;
+        // An error is told in the author's terms, a derived attribute by
+        // the name it was written with.
+        let patches = match self.driven.poll(env).await {
+            Ok(patches) => patches,
+            Err(error) => return Err(self.driven.told(&error)),
+        };
         let mut out = Vec::with_capacity(patches.len());
         for patch in patches {
             self.tree.apply(&patch)?;

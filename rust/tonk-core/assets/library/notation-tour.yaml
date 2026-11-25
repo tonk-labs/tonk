@@ -1222,7 +1222,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-33
   notebook: notebook:notation-tour
-  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, as the notation writes an entity as text: `open:` or `done:` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class."
+  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, a case of the listing shown by its name: `open` or `done` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class."
 
 notebook/block!:
   this: id:notation-tour/block-34
@@ -1292,7 +1292,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-47
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (tour.flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
+  source: "```notation\n; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-48
@@ -1312,7 +1312,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-51
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (tour.rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
+  source: "```notation\n; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-52

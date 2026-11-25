@@ -393,7 +393,7 @@ pub(crate) const CSS: &str = r#"
 .notation-stages { display: flex; flex-direction: column; gap: .1rem; margin-top: .25rem; }
 .notation-stage summary { cursor: pointer; font-size: .75rem; }
 .notation-stage-note { opacity: .6; }
-.notation-html-rendered [class="done:"], .notation-live [class="done:"] { text-decoration: line-through; opacity: .6; }
+.notation-html-rendered [class="done"], .notation-live [class="done"] { text-decoration: line-through; opacity: .6; }
 .notation-live { border: 1px solid var(--wa-color-brand-border-normal, #6a8); padding: .5rem; margin: .25rem 0; }
 .notation-html-rendered { border: 1px dashed rgba(127,127,127,.5); padding: .5rem; margin: .25rem 0; }
 "#;

@@ -194,7 +194,7 @@ The empty set is written `{:}` (and the empty map `{}`). It is stored as the emp
 
 ## Views
 
-A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, as the notation writes an entity as text: `open:` or `done:` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class.
+A view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, a case of the listing shown by its name: `open` or `done` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class.
 
 ```notation
 (query (todo/item ?t list: ?l is: ?item)
@@ -272,7 +272,7 @@ A line of a concept that says no cardinality:
 
 ```notation
 ; expect: refused
-(concept (tour.flag ?t on: ?on)
+(concept (flag ?t on: ?on)
   (tour.todo/flag of: ?t is: ?on as: :boolean))
 ```
 
@@ -287,7 +287,7 @@ A read that leaves fields out without `...`: the refusal names what it leaves ou
 
 ```notation
 ; expect: refused
-(concept (tour.rank ?t level: (top ?u))
+(concept (rank ?t level: (top ?u))
   (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))
 ```
 
