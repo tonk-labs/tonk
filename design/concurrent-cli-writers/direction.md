@@ -37,3 +37,10 @@ Rows added from the runs:
 Decided 2026-11-25 (Irakli): direction F, with every local writer, sync
 included, in one queue per branch. G is measured before it is ruled in or
 out. See the [journal](journal.md).
+
+H, age priority (no lock; an eval defers its publish while an older one is
+in flight), measured 2026-11-25: zero failures at 2-16 writers and on the
+long eval, at most 2 tries; slower than D everywhere (p95 285 against
+233 ms at 16 writers; small writes p95 4 s behind a 2000-note eval). It
+answers starvation without a lock, which matters only where a lock cannot
+be shared.
