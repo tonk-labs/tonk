@@ -4,8 +4,8 @@
 
 |  | Understanding | Activity |
 |---|---|---|
-| **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Diagnosing. No report beyond BUG-350 exists; Irakli believes the agents share one machine. |
-| **Agenda** | The problem statement. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
+| **Status** | Reproduced without an upstream: H1 and H2 fail evals from N = 2, 81% at N = 16; no reported success is lost; H4 not seen; H5 (an extra head publish under contention, revisions missing from the checkout index) found. A cold eval on an empty space is 31 ms. | Directing: options built as switches and being measured. |
+| **Agenda** | The maintainer's problem statement (the agent's draft stands in). The numbers for columns B-E. Whether F is worth building. Whether agents reach saturation. Cold start on a realistic space. | Diagnosing: run [research/concurrent-cli-writes](../../research/concurrent-cli-writes.md). |
 
 ## 2026-11-24, Describing: what is reported and what the code does
 
@@ -156,3 +156,17 @@ failure, deliberately, so its response describes what it committed; (2)
 the fs lock refuses instead of waiting (gone on Chronicle); (3) re-running
 a long eval against frequent writers starves it; (4) every command starts
 cold, lengthening each eval's window. Next: state the problem.
+
+## 2026-11-25, Directing: try the options
+
+**Asked.** State the problem? Irakli: go ahead and try various options.
+
+**Learned.** Nothing yet; the runs are going.
+
+**Decided.** The agent drafts the problem statement, marked as its own, so
+the matrix has something to serve. Options B-E are built as one switch,
+`TONK_EVAL_POLICY`, on an experiment branch; F (an owner process) is a
+column without a build.
+
+**Backtracked.** None; Delimiting was skipped on the maintainer's call,
+and the statement is a draft until he takes it or rewrites it.
