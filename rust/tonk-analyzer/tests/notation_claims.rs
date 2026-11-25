@@ -726,6 +726,10 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // main's notebook.yaml grew, and an attribute is a relation, a type
     // and a cardinality on both sides now, so the two notations name
     // more of the same attributes.
+    // Moved at dialog 13956c5d from 147 only in the notation: the rule
+    // that retracts a removed block's own facts by entity alone retracts
+    // every field's claims now, and compiles to two inductive rules, so
+    // its 8 rule claims are 16.
     assert_eq!(
         as_it_is,
         Headline {
@@ -733,7 +737,7 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
             identical: 211,
             differently: 112,
             not_at_all: 67,
-            only_notation: 147,
+            only_notation: 155,
         }
     );
     // At b423dd78 the adjustment changes nothing: what it adjusted is how
@@ -745,7 +749,7 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
             identical: 211,
             differently: 112,
             not_at_all: 67,
-            only_notation: 147,
+            only_notation: 155,
         }
     );
     Ok(())

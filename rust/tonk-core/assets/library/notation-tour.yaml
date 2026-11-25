@@ -1057,7 +1057,7 @@ notebook/named!:
 
 notebook/blocks!:
   this: notebook:notation-tour
-  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55}
+  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55, N00056V: id:notation-tour/block-56, N00057V: id:notation-tour/block-57, N00058V: id:notation-tour/block-58, N00059V: id:notation-tour/block-59, N00060V: id:notation-tour/block-60, N00061V: id:notation-tour/block-61, N00062V: id:notation-tour/block-62, N00063V: id:notation-tour/block-63}
 
 notebook/block!:
   this: id:notation-tour/block-1
@@ -1162,175 +1162,215 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-21
   notebook: notebook:notation-tour
-  source: "An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do replaces its record: one rule retracts the record as it is, every field named, and one asserts it changed, with its state done. Both read the same premises and fire in the same round; the fields both name hold afterwards. One field alone is retracted through the attribute's relation, `(retract (tour.todo/state of: ?t is: :open))`."
+  source: "A rule can derive one value of an entity, an attribute no line stores. Here, the name of the list a to-do is on. It is read like a stored attribute, its entity under `of:` and its value under `is:`, and `as:` types the value."
 
 notebook/block!:
   this: id:notation-tour/block-22
   notebook: notebook:notation-tour
-  source: "```notation\n(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))\n\n; Completing a to-do takes back the record as it was.\n(rule (retract (todo ?t title: ?title state: :open list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n\n; And asserts it done.\n(rule (assert (todo ?t title: ?title state: :done list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n```"
+  source: "```notation\n; The name of the list a to-do is on.\n(rule (todo/list-name ?t ?name)\n  (todo ?t list: ?l ...)\n  (list ?l name: ?name))\n\n(select (todo/list-name of: ?t is: ?name as: :text))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-23
   notebook: notebook:notation-tour
-  source: "Now issue the command, and read the state back in the same cell: the rules fired in the commit that carried it."
+  source: "An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do replaces its record: one rule retracts the record as it is, every field named, and one asserts it changed, with its state done. Both read the same premises and fire in the same round; the fields both name hold afterwards. One field alone is retracted through the attribute's relation, `(retract (tour.todo/state of: ?t is: :open))`."
 
 notebook/block!:
   this: id:notation-tour/block-24
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (todo/complete todo: todo:milk))\n\n(select (todo todo:milk title: ?title state: ?state list: ?l))\n```"
+  source: "```notation\n(concept (todo/complete todo: ?t)\n  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))\n\n; Completing a to-do takes back the record as it was.\n(rule (retract (todo ?t title: ?title state: :open list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n\n; And asserts it done.\n(rule (assert (todo ?t title: ?title state: :done list: ?l))\n  (todo/complete todo: ?t)\n  (todo ?t title: ?title state: :open list: ?l))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-25
   notebook: notebook:notation-tour
-  source: "## Cardinality\n\n`cardinality: :one` keeps the last value of an attribute, `:many` keeps them all. Tags are many."
+  source: "Now issue the command, and read the state back in the same cell: the rules fired in the commit that carried it."
 
 notebook/block!:
   this: id:notation-tour/block-26
   notebook: notebook:notation-tour
-  source: "```notation\n(concept (tagged ?t tag: ?tag)\n  (tour.todo/tag of: ?t is: ?tag as: :text cardinality: :many))\n\n(assert (tagged todo:deck tag: \"work\"))\n(assert (tagged todo:deck tag: \"writing\"))\n(assert (tagged todo:milk tag: \"errand\"))\n\n(select (tagged ?t tag: ?tag))\n```"
+  source: "```notation\n(assert (todo/complete todo: todo:milk))\n\n(select (todo todo:milk title: ?title state: ?state list: ?l))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-27
   notebook: notebook:notation-tour
-  source: "A field can elect one of many claims with `max` or `min`. Over a listed type they rank by the listing, which is written least first: `max` elects the case listed last. A to-do's urgency keeps every level it was given, and reads the highest."
+  source: "## Cardinality\n\n`cardinality: :one` keeps the last value of an attribute, `:many` keeps them all. Tags are many."
 
 notebook/block!:
   this: id:notation-tour/block-28
   notebook: notebook:notation-tour
-  source: "```notation\n(concept (urgency ?t level: (max ?u))\n  (tour.todo/urgency of: ?t is: ?u as: [:low :normal :high] cardinality: :many))\n\n(assert (urgency todo:deck level: :normal))\n(assert (urgency todo:deck level: :high))\n(assert (urgency todo:deck level: :low))\n(assert (urgency todo:seeds level: :low))\n\n(select (urgency ?t level: ?level))\n```"
+  source: "```notation\n(concept (tagged ?t tag: ?tag)\n  (tour.todo/tag of: ?t is: ?tag as: :text cardinality: :many))\n\n(assert (tagged todo:deck tag: \"work\"))\n(assert (tagged todo:deck tag: \"writing\"))\n(assert (tagged todo:milk tag: \"errand\"))\n\n(select (tagged ?t tag: ?tag))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-29
   notebook: notebook:notation-tour
-  source: "## Patterns over maps and lists\n\nA value can be a record or a list, and a query takes it apart by shape. An open map matches any record that has the keys asked for; `...` names the rest."
+  source: "A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the `when` below finds the to-do asserted just above it, and tags it."
 
 notebook/block!:
   this: id:notation-tour/block-30
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (tour.note note:1 about: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true}))\n(assert (tour.note note:2 about: {:author \"Grace\"}))\n\n(select (tour.note ?n about: {:author ?who}))\n\n(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))\n```"
+  source: "```notation\n(assert (todo todo:paint title: \"Paint the fence\" state: :open list: list:garden))\n(assert (tagged ?t tag: \"outdoors\") (when (todo ?t state: :open list: list:garden ...)))\n\n(select (tagged ?t tag: \"outdoors\"))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-31
   notebook: notebook:notation-tour
-  source: "The empty set is written `{:}` (and the empty map `{}`). It is stored as the empty list, so the answer reads it back as `[]`, and a pattern `{:}` finds it."
+  source: "A field can elect one of many claims with `max` or `min`. Over a listed type they rank by the listing, which is written least first: `max` elects the case listed last. A to-do's urgency keeps every level it was given, and reads the highest."
 
 notebook/block!:
   this: id:notation-tour/block-32
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (tour.note note:3 about: {:author \"Lin\" :tags {:}}))\n\n(select (tour.note ?n about: {:author ?who :tags {:}}))\n```"
+  source: "```notation\n(concept (urgency ?t level: (max ?u))\n  (tour.todo/urgency of: ?t is: ?u as: [:low :normal :high] cardinality: :many))\n\n(assert (urgency todo:deck level: :normal))\n(assert (urgency todo:deck level: :high))\n(assert (urgency todo:deck level: :low))\n(assert (urgency todo:seeds level: :low))\n\n(select (urgency ?t level: ?level))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-33
   notebook: notebook:notation-tour
-  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, a case of the listing shown by its name: `open` or `done` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class."
+  source: "## Patterns over maps and lists\n\nA value can be a record or a list, and a query takes it apart by shape. An open map matches any record that has the keys asked for; `...` names the rest."
 
 notebook/block!:
   this: id:notation-tour/block-34
   notebook: notebook:notation-tour
-  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
+  source: "```notation\n(assert (tour.note note:1 about: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true}))\n(assert (tour.note note:2 about: {:author \"Grace\"}))\n\n(select (tour.note ?n about: {:author ?who}))\n\n(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-35
   notebook: notebook:notation-tour
-  source: "## Notation as data\n\nThe notation is made of rules all the way down: `select`, `concept` and commands are macros the analyzer runs, defined in its prelude as rules over syntax. A document can define one of its own and use it in the same breath. Here `[todo! id title list]` stands for asserting an open to-do (look at the expanded stage: the bracket form is gone)."
+  source: "The empty set is written `{:}` (and the empty map `{}`). It is stored as the empty list, so the answer reads it back as `[]`, and a pattern `{:}` finds it."
 
 notebook/block!:
   this: id:notation-tour/block-36
   notebook: notebook:notation-tour
-  source: "```notation\n; Shorthand for an open to-do.\n(rule (syntax (assert (todo ?t title: ?x state: :open list: ?l)))\n  (expand [todo! ?t ?x ?l]))\n\n[todo! todo:bread \"Bake bread\" list:home]\n\n(select (todo todo:bread title: ?title state: ?state list: ?l))\n```"
+  source: "```notation\n(assert (tour.note note:3 about: {:author \"Lin\" :tags {:}}))\n\n(select (tour.note ?n about: {:author ?who :tags {:}}))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-37
   notebook: notebook:notation-tour
-  source: "A check is a rule over syntax too. This one says something about a form without refusing it: a to-do written as done already. The assert below still runs; its warning comes from the rule above it. (The analyzer's own \"no rule reads this command\" is a rule of the same kind, in its prelude.) Today such a check can only warn, never refuse, and its premises are the analyzer's few built-ins over syntax and names: it cannot read the space's facts."
+  source: "## Views\n\nA view is a query whose answer is markup. A list's card holds an item per to-do on it, and the driver renders it to the HTML a page shows. Press Watch live under the result and the worker keeps a copy of the card current: it watches the view with the driver and streams its patches over the page's subscription, and the copy applies them. Run the cells below and the to-do the macro adds to Home lands in the watched card as an insert, with no re-run. Each item's class is its state, a case of the listing shown by its name: `open` or `done` (done items are struck through). Buy milk reads done here because the command cell above completed it. Each item also binds a click to the `todo/complete` command: click an open to-do in the watched card, and the command it posts comes back as a patch of its class."
 
 notebook/block!:
   this: id:notation-tour/block-38
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: warning\n(rule (warning \"a to-do written as done already: is that what you meant?\")\n  (expand (todo ?t title: ?x state: :done list: ?l) in: :head))\n\n(assert (todo todo:bill title: \"Pay the bill\" state: :done list: list:home))\n```"
+  source: "```notation\n(query (todo/item ?t list: ?l is: ?item)\n  (todo ?t title: ?title state: ?s list: ?l)\n  (view ?item [:li {:class ?s :on/click (todo/complete todo: ?t)} ?title]))\n\n(query (list/card ?l is: ?card)\n  (list ?l name: ?name)\n  (todo/item _ list: ?l is: (distinct ?items))\n  (view ?card [:article [:h3 ?name] [:ul ?items]]))\n\n(select (list/card list:home is: ?card))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-39
   notebook: notebook:notation-tour
-  source: "The comment above a rule is kept as data about it, on the branch, and a query reads it like any other fact."
+  source: "## Notation as data\n\nThe notation is made of rules all the way down: `select`, `concept` and commands are macros the analyzer runs, defined in its prelude as rules over syntax. A document can define one of its own and use it in the same breath. Here `[todo! id title list]` stands for asserting an open to-do (look at the expanded stage: the bracket form is gone)."
 
 notebook/block!:
   this: id:notation-tour/block-40
   notebook: notebook:notation-tour
-  source: "```notation\n(select (syntax.meta ?rule description: ?text))\n```"
+  source: "```notation\n; Shorthand for an open to-do.\n(rule (syntax (assert (todo ?t title: ?x state: :open list: ?l)))\n  (expand [todo! ?t ?x ?l]))\n\n[todo! todo:bread \"Bake bread\" list:home]\n\n(select (todo todo:bread title: ?title state: ?state list: ?l))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-41
   notebook: notebook:notation-tour
-  source: "A form is data too. When a cell runs, this notebook keeps each of its forms on the branch as the record the notation keeps a tree as (`syntax.form/is`, the \"as data\" half of the read stage). Dialog's `check` does not write syntax itself; the tour's evaluator does, as Dialog's own tests do. A query then takes the tour's own forms apart by the shape of their trees: every rule written above, by the name its head applies, and every assert of a to-do."
+  source: "A check is a rule over syntax too. This one says something about a form without refusing it: a to-do written as done already. The assert below still runs; its warning comes from the rule above it. (The analyzer's own \"no rule reads this command\" is a rule of the same kind, in its prelude.) Today such a check can only warn, never refuse, and its premises are the analyzer's few built-ins over syntax and names: it cannot read the space's facts."
 
 notebook/block!:
   this: id:notation-tour/block-42
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.rule ?f head: ?name)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /rule}\n                       :operand {:items [{:operator {:name ?name}} ... ?premises]}}))\n\n(select (tour.assert ?f to-do: ?t)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /assert}\n                       :operand {:items [{:type :application\n                                          :operator {:type :reference :name /todo}\n                                          :operand {:items [{:type :constant :value ?t}]}}]}}))\n```"
+  source: "```notation\n; expect: warning\n(rule (warning \"a to-do written as done already: is that what you meant?\")\n  (expand (todo ?t title: ?x state: :done list: ?l) in: :head))\n\n(assert (todo todo:bill title: \"Pay the bill\" state: :done list: list:home))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-43
   notebook: notebook:notation-tour
-  source: "## What the notation refuses\n\nEach of these is refused on purpose, and says why and where."
+  source: "The comment above a rule is kept as data about it, on the branch, and a query reads it like any other fact."
 
 notebook/block!:
   this: id:notation-tour/block-44
   notebook: notebook:notation-tour
-  source: "A name nothing defines:"
+  source: "```notation\n(select (syntax.meta ?rule description: ?text))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-45
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
+  source: "A form is data too. When a cell runs, this notebook keeps each of its forms on the branch as the record the notation keeps a tree as (`syntax.form/is`, the \"as data\" half of the read stage). Dialog's `check` does not write syntax itself; the tour's evaluator does, as Dialog's own tests do. A query then takes the tour's own forms apart by the shape of their trees: every rule written above, by the name its head applies, and every assert of a to-do."
 
 notebook/block!:
   this: id:notation-tour/block-46
   notebook: notebook:notation-tour
-  source: "A line of a concept that says no cardinality:"
+  source: "```notation\n(select (tour.rule ?f head: ?name)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /rule}\n                       :operand {:items [{:operator {:name ?name}} ... ?premises]}}))\n\n(select (tour.assert ?f to-do: ?t)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /assert}\n                       :operand {:items [{:type :application\n                                          :operator {:type :reference :name /todo}\n                                          :operand {:items [{:type :constant :value ?t}]}}]}}))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-47
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
+  source: "## What the notation refuses\n\nEach of these is refused on purpose, and says why and where."
 
 notebook/block!:
   this: id:notation-tour/block-48
   notebook: notebook:notation-tour
-  source: "A read that leaves fields out without `...`: the refusal names what it leaves out and the read written with `...`."
+  source: "A name nothing defines:"
 
 notebook/block!:
   this: id:notation-tour/block-49
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(select (todo ?t title: ?title))\n```"
+  source: "```notation\n; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-50
   notebook: notebook:notation-tour
-  source: "`top` is gone from the notation: the refusal says what to write instead."
+  source: "A line of a concept that says no cardinality:"
 
 notebook/block!:
   this: id:notation-tour/block-51
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
+  source: "```notation\n; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-52
   notebook: notebook:notation-tour
-  source: "A write through a concept that leaves a field out:"
+  source: "A read that leaves fields out without `...`: the refusal names what it leaves out and the read written with `...`."
 
 notebook/block!:
   this: id:notation-tour/block-53
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))\n```"
+  source: "```notation\n; expect: refused\n(select (todo ?t title: ?title))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-54
   notebook: notebook:notation-tour
-  source: "One rule that both asserts and retracts: it is written as a rule for each."
+  source: "`top` is gone from the notation: the refusal says what to write instead."
 
 notebook/block!:
   this: id:notation-tour/block-55
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-56
+  notebook: notebook:notation-tour
+  source: "A declared name is strict kebab-case: lowercase words joined by one `-`."
+
+notebook/block!:
+  this: id:notation-tour/block-57
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(concept (to--do ?t title: ?title)\n  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-58
+  notebook: notebook:notation-tour
+  source: "A read of a concept says no pick: the pick is the concept's, on its field."
+
+notebook/block!:
+  this: id:notation-tour/block-59
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(select (urgency ?t level: (max ?level)))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-60
+  notebook: notebook:notation-tour
+  source: "A write through a concept that leaves a field out:"
+
+notebook/block!:
+  this: id:notation-tour/block-61
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-62
+  notebook: notebook:notation-tour
+  source: "One rule that both asserts and retracts: it is written as a rule for each."
+
+notebook/block!:
+  this: id:notation-tour/block-63
   notebook: notebook:notation-tour
   source: "```notation\n; expect: refused\n(rule (all (assert (tour.todo ?t list: ?to)) (retract (tour.todo ?t list: ?from)))\n  (tour.move ?t to: ?to)\n  (tour.todo ?t list: ?from))\n```"
 

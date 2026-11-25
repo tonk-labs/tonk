@@ -18,7 +18,7 @@ use ::axum::http::HeaderMap;
 use ::axum::http::header::CONTENT_TYPE as CONTENT_TYPE_HEADER;
 use ::axum::response::{IntoResponse as _, Response};
 use bytes::Bytes;
-use tonk_analyzer::notation::tour::{Cell, Sink, prepare};
+use tonk_analyzer::notation::tour::{Cell, prepare};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -63,32 +63,30 @@ pub(super) async fn evaluate(
         let _committing = session.transactor().lock().await;
         let handle = session.handle().clone();
         let _ = handle.refresh(&tonk.operator).await;
-        let prepared = prepare(&handle, &cell, &tonk.operator).await;
-        if transact && prepared.writes() {
-            let stack = session.state.stack();
-            let committed = match prepared
-                .write_into(Stacked(stack.transaction()))
-                .0
-                .commit()
-                .perform(&tonk.operator)
-                .await
-            {
-                Ok(batch) => batch.publish().perform(&tonk.operator).await,
-                Err(error) => Err(error),
-            };
-            match committed {
-                Ok(report) => {
-                    let effect = report.effect();
-                    let _ = handle.refresh(&tonk.operator).await;
-                    (
-                        prepared.finish(&handle, true, &tonk.operator).await,
-                        Some(effect),
-                    )
+        // dialog-notation's driver stages the cell into the stack's
+        // transaction, each `when` read through what the forms before it
+        // staged; a dry run drops it uncommitted.
+        let mut prepared = prepare(&cell);
+        let stack = session.state.stack();
+        match prepared.stage(stack.transaction(), &tonk.operator).await {
+            Some(transaction) if transact && prepared.writes() => {
+                let committed = match transaction.commit().perform(&tonk.operator).await {
+                    Ok(batch) => batch.publish().perform(&tonk.operator).await,
+                    Err(error) => Err(error),
+                };
+                match committed {
+                    Ok(report) => {
+                        let effect = report.effect();
+                        let _ = handle.refresh(&tonk.operator).await;
+                        (
+                            prepared.finish(&handle, true, &tonk.operator).await,
+                            Some(effect),
+                        )
+                    }
+                    Err(error) => (prepared.failed(error.to_string()), None),
                 }
-                Err(error) => (prepared.failed(error.to_string()), None),
             }
-        } else {
-            (prepared.finish(&handle, false, &tonk.operator).await, None)
+            _ => (prepared.finish(&handle, false, &tonk.operator).await, None),
         }
     };
     tonk_common::log!(
@@ -116,21 +114,6 @@ pub(super) async fn evaluate(
         let _ = effect;
     }
     Ok(Json(answer).into_response())
-}
-
-/// A stack transaction, as the place a cell's writes go.
-struct Stacked<'a>(dialog_repository::StackTransaction<&'a dialog_repository::Branch>);
-
-impl Sink for Stacked<'_> {
-    fn assert<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        Stacked(self.0.assert(claim))
-    }
-    fn retract<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        Stacked(self.0.retract(claim))
-    }
-    fn dispatch<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        Stacked(self.0.dispatch(claim))
-    }
 }
 
 /// A "Watch live" subscription's body: `{"notation_live": {source,

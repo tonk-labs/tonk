@@ -117,6 +117,17 @@ Rules can recurse. One to-do blocks another; blocking is transitive.
 (select (tour.before ?a then: todo:milk))
 ```
 
+A rule can derive one value of an entity, an attribute no line stores. Here, the name of the list a to-do is on. It is read like a stored attribute, its entity under `of:` and its value under `is:`, and `as:` types the value.
+
+```notation
+; The name of the list a to-do is on.
+(rule (todo/list-name ?t ?name)
+  (todo ?t list: ?l ...)
+  (list ?l name: ?name))
+
+(select (todo/list-name of: ?t is: ?name as: :text))
+```
+
 An inductive rule writes when a commit lands. A command is a concept on the control layer: asserted, it holds for one tick, the rules that read it fire, and it is not stored. Its lines say their cardinality too. Completing a to-do replaces its record: one rule retracts the record as it is, every field named, and one asserts it changed, with its state done. Both read the same premises and fire in the same round; the fields both name hold afterwards. One field alone is retracted through the attribute's relation, `(retract (tour.todo/state of: ?t is: :open))`.
 
 ```notation
@@ -155,6 +166,15 @@ Now issue the command, and read the state back in the same cell: the rules fired
 (assert (tagged todo:milk tag: "errand"))
 
 (select (tagged ?t tag: ?tag))
+```
+
+A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the `when` below finds the to-do asserted just above it, and tags it.
+
+```notation
+(assert (todo todo:paint title: "Paint the fence" state: :open list: list:garden))
+(assert (tagged ?t tag: "outdoors") (when (todo ?t state: :open list: list:garden ...)))
+
+(select (tagged ?t tag: "outdoors"))
 ```
 
 A field can elect one of many claims with `max` or `min`. Over a listed type they rank by the listing, which is written least first: `max` elects the case listed last. A to-do's urgency keeps every level it was given, and reads the highest.
@@ -289,6 +309,21 @@ A read that leaves fields out without `...`: the refusal names what it leaves ou
 ; expect: refused
 (concept (rank ?t level: (top ?u))
   (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))
+```
+
+A declared name is strict kebab-case: lowercase words joined by one `-`.
+
+```notation
+; expect: refused
+(concept (to--do ?t title: ?title)
+  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one))
+```
+
+A read of a concept says no pick: the pick is the concept's, on its field.
+
+```notation
+; expect: refused
+(select (urgency ?t level: (max ?level)))
 ```
 
 A write through a concept that leaves a field out:

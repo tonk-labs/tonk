@@ -2,10 +2,11 @@
 //! evaluated against a space's branch, with each stage of the pipeline
 //! kept to show.
 //!
-//! This follows the notation's own reference driver
-//! (`dialog-notation/examples/notebook/session.rs`, `Notebook::submit`):
-//! check the text, write what it asserts and the rules it declares in one
-//! transaction, then ask its queries. What a notebook adds is the context:
+//! The cell runs through the notation's own driver
+//! (`dialog_notation::apply`): `stage` writes what it asserts and the
+//! rules it declares into the caller's transaction, each `when` reading
+//! what the forms before it wrote, the caller commits once, and `answer`
+//! asks its queries after. What a notebook adds is the context:
 //! the analyzer keeps definitions in memory only, so the notation cells
 //! above this one are read into a fresh analyzer first, for their
 //! definitions (nothing of theirs is written again).
@@ -25,13 +26,14 @@
 
 use std::collections::BTreeMap;
 
+use dialog_notation::apply::{self, Did, DocumentReport, Writer};
+pub use dialog_notation::apply::Stage as Staged;
 use dialog_notation::live::{Live, Reader};
 use dialog_notation::{
     Analyzer, Checked, Declaration, Rendered, Severity, Step, Syntax, check_forms, parse_document,
 };
-use dialog_query::ConceptConclusion;
-use dialog_query::query::Output as _;
-use dialog_repository::{Branch, Transient};
+use dialog_query::concept::descriptor::ConceptStatement;
+use dialog_repository::Branch;
 use serde::Serialize;
 
 /// What a cell asks of the worker.
@@ -325,48 +327,57 @@ fn compiled(checked: &Checked) -> String {
     out
 }
 
-/// Where a cell's writes go: a branch's transaction, or its stack's.
-/// The caller commits it; [`Prepared::write_into`] fills it.
-pub trait Sink: Sized {
-    /// Assert a claim.
-    fn assert<C: dialog_corpus::Statement>(self, claim: C) -> Self;
-    /// Retract a claim.
-    fn retract<C: dialog_corpus::Statement>(self, claim: C) -> Self;
-    /// Dispatch a claim as a command.
-    fn dispatch<C: dialog_corpus::Statement>(self, claim: C) -> Self;
-}
-
-/// A cell checked, its writes ready to commit and its questions ready to
-/// ask. Made by [`prepare`]; ends in [`Prepared::finish`].
+/// A cell checked, its writes ready to stage and its questions ready to
+/// ask. Made by [`prepare`]; staged by [`Prepared::stage`] into the
+/// caller's transaction, which the caller commits; ends in
+/// [`Prepared::finish`].
+///
+/// The writes are dialog-notation's own driver
+/// ([`dialog_notation::apply::stage`]): each form's `when` reads the
+/// branch as the forms before it in the cell left it.
 pub struct Prepared {
     answer: Answer,
     forms: Vec<FormOutcome>,
-    ops: Vec<Step>,
-    written: BTreeMap<usize, Vec<&'static str>>,
-    asks: Vec<(Step, usize)>,
+    checked: Option<Checked>,
+    kept: Vec<ConceptStatement>,
+    report: DocumentReport,
     done: bool,
 }
 
 impl Prepared {
-    /// Whether the cell writes anything.
-    pub fn writes(&self) -> bool {
-        !self.done && !self.ops.is_empty()
+    /// Stage the cell's writes into `transaction`, the caller's, and the
+    /// forms the cell keeps as data after them, and give it back to
+    /// commit. Nothing is committed. `None` when there is nothing to
+    /// commit: the cell was refused before it ran, or a write's `when`
+    /// failed to read, which the answer says.
+    pub async fn stage<T: Staged, E: Reader>(&mut self, transaction: T, env: &E) -> Option<T> {
+        let checked = self.checked.as_ref().filter(|_| !self.done)?;
+        match apply::stage(transaction, checked, env).await {
+            Ok((mut transaction, report)) => {
+                self.report = report;
+                for kept in &self.kept {
+                    transaction = transaction.assert(kept.clone());
+                }
+                Some(transaction)
+            }
+            Err(error) => {
+                self.answer.error = Some(format!("a write: {error}"));
+                self.done = true;
+                None
+            }
+        }
     }
 
-    /// The cell's writes, put into `sink`.
-    pub fn write_into<T: Sink>(&self, mut sink: T) -> T {
-        for step in &self.ops {
-            sink = match step.clone() {
-                Step::Assert(statement) => sink.assert(statement),
-                Step::Retract(statement) => sink.retract(statement),
-                Step::Issue(statement) => sink.dispatch(statement),
-                Step::Deduce(rule) => sink.assert(*rule),
-                Step::Induce(rule) => sink.assert(*rule),
-                Step::Transient(concept) => sink.assert(Transient(concept)),
-                _ => sink,
-            };
-        }
-        sink
+    /// Whether what was staged writes anything.
+    pub fn writes(&self) -> bool {
+        !self.done
+            && (!self.kept.is_empty()
+                || self.report.forms.iter().flat_map(|form| &form.did).any(|did| {
+                    matches!(
+                        did,
+                        Did::Asserted(_) | Did::Retracted(_) | Did::Issued(_) | Did::Installed(_)
+                    )
+                }))
     }
 
     /// Say the commit failed: nothing is asked.
@@ -383,34 +394,33 @@ impl Prepared {
         let Prepared {
             mut answer,
             mut forms,
-            written,
-            asks,
+            checked,
+            report,
             done,
             ..
         } = self;
-        if done {
+        let Some(checked) = checked.filter(|_| !done) else {
             answer.forms = forms;
             return answer;
-        }
+        };
         answer.wrote = wrote;
-        let transact = wrote;
-        finish(&mut forms, written, asks, transact, branch, env).await;
+        finish(&mut forms, &checked, &report, wrote, branch, env).await;
         answer.forms = forms;
         answer
     }
 }
 
-/// Check `cell` after its context, and gather what it writes and asks.
-/// The writes of a `(assert … (when …))` are found by asking its `when`
-/// of `branch` now.
-pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepared {
+/// Check `cell` after its context, and say what each stage of the
+/// pipeline gave. Nothing is read from a branch yet: [`Prepared::stage`]
+/// runs the cell's writes, reading each `when` as it goes.
+pub fn prepare(cell: &Cell) -> Prepared {
     let mut answer = Answer::default();
     let done = |answer: Answer, forms: Vec<FormOutcome>| Prepared {
         answer,
         forms,
-        ops: Vec::new(),
-        written: BTreeMap::new(),
-        asks: Vec::new(),
+        checked: None,
+        kept: Vec::new(),
+        report: DocumentReport::default(),
         done: true,
     };
     let mut analyzer = match analyzer_after(&cell.context) {
@@ -520,128 +530,46 @@ pub async fn prepare<E: Reader>(branch: &Branch, cell: &Cell, env: &E) -> Prepar
         }
     }
 
-    // Write: one transaction for everything the cell asserts.
-    let mut ops: Vec<Step> = Vec::new();
-    let mut written: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
-    let mut asks = Vec::new();
-    for (step, at) in checked.steps.iter().zip(checked.step_forms.iter().copied()) {
-        let what = match step {
-            Step::Write(write) => {
-                let mut layer = branch.query();
-                if let Some(rule) = &write.query.rule {
-                    layer = layer.with(rule.clone());
-                }
-                let rows: Result<Vec<ConceptConclusion>, _> = layer
-                    .select(write.query.select.clone())
-                    .perform(env)
-                    .try_vec()
-                    .await;
-                match rows {
-                    Ok(rows) => {
-                        for row in &rows {
-                            match write.statement(row) {
-                                Ok(statement) => {
-                                    ops.push(if write.retract {
-                                        Step::Retract(statement)
-                                    } else {
-                                        Step::Assert(statement)
-                                    });
-                                    written.entry(at).or_default().push(if write.retract {
-                                        "retract"
-                                    } else {
-                                        "assert"
-                                    });
-                                }
-                                Err(error) => {
-                                    answer.error = Some(format!("a write: {error}"));
-                                    return done(answer, forms);
-                                }
-                            }
-                        }
-                        if rows.is_empty() {
-                            written.entry(at).or_default();
-                        }
-                    }
-                    Err(error) => {
-                        answer.error = Some(format!("a write's when: {error}"));
-                        return done(answer, forms);
-                    }
-                }
-                continue;
-            }
-            Step::Assert(_) => {
-                ops.push(step.clone());
-                "assert"
-            }
-            Step::Retract(_) => {
-                ops.push(step.clone());
-                "retract"
-            }
-            Step::Issue(_) => {
-                ops.push(step.clone());
-                "issue"
-            }
-            Step::Deduce(_) => {
-                ops.push(step.clone());
-                "deductive rule"
-            }
-            Step::Induce(_) => {
-                ops.push(step.clone());
-                "inductive rule"
-            }
-            Step::Transient(_) => {
-                ops.push(step.clone());
-                "transient"
-            }
-            Step::Query(_) | Step::Select(_) | Step::View(_) => {
-                asks.push((step.clone(), at));
-                continue;
-            }
-        };
-        written.entry(at).or_default().push(what);
-    }
     // Keep each form the cell ran as data: its tree, as the record the
     // notation keeps a tree as, under `syntax.form/is`, of the entity the
     // tree names. This is the tour's evaluator doing it, the way
     // dialog-notation's own tests do (`it_finds_a_kept_form_by_a_pattern_
     // over_its_tree`): the notation's `check` writes no syntax itself.
+    let mut kept = Vec::new();
     if !forms.iter().any(|form| form.refused.is_some())
         && let Ok(is) = serde_json::from_value::<dialog_query::AttributeDescriptor>(
             serde_json::json!({ "the": "syntax.form/is", "as": "composite:map" }),
         )
     {
-        let mut kept = 0;
         for tree in &parsed.trees {
             let (Ok(this), Ok(value)) = (tree.entity(), tree.value()) else {
                 continue;
             };
             if let Ok(attribution) = is.resolve(value) {
-                ops.push(Step::Assert(
-                    dialog_query::concept::descriptor::ConceptStatement {
-                        this,
-                        with: vec![attribution],
-                    },
-                ));
-                kept += 1;
+                kept.push(ConceptStatement {
+                    this,
+                    with: vec![attribution],
+                });
             }
         }
-        answer.kept_forms = kept;
+        answer.kept_forms = kept.len();
     }
     Prepared {
         answer,
         forms,
-        ops,
-        written,
-        asks,
+        checked: Some(checked),
+        kept,
+        report: DocumentReport::default(),
         done: false,
     }
 }
 
-/// Say what each write did, then ask the questions.
+/// Say what each form did, as [`apply::stage`] reported it, then ask
+/// the questions.
 async fn finish<E: Reader>(
     forms: &mut Vec<FormOutcome>,
-    written: BTreeMap<usize, Vec<&'static str>>,
-    asks: Vec<(Step, usize)>,
+    checked: &Checked,
+    report: &DocumentReport,
     transact: bool,
     branch: &Branch,
     env: &E,
@@ -649,6 +577,47 @@ async fn finish<E: Reader>(
     let outcome = |forms: &mut Vec<FormOutcome>, at: usize| -> Option<usize> {
         (at < forms.len()).then_some(at)
     };
+    // The report says a rule was installed; the step says which kind.
+    let mut installs: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
+    let mut asks: Vec<(Step, usize)> = Vec::new();
+    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
+        match step {
+            Step::Deduce(_) => installs.entry(*at).or_default().push("deductive rule"),
+            Step::Induce(_) => installs.entry(*at).or_default().push("inductive rule"),
+            Step::Transient(_) => installs.entry(*at).or_default().push("transient"),
+            Step::Query(_) | Step::Select(_) | Step::View(_) => asks.push((step.clone(), *at)),
+            _ => {}
+        }
+    }
+    let mut written: BTreeMap<usize, Vec<&'static str>> = BTreeMap::new();
+    let mut same: Vec<(usize, usize)> = Vec::new();
+    for form in &report.forms {
+        let mut installed = installs.remove(&form.form).unwrap_or_default().into_iter();
+        for did in &form.did {
+            match did {
+                Did::Read => {
+                    written.entry(form.form).or_default();
+                }
+                Did::Asserted(_) => written.entry(form.form).or_default().push("assert"),
+                Did::Retracted(_) => written.entry(form.form).or_default().push("retract"),
+                Did::Issued(_) => written.entry(form.form).or_default().push("issue"),
+                Did::Installed(_) => written
+                    .entry(form.form)
+                    .or_default()
+                    .push(installed.next().unwrap_or("deductive rule")),
+                Did::Same(earlier) => same.push((form.form, *earlier)),
+                Did::Asked => {}
+            }
+        }
+    }
+    for (at, earlier) in same {
+        if let Some(at) = outcome(forms, at)
+            && forms[at].summary.is_empty()
+        {
+            forms[at].summary =
+                format!("the same as form {}, installed there once", earlier + 1);
+        }
+    }
     for (at, what) in written {
         if let Some(at) = outcome(forms, at) {
             let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -690,56 +659,51 @@ async fn finish<E: Reader>(
         }
     }
 
-    // Ask: after the commit, so a query reads what the cell wrote.
-    let live = Live::new(branch.clone());
+    // Ask: after the commit, so a query reads what the cell wrote. Each
+    // form is answered on its own, so its answers stay under it and one
+    // that fails does not take the others with it.
     for (step, at) in asks {
         let Some(at) = outcome(forms, at) else {
             continue;
         };
-        match step {
-            Step::Query(query) => {
-                let mut layer = branch.query();
-                if let Some(rule) = &query.rule {
-                    layer = layer.with(rule.clone());
-                }
-                let rows: Result<Vec<ConceptConclusion>, _> = layer
-                    .select(query.select.clone())
-                    .perform(env)
-                    .try_vec()
-                    .await;
-                match rows {
-                    Ok(rows) => {
-                        let printed: Vec<Syntax> =
-                            rows.iter().filter_map(|row| query.row(row).ok()).collect();
-                        tabulate(&mut forms[at], &printed);
-                    }
-                    Err(error) => {
-                        forms[at].summary = format!("the query failed: {error}");
-                    }
-                }
+        let mut one = checked.clone();
+        one.steps = vec![step.clone()];
+        one.step_forms = vec![at];
+        let answered = apply::answer(branch, &one, env).await;
+        match (step, answered) {
+            (Step::Query(_) | Step::Select(_), Ok(answered)) => {
+                tabulate(&mut forms[at], &answered.answers);
             }
-            Step::Select(selection) => match live.select(&selection, env).await {
-                Ok(answers) => tabulate(&mut forms[at], &answers),
-                Err(error) => forms[at].summary = format!("the selection failed: {error}"),
-            },
-            Step::View(plan) => match live.render(&plan, plan.given.as_ref(), env).await {
-                Ok(tree) => {
-                    forms[at].summary =
-                        format!("rendered {} instance(s) of the view", tree.roots.len());
-                    forms[at].html = Some(super::live::rendered_html(&tree));
-                    forms[at].printed = tree
-                        .roots
-                        .iter()
-                        .map(|root| {
-                            Rendered {
-                                roots: vec![root.clone()],
-                            }
-                            .hiccup()
-                        })
-                        .collect();
-                }
-                Err(error) => forms[at].summary = format!("rendering failed: {error}"),
-            },
+            (Step::Query(_), Err(error)) => {
+                forms[at].summary = format!("the query failed: {error}");
+            }
+            (Step::Select(_), Err(error)) => {
+                forms[at].summary = format!("the selection failed: {error}");
+            }
+            (Step::View(_), Ok(answered)) => {
+                let roots: Vec<_> = answered
+                    .rendered
+                    .into_iter()
+                    .flat_map(|tree| tree.roots)
+                    .collect();
+                let tree = Rendered { roots };
+                forms[at].summary =
+                    format!("rendered {} instance(s) of the view", tree.roots.len());
+                forms[at].html = Some(super::live::rendered_html(&tree));
+                forms[at].printed = tree
+                    .roots
+                    .iter()
+                    .map(|root| {
+                        Rendered {
+                            roots: vec![root.clone()],
+                        }
+                        .hiccup()
+                    })
+                    .collect();
+            }
+            (Step::View(_), Err(error)) => {
+                forms[at].summary = format!("rendering failed: {error}");
+            }
             _ => {}
         }
     }
@@ -754,40 +718,18 @@ async fn finish<E: Reader>(
     }
 }
 
-impl Sink for dialog_repository::Transaction<&Branch> {
-    fn assert<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        dialog_repository::Transaction::assert(self, claim)
-    }
-    fn retract<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        dialog_repository::Transaction::retract(self, claim)
-    }
-    fn dispatch<C: dialog_corpus::Statement>(self, claim: C) -> Self {
-        dialog_repository::Transaction::dispatch(self, claim)
-    }
-}
-
 /// [`prepare`], a commit straight on `branch` (no stack, no lock), and
 /// [`Prepared::finish`]: what a test or a tool with a branch of its own
 /// does. The worker commits through its stack instead.
-pub async fn evaluate_on_branch<E>(branch: &Branch, cell: &Cell, env: &E) -> Answer
-where
-    E: Reader
-        + dialog_capability::Provider<dialog_effects::blob::Size>
-        + dialog_capability::Provider<dialog_effects::blob::Import>
-        + dialog_capability::Provider<dialog_query::archive::Import>
-        + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_effects::memory::Publish>,
-{
-    let prepared = prepare(branch, cell, env).await;
+pub async fn evaluate_on_branch<E: Writer>(branch: &Branch, cell: &Cell, env: &E) -> Answer {
+    let mut prepared = prepare(cell);
+    let Some(transaction) = prepared.stage(branch.transaction(), env).await else {
+        return prepared.finish(branch, false, env).await;
+    };
     if !prepared.writes() {
         return prepared.finish(branch, false, env).await;
     }
-    let committed = match prepared
-        .write_into(branch.transaction())
-        .commit()
-        .perform(env)
-        .await
-    {
+    let committed = match transaction.commit().perform(env).await {
         Ok(batch) => batch.publish().perform(env).await.map(|_| ()),
         Err(error) => Err(error),
     };
