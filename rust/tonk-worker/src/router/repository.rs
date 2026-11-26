@@ -4395,7 +4395,7 @@ impl ProfileLibraryCache {
         #[cfg(test)]
         if self
             .acquisition_failures
-            .try_update(
+            .fetch_update(
                 std::sync::atomic::Ordering::Relaxed,
                 std::sync::atomic::Ordering::Relaxed,
                 |remaining| remaining.checked_sub(1),

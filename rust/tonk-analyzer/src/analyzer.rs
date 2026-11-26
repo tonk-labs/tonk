@@ -1793,8 +1793,10 @@ concept!: &person
         // 3 statements: 2 inline attrs + 1 concept.
         assert_eq!(analysis.mutate.statements.len(), 3);
         // First two are anonymous attributes (no published name).
-        for (i, statement) in analysis.mutate.statements.iter().take(2).enumerate() {
-            let Statement::Assert(Application::Concept { name, .. }) = statement else {
+        for i in 0..2 {
+            let Statement::Assert(Application::Concept { name, .. }) =
+                &analysis.mutate.statements[i]
+            else {
                 panic!("expected Assert(Concept) for inline attr {i}");
             };
             assert!(name.is_none(), "inline attr should have no published name");

@@ -122,7 +122,7 @@ async fn forward(
     if head_put
         && proxy
             .remaining
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
     {
         let (resume, wait) = tokio::sync::oneshot::channel();
