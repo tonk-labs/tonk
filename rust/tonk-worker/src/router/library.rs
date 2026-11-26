@@ -13,7 +13,7 @@
 //! sits in that one directory, so relative references resolve alike
 //! whichever file they were written in.
 //!
-//! Natively there is no origin, and the library documents are compiled
+//! Natively and in the hosted writer there is no browser origin, and the library documents are compiled
 //! in, so they live at [`tonk_library::ROOT`] and what they include is
 //! served from the copies `tonk-library` bundles. Reading the source
 //! tree instead would work on a developer's machine and nowhere else:
@@ -28,17 +28,28 @@ use tonk_notation::{Load, Syntax, Url, expand, parse_at};
 use crate::TonkWorkerError;
 
 /// Where library documents live, or `None` where the library has no
-/// location: a wasm test harness is not a service worker, so it has no
-/// origin to serve from. A document parsed without a location still
-/// seeds; it just cannot include.
+/// location: a service worker that cannot name its origin. A document
+/// parsed without a location still seeds; it just cannot include. A wasm
+/// unit test is not a service worker, so it reads the compiled-in library,
+/// as a native worker does.
 pub(super) fn location() -> Option<Url> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(test),
+        not(feature = "hosted-writer")
+    ))]
     {
         // The directory the service worker serves the library from.
         let origin = super::repository::worker_origin()?;
         Url::parse(&format!("{origin}/library/")).ok()
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(test),
+        not(feature = "hosted-writer")
+    )))]
     {
         Url::parse(tonk_library::ROOT).ok()
     }
@@ -53,6 +64,13 @@ pub(super) struct Library {
 impl Library {
     fn new(root: Url) -> Self {
         Self { root }
+    }
+
+    /// The served asset path used in existing browser seed versions, even
+    /// when this copy was loaded from the bundled library.
+    fn version_path(&self, uri: &Url) -> Option<String> {
+        let relative = uri.path().strip_prefix(self.root.path())?;
+        Some(format!("/library/{relative}"))
     }
 
     fn contains(&self, uri: &Url) -> bool {
@@ -72,14 +90,24 @@ impl Load for Library {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(test),
+    not(feature = "hosted-writer")
+))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     super::repository::fetch_library_bytes(uri.path())
         .await
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(test),
+    not(feature = "hosted-writer")
+)))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
 }
@@ -116,6 +144,76 @@ pub(super) async fn parse(text: &str) -> Result<Syntax, TonkWorkerError> {
     Ok(syntax)
 }
 
+/// The version a library document is recorded under when installed:
+/// `seed:` and blake3 of its text and, when it includes files, of each
+/// file it includes, path and bytes, so a change to an included file
+/// moves the version as a change to the document does and a space
+/// upgrades to it. A document that includes nothing, or one with no
+/// location to include from, keeps the version of its text alone, which
+/// is what every release recorded before included files counted.
+///
+/// The hash is the identity, so two devices installing the same seed derive
+/// the same entity and converge. It is taken over what was fetched rather
+/// than read from a build manifest, so it cannot disagree with the bytes
+/// that were installed. The source it came from rides
+/// `xyz.tonk.seed/source` alongside, since a custom seed is a different URL
+/// at the same shape.
+pub(super) async fn version(text: &str) -> String {
+    let alone = || format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+    let Some(root) = location() else {
+        return alone();
+    };
+    let parsed = parse_at(root.clone(), text);
+    let Some(mut syntax) = parsed.syntax else {
+        return alone();
+    };
+    let recording = Recording {
+        library: Library::new(root),
+        read: std::sync::Mutex::new(Vec::new()),
+    };
+    // A file that fails to load is left out here and refused by the
+    // install, which reads the same files.
+    let _ = expand(&mut syntax, &recording).await;
+    let mut read = recording
+        .read
+        .into_inner()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if read.is_empty() {
+        return alone();
+    }
+    read.sort();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(text.as_bytes());
+    for (path, bytes) in &read {
+        hasher.update(&(path.len() as u64).to_be_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    }
+    format!("seed:{}", hasher.finalize().to_hex())
+}
+
+/// A [`Library`] loader that keeps what it read, path and bytes.
+struct Recording {
+    library: Library,
+    read: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl Load for Recording {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        let bytes = self.library.load(uri).await?;
+        let path = self
+            .library
+            .version_path(uri)
+            .ok_or_else(|| format!("included file {uri} has no library-relative path"))?;
+        self.read
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((path, bytes.clone()));
+        Ok(bytes)
+    }
+}
+
 fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
     if let Some(first) = parsed.diagnostics.first() {
         return Err(TonkWorkerError::Internal(format!(
@@ -136,13 +234,15 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
 /// profile branch). Only these, and the [`LANGUAGES`]: a component names a
 /// library file by its name, so the list is what keeps an install to the
 /// library.
-pub(super) const COMPONENTS: [&str; 7] = [
+pub(super) const COMPONENTS: [&str; 9] = [
     "code-editor",
     "issue",
     "meta",
     "notebook",
     "prose-editor",
     "table",
+    "tasks",
+    "tree-inspector",
     "version-control",
 ];
 
@@ -193,22 +293,70 @@ pub(super) fn component_url(component: &str) -> Option<String> {
 impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::InstallComponent) {
-        let component = command.component.0.to_string();
+    async fn execute(
+        &self,
+        command: tonk_schema::command::InstallComponent,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+        let entity = command.component.0;
+        let component = entity.to_string();
         let Some(source) = component_url(&component) else {
             tonk_common::log!("library/install: '{component}' is not a library component");
-            return;
+            return Err(Failure::new(format!(
+                "{component} is not a library component"
+            )));
         };
         let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
         let tonk = self.state().read().await;
         match super::repository::install_component(&tonk, &repo, &branch, &source).await {
-            Ok(true) => tonk_common::log!("library/install: {source} installed in {repo}"),
-            Ok(false) => tonk_common::log!("library/install: {source} is current in {repo}"),
+            Ok(true) => {
+                tonk_common::log!("library/install: {source} installed in {repo}");
+                Done::with(entity)
+            }
+            // Already current: the space has what was asked for.
+            Ok(false) => {
+                tonk_common::log!("library/install: {source} is current in {repo}");
+                Done::with(entity)
+            }
             Err(error) => {
-                tonk_common::log!("library/install: {source} into {repo} failed: {error}")
+                tonk_common::log!("library/install: {source} into {repo} failed: {error}");
+                Err(Failure::new(format!(
+                    "installing {component} failed: {error}"
+                )))
             }
         }
     }
+}
+
+/// `library` with each `key: !include/text ./path` field replaced by a
+/// block scalar of the bundled file it names, for tests that send a library
+/// document as plain notation, which has no location to include from.
+#[cfg(test)]
+pub(crate) fn inline_includes(library: &str) -> String {
+    let mut out = String::new();
+    for line in library.lines() {
+        let Some((key, path)) = line.split_once(": !include/text ") else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let indent = key.len() - key.trim_start().len() + 2;
+        let uri = tonk_library::location(path.trim().trim_start_matches("./"));
+        let text = tonk_library::Bundled
+            .get(&uri)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or_else(|| panic!("{path} is bundled"));
+        out.push_str(key);
+        out.push_str(": |\n");
+        for content in text.lines() {
+            if !content.is_empty() {
+                out.push_str(&" ".repeat(indent));
+                out.push_str(content);
+            }
+            out.push('\n');
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -220,6 +368,26 @@ mod tests {
 
     fn library() -> Library {
         Library::new(Url::parse("https://tonk.test/library/").unwrap())
+    }
+
+    /// A document that includes nothing keeps the version of its text, the
+    /// one every space recorded before included files counted, so it is
+    /// not reinstalled. One that includes files is versioned over them
+    /// too, so an edit to an included file alone reaches the spaces that
+    /// installed it.
+    #[dialog_common::test]
+    async fn it_versions_a_document_over_what_it_includes() {
+        let alone = |text: &str| format!("seed:{}", blake3::hash(text.as_bytes()).to_hex());
+        let plain = "concept!: &a\n  description: A.\n";
+        assert_eq!(version(plain).await, alone(plain));
+
+        let component = include_str!("../../../tonk-core/assets/library/tree-inspector.yaml");
+        assert_ne!(
+            version(component).await,
+            alone(component),
+            "the included methods are part of its version"
+        );
+        assert_eq!(version(component).await, version(component).await);
     }
 
     #[dialog_common::test]
@@ -253,6 +421,18 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn included_files_keep_the_served_version_path_on_every_host() {
+        for root in ["https://tonk.test/library/", "tonk-library:///"] {
+            let root = Url::parse(root).unwrap();
+            let included = root.join("./table/connected.js").unwrap();
+            assert_eq!(
+                Library::new(root).version_path(&included).as_deref(),
+                Some("/library/table/connected.js")
+            );
+        }
+    }
+
+    #[dialog_common::test]
     fn it_admits_files_inside_the_library() {
         let root = library();
         let base = Url::parse("https://tonk.test/library/table.yaml").unwrap();
@@ -275,6 +455,32 @@ mod tests {
                 "{reference} must not load"
             );
         }
+    }
+
+    /// Installing something that is not one of the library's components
+    /// is refused with an outcome naming it, before anything is fetched or
+    /// written.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_refuses_to_install_what_is_not_a_library_component() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, crate::router::CommandOrigin::default());
+        let command = tonk_schema::command::InstallComponent {
+            this: "id:install".parse().unwrap(),
+            component: tonk_schema::domain::command::current::install_component::Component(
+                "tonk:library/core".parse().unwrap(),
+            ),
+            time: tonk_schema::domain::command::current::install_component::Time(0.0),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::InstallComponent>::execute(
+                &env, command,
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not a library component")),
+            "{outcome:?}"
+        );
     }
 
     /// Natively the library is the bundled copy: a library body parses

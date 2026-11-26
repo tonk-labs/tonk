@@ -250,6 +250,17 @@ pub trait Store {
         kind: SubscriptionKind,
     ) -> Result<bool, StoreError>;
 
+    /// Atomically provision a new space with the owner's sealed handoff.
+    async fn add_created_space(
+        &self,
+        consumer: &str,
+        owner: &str,
+        now: u64,
+        grant: &str,
+    ) -> Result<bool, StoreError>;
+    /// Handoffs recoverable by this account.
+    async fn created_spaces(&self, owner: &str) -> Result<Vec<String>, StoreError>;
+
     /// Record a suspension against one subscription, replacing any that
     /// stands. Answers false when no live subscription matched.
     async fn suspend_subscription(
@@ -462,6 +473,14 @@ WHERE subscription.deleted_at IS NULL
        OR (subscription.expires_at IS NOT NULL
            AND subscription.expires_at <= excluded.registered_at))
 "#;
+
+pub const ADD_CREATED_SPACE: &str = r#"
+INSERT INTO subscription (consumer, provider, registered_at, kind, creation_grant)
+SELECT ?1, ?2, ?3, 'space', ?4 WHERE EXISTS
+(SELECT 1 FROM customer WHERE account = ?2 AND status = 'Active')
+ON CONFLICT (consumer) DO NOTHING
+"#;
+pub const CREATED_SPACES: &str = "SELECT creation_grant FROM subscription WHERE provider = ?1 AND creation_grant IS NOT NULL AND deleted_at IS NULL ORDER BY consumer";
 
 pub const UPDATE_REGISTERED_EMAIL: &str = r#"
 UPDATE customer SET email = ?2 WHERE account = ?1 AND status = 'Registered'

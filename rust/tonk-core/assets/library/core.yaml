@@ -797,6 +797,35 @@ concept!: &member
       the: xyz.tonk.membership/name
       as: text
 
+# When an invitation was minted. ENTITY: the invitation (`tonk_schema::
+# Invitation`), the same entity its `xyz.tonk.invitation-execution/kind`
+# rides on. Kept apart from that record so invitations minted before mint
+# times were recorded still read; they have no row here.
+concept!: &invitation/minted
+  this: tonk:invitation/minted
+  description: When an invitation to this space was minted.
+  with:
+    minted-at:
+      description: >
+        Unix milliseconds at mint. A space's links list oldest first, so
+        its first open link (its default) stays first as newer ones are made.
+      the: xyz.tonk.invitation-execution/minted-at
+      as: natural:64
+
+# Where an invitation that replaced another lists. ENTITY: the invitation,
+# as for `tonk:invitation/minted`. A reset default passlink takes the place
+# of the one it replaced, so it stays its space's default.
+concept!: &invitation/listed
+  this: tonk:invitation/listed
+  description: Where an invitation that replaced another lists among its space's links.
+  with:
+    listed-at:
+      description: >
+        Unix milliseconds: the place (listed-at, else minted-at) of the
+        link this one replaced. A list orders by it before minted-at.
+      the: xyz.tonk.invitation-execution/listed-at
+      as: natural:64
+
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: the member's display name
 # (with the DID tail beneath as a fallback id), and a role badge.
@@ -2042,7 +2071,7 @@ concept!: &directory/route
       as: text
 
 # The directory display carries its own `with` so its view's content
-# (`<tonk-tree>`, `<tonk-inspector>`) resolves the route's target space —
+# (`<tonk-inspector>`) resolves the route's target space —
 # `<tonk-display>` forwards this context onto the view it mounts, so no
 # routing wrapper element is needed.
 view!:
@@ -2144,35 +2173,6 @@ seed/route!:
 seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
-
-# ============================================================
-# Tree inspector — `<tonk-tree>` over the branch's search-tree
-# index. Visit `/space/{repo}/dialog:diagnose` to explore the
-# dialog-search-tree state under the DB: index/segment nodes,
-# their keys (color-coded components, shared prefixes dimmed),
-# byte sizes, and entries. The view renders `<tonk-tree>`, which
-# resolves its repository from the `with` routing
-# ancestor and drives itself from the worker's `tree/*` query
-# formulas — no entity needed (it inspects the whole branch).
-# ============================================================
-concept!: &diagnose
-  this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
-  with:
-    name:
-      description: A label for the inspector (unused; satisfies the concept shape).
-      the: db.diagnose/name
-      as: text
-
-# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
-# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
-# branch's tree — so the directory view is the right kind.
-view!:
-  this: dialog:diagnose
-  show:
-    directory: |
-      <tonk-tree></tonk-tree>
 
 # ============================================================
 # BLOB
@@ -2904,7 +2904,7 @@ view!:
 
 # The library's components a space can install, each beside the others
 # and beside the space's seed: code-editor, issue, meta, notebook,
-# prose-editor, table, version-control (every library file but `core.yaml`,
+# prose-editor, table, tasks, tree-inspector, version-control (every library file but `core.yaml`,
 # which every space runs, and `profile.yaml`, the profile's). The
 # <code-editor> languages are components too, `language/<id>`, listed by
 # code-editor.yaml once it is installed. An install is recorded like the seed's and brought up to
@@ -2947,6 +2947,14 @@ library/component!:
 library/component!:
   this: tonk:library/table
   name: "table"
+
+library/component!:
+  this: tonk:library/tree-inspector
+  name: "tree-inspector"
+
+library/component!:
+  this: tonk:library/tasks
+  name: "tasks"
 
 library/component!:
   this: tonk:library/version-control
@@ -2994,3 +3002,230 @@ rule!:
 # `tonk/rename-repository` has no verb here: the profile's own rename
 # (`rename space`, the FABB's) says the same thing, and the palette reads
 # both branches, so a verb here would offer every rename twice.
+
+# invocation-schema:begin
+#
+# Invocations: what became of a command someone ran. Declared identically
+# in `core.yaml` and `profile.yaml`, because a command lands on the branch
+# it was sent to, a space's or the profile's. `rust/tonk-schema/src/
+# invocation.rs` follows this.
+#
+# A command lands in its stack's `control:` layer for one tick, and dialog
+# writes each change in its life there as a `dialog.command/*` row of the
+# command's entity, again for one tick: `answered`, `failed` or
+# `unhandled` once the providers ran, and `progress` when a provider
+# reports some. Nothing keeps them. An invoker that wants to follow a
+# command (the command palette) gives it an entity of its own and stamps
+# it with `xyz.tonk.command/invoked-at` and `xyz.tonk.command/concept`; the
+# rules below copy that command's life into the stack's `session:` layer,
+# where it stays for the session. Never committed, never synced.
+
+# What a followed command carries as it lands: when it was run and which
+# command it is.
+concept!: &command/invoked
+  this: tonk:command/invoked
+  description: A followed command as it lands, in `control:` for one tick.
+  with:
+    at:
+      description: When the invoker ran it, in milliseconds since the epoch, by its own clock.
+      the: xyz.tonk.command/invoked-at
+      as: float:64
+    concept:
+      description: The concept of the command that was run.
+      the: xyz.tonk.command/concept
+      as: entity
+
+# dialog's rows for a command's life, each in `control:` for one tick.
+concept!: &command/answered
+  this: tonk:command/answered
+  description: A provider answered the command; dialog's row, for one tick.
+  with:
+    by:
+      description: The concept whose provider answered it.
+      the: dialog.command/answered
+      as: entity
+      pick: :all
+
+concept!: &command/failed
+  this: tonk:command/failed
+  description: A provider failed the command; dialog's row, for one tick.
+  with:
+    reason:
+      description: Why it failed, in the provider's words.
+      the: dialog.command/failed
+      as: text
+      pick: :all
+
+concept!: &command/unhandled
+  this: tonk:command/unhandled
+  description: No provider claimed the command; dialog's row, for one tick.
+  with:
+    unhandled:
+      description: Always true.
+      the: dialog.command/unhandled
+      as: boolean
+
+concept!: &command/progress
+  this: tonk:command/progress
+  description: A provider said what the command is doing; dialog's row, for one tick.
+  with:
+    state:
+      description: The state it is in, an entity with a `status`.
+      the: dialog.command/progress
+      as: entity
+
+# The invocation: the followed command's life, kept in `session:`.
+concept!: &invocation
+  this: tonk:invocation
+  description: |
+    A command someone ran and follows, on the command's own entity, kept
+    in the stack's `session:` layer for the session.
+  with:
+    invoked:
+      description: When the invoker ran it, in milliseconds since the epoch.
+      the: xyz.tonk.invocation/invoked
+      as: float:64
+      in: "session:"
+    of:
+      description: The concept of the command that was run, whose `status` view renders it.
+      the: xyz.tonk.invocation/of
+      as: entity
+      in: "session:"
+
+concept!: &invocation/answered
+  this: tonk:invocation/answered
+  description: The invocation's command was answered.
+  with:
+    answered:
+      description: The concept whose provider answered it.
+      the: xyz.tonk.invocation/answered
+      as: entity
+      in: "session:"
+
+concept!: &invocation/failed
+  this: tonk:invocation/failed
+  description: The invocation's command failed.
+  with:
+    failed:
+      description: Why it failed, in words a person can be shown.
+      the: xyz.tonk.invocation/failed
+      as: text
+      in: "session:"
+
+concept!: &invocation/unhandled
+  this: tonk:invocation/unhandled
+  description: |
+    No provider claimed the invocation's command. A command a rule handled
+    as it landed is unhandled too, as dialog sees it, and has an `output`
+    its rule wrote.
+  with:
+    unhandled:
+      description: Always true.
+      the: xyz.tonk.invocation/unhandled
+      as: boolean
+      in: "session:"
+
+concept!: &invocation/state
+  this: tonk:invocation/state
+  description: What the invocation's command is doing, as its provider last said.
+  with:
+    state:
+      description: A state entity with a `status`.
+      the: xyz.tonk.invocation/state
+      as: entity
+      in: "session:"
+
+concept!: &invocation/output
+  this: tonk:invocation/output
+  description: What the invocation's command produced, written by its provider or the rule that handled it.
+  with:
+    output:
+      description: The entity the command made or acted on.
+      the: xyz.tonk.invocation/output
+      as: entity
+      in: "session:"
+
+concept!: &state
+  this: tonk:state
+  description: |
+    Something a command can be doing, and the words for it: a provider's
+    progress, such as `status:creating-space`. Kept in `session:`.
+  with:
+    status:
+      description: What it is, in words a person can be shown.
+      the: xyz.tonk.state/status
+      as: text
+      in: "session:"
+
+view!:
+  this: tonk:state
+  show:
+    label: |
+      {status}
+
+concept!: &state/reported
+  this: tonk:state/reported
+  description: |
+    The words a provider gave for a state as it reported it, in
+    `control:` for one tick beside the command's `progress`.
+  with:
+    reported:
+      description: What the state is, in words a person can be shown.
+      the: xyz.tonk.state/reported
+      as: text
+
+rule!:
+  description: A followed command that lands starts its invocation.
+  assert!: invocation
+  when:
+    - assert: command/invoked
+      where: { this: ?this, at: ?invoked, concept: ?of }
+
+rule!:
+  description: A followed command a provider answered says so.
+  assert!: invocation/answered
+  when:
+    - assert: command/answered
+      where: { this: ?this, by: ?answered }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command a provider failed says why.
+  assert!: invocation/failed
+  when:
+    - assert: command/failed
+      where: { this: ?this, reason: ?failed }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command no provider claimed says so.
+  assert!: invocation/unhandled
+  when:
+    - assert: command/unhandled
+      where: { this: ?this, unhandled: ?unhandled }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A followed command keeps the state its provider last reported.
+  assert!: invocation/state
+  when:
+    - assert: command/progress
+      where: { this: ?this, state: ?state }
+    - assert: invocation
+      where: { this: ?this, invoked: ?invoked, of: ?of }
+
+rule!:
+  description: A state a provider reported keeps its words for the session.
+  assert!: state
+  when:
+    - assert: state/reported
+      where: { this: ?this, reported: ?status }
+
+# A command's `status` view, when it declares one, renders its invocation
+# (`view!: this: <command>` with `show: status:`). Whoever lists
+# invocations draws the generic line from the rows above.
+
+# invocation-schema:end

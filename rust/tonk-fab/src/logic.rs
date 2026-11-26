@@ -1814,13 +1814,20 @@ mod member_roster {
 /// Reads the PROFILE branch's account-level space directory by raw attribute.
 /// Directory mode (`this` unbound), so every convergent space entry returns as
 /// a row. `name` is optional for vintage entries that predate the mirror;
-/// `presence` is optional because its absence IS the remote case.
+/// `presence` is optional because its absence IS the remote case, and reads
+/// the best case any rule derives, as the profile's `space/presence` field
+/// does: `top` over the cases the library lists best first.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
             "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
             "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
-            "presence": { "the": "xyz.tonk.space/presence", "as": "Entity", "cardinality": "one", "optional": true }
+            "presence": {
+                "the": "xyz.tonk.space/presence",
+                "as": ["case:seeding", "case:replicating", "case:replicated", "case:remote"],
+                "pick": "top",
+                "optional": true
+            }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
@@ -2811,6 +2818,11 @@ mod wire_types {
 
         for body in &bodies {
             for found in body.split("\"as\":").skip(1) {
+                // A list is the cases an enumerated type lists, not a
+                // type's name: what a ranked read (`pick: top`) reads.
+                if found.trim_start().starts_with('[') {
+                    continue;
+                }
                 let variant = found
                     .trim_start()
                     .trim_start_matches('"')

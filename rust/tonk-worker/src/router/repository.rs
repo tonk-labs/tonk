@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_handler_macros::wasm_compat;
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
@@ -400,11 +401,28 @@ fn seed_from_facts(facts: &[dialog_corpus::Fact]) -> Option<String> {
 /// Read from the raw facts rather than declared on [`CreateSpace`] for
 /// the same reason the remote is: the command is matched name-only, so a
 /// declared field would make every create that omits it fail to decode.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
 
+/// Whether the create asked, explicitly, to stay where it is: an `open`
+/// field that says no. A create that carries no `open` field still lands
+/// its creator in the new space, as every create did before the hub's
+/// inline row asked to stay.
+fn stays_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
+    use dialog_corpus::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
+        .is_some_and(|artifact| match &artifact.is {
+            Value::Boolean(open) => !*open,
+            Value::String(text) => matches!(text.trim(), "false" | "0"),
+            Value::Entity(uri) => uri.to_string() == "case:false",
+            _ => false,
+        })
+}
+
 /// Whether the create should navigate the caller into the new space.
-#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+#[cfg(test)]
 fn open_from_facts(facts: &[dialog_corpus::Fact]) -> bool {
     use dialog_corpus::Value;
 
@@ -586,6 +604,8 @@ pub(crate) struct CreateSpaceRequest {
     template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
+    /// The create asked to stay where it is rather than open the space.
+    stay: bool,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -623,13 +643,14 @@ impl crate::reactor::Decode for CreateSpaceRequest {
                     dialog_corpus::Value::Entity(value) => value.to_string(),
                     _ => String::new(),
                 }),
+            stay: stays_from_facts(facts),
         })
     }
 }
 
 impl dialog_capability::Command for CreateSpaceRequest {
     type Input = Self;
-    type Output = ();
+    type Output = tonk_schema::invocation::Outcome;
 }
 
 /// Run the "New space" form (`space/create`).
@@ -652,12 +673,21 @@ impl dialog_capability::Command for CreateSpaceRequest {
 /// fresh space as a side effect) is refused rather than trusted.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandEnv {
-    async fn execute(&self, request: CreateSpaceRequest) {
+    async fn execute(&self, request: CreateSpaceRequest) -> Outcome {
         execute_create_space(self.clone(), request).await
     }
 }
 
-async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpaceRequest) {
+/// A progress state entity a provider names by URI, such as
+/// `status:creating-space`.
+fn progress(uri: &str) -> dialog_corpus::Entity {
+    uri.parse().expect("a progress state is a valid entity URI")
+}
+
+async fn execute_create_space(
+    env: crate::router::CommandEnv,
+    request: CreateSpaceRequest,
+) -> Outcome {
     let receipt = request.command.this.clone();
     let name = request.command.name.0;
     let remote = request.remote;
@@ -668,7 +698,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                  a space cannot mint spaces",
             env.origin().repo
         );
-        return;
+        return Err(Failure::new(
+            "spaces can only be created from the profile, not from inside a space",
+        ));
     }
 
     // The create wizard no longer asks for a name: its hidden
@@ -699,7 +731,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
             "Choose either a template, seed, or duplicate source.",
         )
         .await;
-        return;
+        return Err(Failure::new(
+            "Choose either a template, seed, or duplicate source.",
+        ));
     }
     let seed = match request.template.as_ref().or(request.seed.as_ref()) {
         None => None,
@@ -719,7 +753,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                     &format!("Couldn't use those definitions: {error}"),
                 )
                 .await;
-                return;
+                return Err(Failure::new(format!(
+                    "Couldn't use those definitions: {error}"
+                )));
             }
         },
     };
@@ -746,7 +782,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                         &format!("Couldn't copy this space: {error}"),
                     )
                     .await;
-                    return;
+                    return Err(Failure::new(format!("Couldn't copy this space: {error}")));
                 }
             }
         }
@@ -757,6 +793,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
+    env.task()
+        .status(progress("status:creating-space"), "Creating the space")
+        .await;
     let created = match copy {
         Some(copy) => duplication::create(env.state(), &name, copy).await,
         None => create_space_inner(env.state(), &name, description.as_deref()).await,
@@ -772,7 +811,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                 "Couldn't finish creating the space. Check your spaces before trying again.",
             )
             .await;
-            return;
+            return Err(Failure::new(
+                "Couldn't finish creating the space. Check your spaces before trying again.",
+            ));
         }
     };
 
@@ -797,7 +838,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                 &format!("The space was created, but its definitions couldn't be added: {error}"),
             )
             .await;
-            return;
+            return Err(Failure::new(format!(
+                "The space was created, but its definitions couldn't be added: {error}"
+            )));
         }
     }
 
@@ -816,7 +859,9 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    doesn't wait on the network; the attach continues in the
     //    worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
+    if !request.stay {
+        crate::router::navigate::notify_navigate(env.client(), &href);
+    }
     report_space_creation(env.state(), &receipt, "created", &href).await;
     // Navigation must not wait for every Hub subscription to re-query.
     // The seed and initialized status are already committed at this point.
@@ -858,10 +903,25 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
             }
         }
     };
+    let space = key.parse::<dialog_corpus::Entity>().ok();
+    if remote.is_some() {
+        env.task()
+            .status(progress("status:connecting-sync"), "Connecting it to sync")
+            .await;
+    }
     if let Some(remote) = remote
         && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
+        // The space is there and works locally; what failed is the sync
+        // that was asked for or defaulted, so the outcome says that much.
+        return Err(Failure::new(
+            "The space was created, but sync couldn't be set up. Turn it on from the space.",
+        ));
+    }
+    match space {
+        Some(space) => Done::with(space),
+        None => Done::nothing(),
     }
 }
 
@@ -1054,7 +1114,7 @@ impl crate::reactor::Decode for InviteRequest {
 
 impl dialog_capability::Command for InviteRequest {
     type Input = Self;
-    type Output = ();
+    type Output = tonk_schema::invocation::Outcome;
 }
 
 /// Run the [`Invite`] command.
@@ -1079,12 +1139,12 @@ impl dialog_capability::Command for InviteRequest {
 /// [`Credential`]: tonk_schema::command::Credential
 #[dialog_capability::provider]
 impl dialog_capability::Provider<InviteRequest> for crate::router::CommandEnv {
-    async fn execute(&self, request: InviteRequest) {
+    async fn execute(&self, request: InviteRequest) -> Outcome {
         execute_invite(self.clone(), request).await
     }
 }
 
-async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) {
+async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) -> Outcome {
     use tonk_schema::prelude::DidExt as _;
 
     let repo_name = request
@@ -1099,7 +1159,7 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
 
     if repo_name.is_empty() {
         log!("Invite: no target space (no fact, empty origin), skipping");
-        return;
+        return Err(Failure::new("there is no space to share"));
     }
     if !env.may_target_space(&repo_name) {
         log!(
@@ -1107,7 +1167,9 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
             env.origin().repo,
             repo_name
         );
-        return;
+        return Err(Failure::new(
+            "a space can only share itself, not another space",
+        ));
     }
     log!("command Invite repo={}", repo_name);
 
@@ -1115,18 +1177,32 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
     // unminted, so run once more. Bounded to a single retry: the
     // second pass either mints or refuses for a reason attaching
     // cannot fix.
-    let outcome = run_invite(&env, &repo_name, time).await;
-    if let Ok(RunInvite::Attached) = outcome
-        && let Err(error) = run_invite(&env, &repo_name, time).await
-    {
-        log!(
-            "Invite for repo '{}' failed after attaching: {}",
-            repo_name,
-            error
-        );
-    }
-    if let Err(error) = outcome {
-        log!("Invite for repo '{}' failed: {}", repo_name, error);
+    let outcome = match run_invite(&env, &repo_name, time).await {
+        Ok(RunInvite::Attached) => match run_invite(&env, &repo_name, time).await {
+            Err(error) => {
+                log!(
+                    "Invite for repo '{}' failed after attaching: {}",
+                    repo_name,
+                    error
+                );
+                Err(error)
+            }
+            settled => settled,
+        },
+        Err(error) => {
+            log!("Invite for repo '{}' failed: {}", repo_name, error);
+            Err(error)
+        }
+        settled => settled,
+    };
+    match outcome {
+        Ok(RunInvite::Minted(space)) => Done::with(space),
+        Ok(RunInvite::Refused(reason)) => Err(Failure::new(reason)),
+        // A second pass that attached again: nothing was minted.
+        Ok(RunInvite::Attached) => Err(Failure::new(
+            "sync was set up for the space, but no invite was made yet",
+        )),
+        Err(error) => Err(Failure::new(format!("couldn't make an invite: {error}"))),
     }
 }
 
@@ -1200,13 +1276,13 @@ impl crate::reactor::Decode for AgentHandoffRequest {
 
 impl dialog_capability::Command for AgentHandoffRequest {
     type Input = Self;
-    type Output = ();
+    type Output = tonk_schema::invocation::Outcome;
 }
 
 /// Mint an account-scoped handoff for the originating space.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::CommandEnv {
-    async fn execute(&self, request: AgentHandoffRequest) {
+    async fn execute(&self, request: AgentHandoffRequest) -> Outcome {
         let repo = request
             .space
             .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
@@ -1218,11 +1294,68 @@ impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::Command
                 self.origin().repo,
                 repo
             );
-            return;
+            return Err(Failure::new(
+                "a space can only connect tools to itself, not to another space",
+            ));
         }
         if let Err(error) = run_agent_handoff(self, request.fresh, &repo).await {
             log!("agent handoff failed: {error}");
+            return Err(Failure::new(format!(
+                "couldn't make a tool connection invite: {error}"
+            )));
         }
+        // A handoff that could not be made still finishes `Ok`, having
+        // published why in its state row, so the outcome is read from there.
+        agent_handoff_outcome(self, &repo).await
+    }
+}
+
+/// What the handoff state just published for `repo` says came of it: done
+/// when its status is `ready`, else a failure carrying that status, which is
+/// written for a person to read. The link is never part of the outcome.
+async fn agent_handoff_outcome(env: &crate::router::CommandEnv, repo: &str) -> Outcome {
+    let Ok(subject) = repo.parse::<Did>() else {
+        return Err(Failure::new("the space's identity is not a DID"));
+    };
+    let tonk = env.state().read().await;
+    let branch = match tonk
+        .reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            return Err(Failure::new(format!(
+                "couldn't read the tool connection state: {error}"
+            )));
+        }
+    };
+    let rows: Vec<tonk_schema::command::AgentHandoffState> = match branch
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::command::AgentHandoffState> {
+            this: Term::from(subject.this()),
+            status: Term::var("status"),
+            link: Term::var("link"),
+            account: Term::var("account"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            return Err(Failure::new(format!(
+                "couldn't read the tool connection state: {error}"
+            )));
+        }
+    };
+    match rows.into_iter().next() {
+        Some(state) if state.status.0 == "ready" => Done::with(subject.this()),
+        Some(state) => Err(Failure::new(state.status.0)),
+        None => Err(Failure::new("no tool connection invite was made")),
     }
 }
 
@@ -1842,11 +1975,96 @@ mod connection_invite_disabled_tests {
         );
         assert!(rows[0].link.0.is_empty());
     }
+
+    /// Through the provider, the disabled build's refusal is the command's
+    /// outcome, not a success, even though the handoff ran to completion.
+    #[dialog_common::test]
+    async fn disabled_build_reports_the_refusal_as_the_outcome() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Disabled tool connection", None)
+            .await
+            .unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let outcome = dialog_capability::Provider::<AgentHandoffRequest>::execute(
+            &env,
+            AgentHandoffRequest {
+                fresh: true,
+                space: None,
+            },
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not enabled")),
+            "{outcome:?}"
+        );
+    }
+
+    /// A space's branch cannot ask for a tool connection to another space:
+    /// the outcome is the containment refusal, and no handoff state is
+    /// published on either space.
+    #[dialog_common::test]
+    async fn it_refuses_a_handoff_for_another_space() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let asking = create_space_inner(&state, "Asking", None).await.unwrap();
+        let target = create_space_inner(&state, "Target", None).await.unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: asking.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let outcome = dialog_capability::Provider::<AgentHandoffRequest>::execute(
+            &env,
+            AgentHandoffRequest {
+                fresh: true,
+                space: Some(target.clone()),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not to another space")),
+            "{outcome:?}"
+        );
+
+        let tonk = state.read().await;
+        for repo in [&asking, &target] {
+            let branch = tonk
+                .reactor
+                .repository(repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::command::AgentHandoffState> {
+                    this: Term::var("this"),
+                    status: Term::var("status"),
+                    link: Term::var("link"),
+                    account: Term::var("account"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            assert!(rows.is_empty(), "a refused handoff must publish nothing");
+        }
+    }
 }
 
 impl dialog_capability::Command for EnableSyncRequest {
     type Input = Self;
-    type Output = ();
+    type Output = tonk_schema::invocation::Outcome;
 }
 
 /// Run the `tonk:enable-sync` command: attach a sync remote to an
@@ -1864,12 +2082,15 @@ impl dialog_capability::Command for EnableSyncRequest {
 /// and [`require_real_space`].
 #[dialog_capability::provider]
 impl dialog_capability::Provider<EnableSyncRequest> for crate::router::CommandEnv {
-    async fn execute(&self, request: EnableSyncRequest) {
+    async fn execute(&self, request: EnableSyncRequest) -> Outcome {
         execute_enable_sync(self.clone(), request).await
     }
 }
 
-async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSyncRequest) {
+async fn execute_enable_sync(
+    env: crate::router::CommandEnv,
+    request: EnableSyncRequest,
+) -> Outcome {
     use dialog_corpus::Entity;
     use tonk_schema::prelude::DidExt as _;
 
@@ -1877,7 +2098,7 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
     let share = request.share;
     let Some(space) = request.space else {
         log!("EnableSync: missing space, skipping");
-        return;
+        return Err(Failure::new("no space was named to sync"));
     };
     // An absent remote means "wherever this account syncs" — the
     // page no longer derives an endpoint from its own origin,
@@ -1893,14 +2114,16 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
                 Some(remote) => remote,
                 None => {
                     log!("EnableSync: no remote given and the account names no provider");
-                    return;
+                    return Err(Failure::new(
+                        "no sync service was given and this account has none",
+                    ));
                 }
             }
         }
     };
     let Ok(did) = space.parse::<dialog_varsig::Did>() else {
         log!("EnableSync: '{}' is not a DID", space);
-        return;
+        return Err(Failure::new(format!("{space} is not a space's identity")));
     };
     let key = did.repo_key().to_owned();
     if !env.may_target_space(&key) {
@@ -1909,7 +2132,9 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
             env.origin().repo,
             key
         );
-        return;
+        return Err(Failure::new(
+            "a space can only turn on sync for itself, not another space",
+        ));
     }
     {
         // Only a real user space takes a remote from this command —
@@ -1917,7 +2142,9 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
         let tonk = env.state().read().await;
         if let Err(error) = require_real_space(&tonk, &did).await {
             log!("EnableSync '{}' refused: {}", key, error);
-            return;
+            return Err(Failure::new(format!(
+                "sync can't be turned on here: {error}"
+            )));
         }
     }
     log!("command EnableSync repo={} share={}", key, share);
@@ -1929,7 +2156,7 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
                 Ok(entity) => entity,
                 Err(e) => {
                     log!("EnableSync: '{}' is not an entity: {}", space, e);
-                    return;
+                    return Err(Failure::new(format!("Could not turn on sync: {error}")));
                 }
             };
             publish_share_blocked(
@@ -1942,11 +2169,24 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
             )
             .await;
         }
-        return;
+        return Err(Failure::new(format!("Could not turn on sync: {error}")));
     }
 
-    if share && let Err(error) = run_invite(&env, &key, time).await {
-        log!("EnableSync '{}': mint after attach failed: {}", key, error);
+    if !share {
+        return Done::with(did.this());
+    }
+    match run_invite(&env, &key, time).await {
+        Ok(RunInvite::Minted(space)) => Done::with(space),
+        Ok(RunInvite::Refused(reason)) => Err(Failure::new(format!(
+            "Sync is on, but no invite was made: {reason}"
+        ))),
+        Ok(RunInvite::Attached) => Err(Failure::new("Sync is on, but no invite was made yet")),
+        Err(error) => {
+            log!("EnableSync '{}': mint after attach failed: {}", key, error);
+            Err(Failure::new(format!(
+                "Sync is on, but no invite was made: {error}"
+            )))
+        }
     }
 }
 
@@ -1959,12 +2199,15 @@ async fn execute_enable_sync(env: crate::router::CommandEnv, request: EnableSync
 /// on the mint path, but threaded through so a refusal (see
 /// [`publish_share_blocked`]) can echo the click it answers.
 ///
-/// Split out from [`InviteHandler::run`] so the `?` early-return funnels
-/// into the single `log!` there — the command future itself returns `()`.
+/// Split out from the `Invite` provider so the `?` early-return funnels
+/// into the single `log!` there, which turns it into the command's outcome.
 /// What one pass of [`run_invite`] settled.
 enum RunInvite {
-    /// Minted, refused, or otherwise finished — nothing more to do.
-    Settled,
+    /// Minted an invite for the space, whose subject entity this is.
+    Minted(dialog_corpus::Entity),
+    /// Refused, with the reason a person can be shown. The share control
+    /// has already been told (see [`publish_share_blocked`]).
+    Refused(String),
     /// The space had no remote and one was just attached, so a second
     /// pass can now mint. Returned rather than recursing: re-entering
     /// an async fn from inside itself needs boxing for no gain.
@@ -2019,7 +2262,9 @@ async fn run_invite(
             time,
         )
         .await;
-        return Ok(RunInvite::Settled);
+        return Ok(RunInvite::Refused(
+            "Create an account or log in before sharing this space.".into(),
+        ));
     }
 
     // Resolve the sync endpoint BEFORE minting anything. An invite with no
@@ -2096,7 +2341,7 @@ async fn run_invite(
                 time,
             )
             .await;
-            return Ok(RunInvite::Settled);
+            return Ok(RunInvite::Refused(reason.detail().to_string()));
         }
     };
 
@@ -2141,7 +2386,9 @@ async fn run_invite(
                 time,
             )
             .await;
-            return Ok(RunInvite::Settled);
+            return Ok(RunInvite::Refused(format!(
+                "The sync service would not serve this space: {error}"
+            )));
         }
         Err(error) => {
             log!("Invite for repo '{repo_name}': provisioning skipped: {error}");
@@ -2298,7 +2545,7 @@ async fn run_invite(
     // use), so opening the Hub replicated the whole account. The state is
     // this device's view of a click it made; nothing about it needs the
     // space's branch. See `plan/share-intent.md`.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
     )
@@ -2362,7 +2609,7 @@ async fn run_invite(
     // its clipboard write on this one.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    Ok(RunInvite::Settled)
+    Ok(RunInvite::Minted(repository.did().this()))
 }
 
 /// Record why a share click could not mint, on the space's content-branch
@@ -2408,18 +2655,19 @@ async fn publish_share_blocked<'a>(
     use tonk_schema::command::ShareBlocked;
     use tonk_schema::domain::share;
 
+    let blocked = ShareBlocked {
+        this: subject.clone(),
+        blocked: share::Blocked(code.to_owned()),
+        detail: share::Detail(detail.to_owned()),
+        time: share::Time(time),
+    };
     let tonk = state.read().await;
     if let Err(error) = tonk
         .reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
         .overlay()
-        .assert(ShareBlocked {
-            this: subject.clone(),
-            blocked: share::Blocked(code.to_owned()),
-            detail: share::Detail(detail.to_owned()),
-            time: share::Time(time),
-        })
+        .assert(blocked.clone())
         .write()
         .perform(&tonk.operator)
         .await
@@ -2427,26 +2675,34 @@ async fn publish_share_blocked<'a>(
         log!("failed to publish share refusal for '{repo_name}': {error}");
     }
 
+    // The share control reads profile main, not the space: every
+    // subscription on one element shares the element's routing
+    // context, and the control's is profile main (see `PROFILE_WITH`
+    // in tonk-fab's share). A refusal only on the space never reached
+    // it, so every refused click waited out the control's timeout.
+    publish_share_fact(&tonk, blocked).await;
+
     // The same refusal in the shape the share control subscribes to, on
     // profile main for the reason the grant is. Only a terminal reason
     // becomes a terminal status: a refusal the user can repair (no
     // account yet, no remote yet) leaves the request open, because the
     // click has not finished failing — it is waiting on something.
-    publish_invite_state(
+    publish_share_fact(
         &tonk,
         tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
     )
     .await;
 }
 
-/// Publish the share control's view of an invite onto PROFILE main's
-/// overlay, keyed on the space's subject.
+/// Publish the share control's view of an invite (its state, or the
+/// refusal that ends it) onto PROFILE main's overlay, keyed on the
+/// space's subject.
 ///
 /// Overlay because the url carries the membership seed in its fragment
 /// and must not reach storage, and because the row is a per-session view
 /// of one click rather than a durable record — the durable record of a
 /// minted invite is `Invitation`, on the space.
-async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::InviteState) {
+async fn publish_share_fact<S: dialog_corpus::Statement>(tonk: &TonkState, fact: S) {
     let main = match tonk
         .reactor
         .profile_repository()
@@ -2460,7 +2716,7 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
             return;
         }
     };
-    main.state.assert_overlay(state);
+    main.state.assert_overlay(fact);
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -2610,7 +2866,7 @@ fn with_referral(link: String, space_key: &str) -> String {
 /// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::PauseSync) {
+    async fn execute(&self, command: tonk_schema::command::PauseSync) -> Outcome {
         use tonk_schema::prelude::DidExt as _;
 
         // The repo key is the space DID's suffix; a space's content
@@ -2624,7 +2880,7 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
             .map(|did| did.repo_key().to_owned())
         else {
             log!("PauseSync: no/unparseable target space, skipping");
-            return;
+            return Err(Failure::new("the space to pause is not a space's identity"));
         };
         if !self.may_target_space(&repo) {
             log!(
@@ -2632,14 +2888,20 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
                 self.origin().repo,
                 repo
             );
-            return;
+            return Err(Failure::new(
+                "a space can only pause its own sync, not another space's",
+            ));
         }
         let branch = CONTENT_BRANCH.to_string();
         log!("command PauseSync repo={} branch={}", repo, branch);
 
         if let Err(error) = run_pause_sync(self, &repo, &branch).await {
             log!("PauseSync for repo '{}' failed: {}", repo, error);
+            return Err(Failure::new(format!(
+                "couldn't change whether the space syncs: {error}"
+            )));
         }
+        Done::with(command.space.0)
     }
 }
 
@@ -2664,12 +2926,13 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
 impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::ProfileRename) {
+    async fn execute(&self, command: tonk_schema::command::ProfileRename) -> Outcome {
         let name = command.name.0;
         let name = name.trim();
-        // Don't let a member blank their own name out.
+        // Don't let a member blank their own name out. Nothing was saved,
+        // so the outcome is a refusal rather than a quiet success.
         if name.is_empty() {
-            return;
+            return Err(Failure::new("a display name can't be blank"));
         }
         let key = self.origin().repo.clone();
         log!("command ProfileRename repo={} name={}", key, name);
@@ -2682,6 +2945,11 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
             }
         };
         report_profile_rename(self.state(), &command.this, status, detail).await;
+        if status == "failed" {
+            return Err(Failure::new(detail));
+        }
+        let profile = self.state().read().await.profile.did().this();
+        Done::with(profile)
     }
 }
 
@@ -2705,9 +2973,9 @@ pub(crate) fn profile_rename_failure_detail(error: &TonkWorkerError) -> &'static
 /// Persist the display-name override on the profile meta branch and
 /// re-stamp `MemberName` on every space's content branch.
 ///
-/// Split out from [`ProfileRenameHandler::run`] so the `?` early-return
-/// funnels into the single `log!` there — the command future itself
-/// returns `()`.
+/// Split out from the `ProfileRename` provider so the `?` early-return
+/// funnels into the single `log!` there, which turns it into the
+/// command's outcome.
 async fn run_profile_rename(
     env: &crate::router::CommandEnv,
     name: &str,
@@ -2773,7 +3041,7 @@ pub(crate) fn rename_outcome(result: Result<(), RepositoryError>) -> RenameOutco
 impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::RenameRepository) {
+    async fn execute(&self, command: tonk_schema::command::RenameRepository) -> Outcome {
         use tonk_schema::prelude::DidExt as _;
 
         const REFUSED: &str = "This space can't be renamed from here.";
@@ -2781,7 +3049,9 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
         let Ok(did) = command.space.0.to_string().parse::<dialog_varsig::Did>() else {
             log!("RenameRepository: unparseable target space, skipping");
             report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
-            return;
+            return Err(Failure::new(
+                "the space to rename is not a space's identity",
+            ));
         };
         // `repo_key()` is the FULL DID, not a suffix.
         let repo = did.repo_key().to_owned();
@@ -2792,7 +3062,9 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
                 repo
             );
             report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
-            return;
+            return Err(Failure::new(
+                "a space can only rename itself, not another space",
+            ));
         }
         {
             // Only a real user space is renameable from this command —
@@ -2802,25 +3074,29 @@ impl dialog_capability::Provider<tonk_schema::command::RenameRepository>
                 log!("RenameRepository '{}' refused: {}", repo, error);
                 drop(tonk);
                 report_repository_rename(self.state(), &command.this, "failed", REFUSED).await;
-                return;
+                return Err(Failure::new(format!(
+                    "this space can't be renamed: {error}"
+                )));
             }
         }
         log!("command RenameRepository repo={}", repo);
 
         let result = run_rename_repository(self, &repo, &command.name.0).await;
         let failure_detail = result.as_ref().err().map(ToString::to_string);
-        let (status, detail) = match rename_outcome(result) {
-            RenameOutcome::Renamed => ("renamed", "Space renamed."),
-            RenameOutcome::Failed => {
-                log!(
-                    "RenameRepository for repo '{}' failed: {}",
-                    repo,
-                    failure_detail.unwrap_or_default()
-                );
-                ("failed", "Couldn't rename this space. Try again.")
-            }
-        };
-        report_repository_rename(self.state(), &command.this, status, detail).await;
+        if rename_outcome(result) == RenameOutcome::Failed {
+            let detail = failure_detail.unwrap_or_default();
+            log!("RenameRepository for repo '{}' failed: {}", repo, detail);
+            report_repository_rename(
+                self.state(),
+                &command.this,
+                "failed",
+                "Couldn't rename this space. Try again.",
+            )
+            .await;
+            return Err(Failure::new(format!("couldn't rename the space: {detail}")));
+        }
+        report_repository_rename(self.state(), &command.this, "renamed", "Space renamed.").await;
+        Done::with(did.this())
     }
 }
 
@@ -2910,7 +3186,7 @@ async fn run_rename_repository(
 /// [`RemoveSpace`]: tonk_schema::command::RemoveSpace
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
+    async fn execute(&self, command: tonk_schema::command::RemoveSpace) -> Outcome {
         let receipt = command.this;
         let subject = command.subject.0;
         // See the doc above: only the profile branch (empty origin
@@ -2922,7 +3198,9 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
                 "RemoveSpace ignored: origin '{}' is not the profile branch",
                 self.origin().repo
             );
-            return;
+            return Err(Failure::new(
+                "spaces can only be removed from the profile, not from inside a space",
+            ));
         }
         log!("command RemoveSpace subject={}", subject);
         let subject: Did = match subject.to_string().parse() {
@@ -2936,7 +3214,7 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
                     "Invalid space identifier.",
                 )
                 .await;
-                return;
+                return Err(Failure::new("Invalid space identifier."));
             }
         };
         // A space this account PROVIDES has a copy on Tonk services,
@@ -2982,8 +3260,10 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
                 "Couldn't remove this space. Try again.",
             )
             .await;
+            Err(Failure::new("Couldn't remove this space. Try again."))
         } else {
             report_space_removal(self.state(), &receipt, "removed", "").await;
+            Done::with(subject.this())
         }
     }
 }
@@ -3235,7 +3515,7 @@ async fn remove_replica_from_profile(
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             });
         }
     }
@@ -3266,7 +3546,7 @@ async fn remove_replica_from_profile(
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     if !found {
@@ -3367,13 +3647,13 @@ pub(crate) async fn carry_replica_rows(
             the: artifact.the.clone(),
             of: artifact.of.clone(),
             is: artifact.is.clone(),
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
         there = there.retract(super::claim::RawClaim {
             the: artifact.the,
             of: artifact.of,
             is: artifact.is,
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     let revision = here
@@ -3554,7 +3834,7 @@ async fn run_pause_sync(
 ///
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
-fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
+pub(super) fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
     use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
@@ -4367,7 +4647,7 @@ async fn live_install_records_in(
                 the: claim.the,
                 of: claim.of,
                 is: claim.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }),
             _ => None,
         })
@@ -4381,15 +4661,17 @@ async fn live_install_records_in(
 /// embedded libraries, so a CLI or a test can check for an update too.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::CheckUpdate) {
+    async fn execute(&self, command: tonk_schema::command::CheckUpdate) -> Outcome {
         let key = command.space.0.to_string();
         if !self.may_target_space(&key) {
             log!("CheckUpdate '{key}': refused from another space's branch");
-            return;
+            return Err(Failure::new(
+                "a space can only check its own updates, not another space's",
+            ));
         }
         let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
             log!("CheckUpdate: '{key}' is not a space DID");
-            return;
+            return Err(Failure::new(format!("{key} is not a space's identity")));
         };
         let tonk = self.state().read().await;
         // The command's own entity marks the check in flight, so a
@@ -4398,7 +4680,13 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
         let check = command.this.clone();
         if let Err(error) = check_seed_update(&tonk, &subject, check).await {
             log!("CheckUpdate '{subject}': {error}");
+            return Err(Failure::new(format!(
+                "couldn't check for an update: {error}"
+            )));
         }
+        // What the check found is recorded on the replica and the space;
+        // the outcome is that the check ran.
+        Done::with(command.space.0)
     }
 }
 
@@ -4411,11 +4699,13 @@ impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::r
 /// would still read back.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::ForgetInvite) {
+    async fn execute(&self, command: tonk_schema::command::ForgetInvite) -> Outcome {
         let space = command.space.0.clone();
         if !self.may_target_space(&space.to_string()) {
             log!("ForgetInvite '{space}': refused from another space's branch");
-            return;
+            return Err(Failure::new(
+                "a space can only forget its own invite, not another space's",
+            ));
         }
         let tonk = self.state().read().await;
         let main = match tonk
@@ -4428,7 +4718,9 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
             Ok(main) => main,
             Err(error) => {
                 log!("ForgetInvite: open profile main: {error}");
-                return;
+                return Err(Failure::new(format!(
+                    "couldn't open the profile to forget the invite: {error}"
+                )));
             }
         };
         main.state
@@ -4436,6 +4728,7 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&main.state));
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        Done::with(space)
     }
 }
 
@@ -4529,7 +4822,7 @@ async fn run_seed_check(tonk: &TonkState, subject: &Did) -> Result<Option<FoundS
         .await
         .map_err(|e| format!("could not fetch {}: {e}", current.source))?;
 
-    let seed = seed_version(&library);
+    let seed = super::library::version(&library).await;
     if seed == current.seed.to_string() {
         return Ok(None);
     }
@@ -4890,7 +5183,7 @@ async fn install_seed(
     current: InstalledSeed,
     library: String,
 ) -> Result<bool, RepositoryError> {
-    let shipped = seed_version(&library);
+    let shipped = super::library::version(&library).await;
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
@@ -4994,7 +5287,7 @@ pub(super) async fn install_fresh_from(
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
     let install = install_claims_for(tonk, source, library).await?;
-    let seed = seed_version(library);
+    let seed = super::library::version(library).await;
     let reference = tonk.reactor.repository(key).branch(branch);
     // The install commits through the session's handle, not the reactor's
     // commit, so the once-per-process move of a branch an earlier release
@@ -5078,14 +5371,14 @@ async fn stage_reinstall(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 })
             }
             dialog_corpus::Instruction::Retract(artifact) => last.retract(super::claim::RawClaim {
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }),
         };
     }
@@ -5154,7 +5447,7 @@ async fn rekey_sites(
                 the: dialog_query::the!("xyz.tonk.site/concept").into(),
                 of: site.this,
                 is: dialog_corpus::Value::Entity(now.clone()),
-                policy: dialog_corpus::Pick::Last,
+                policy: dialog_corpus::Cardinality::One,
             });
         }
     }
@@ -5374,7 +5667,7 @@ async fn live_claims(
                 the: found.the,
                 of: found.of,
                 is: found.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             });
         }
     }
@@ -5392,7 +5685,7 @@ fn claim_identity(claim: &super::claim::RawClaim) -> (String, String, String) {
 
 /// The claims naming a new space, which ride its first install's record
 /// commit rather than the install commit an upgrade reverts.
-fn repository_name_claims(
+pub(super) fn repository_name_claims(
     subject: &Did,
     display_name: &str,
     description: Option<&str>,
@@ -5409,14 +5702,14 @@ fn repository_name_claims(
         the: attribute("xyz.tonk.repo/name")?,
         of: of.clone(),
         is: dialog_corpus::Value::String(display_name.to_owned()),
-        policy: dialog_corpus::Pick::Last,
+        policy: dialog_corpus::Cardinality::One,
     }];
     if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
         claims.push(super::claim::RawClaim {
             the: attribute("xyz.tonk.repo/description")?,
             of,
             is: dialog_corpus::Value::String(description.to_owned()),
-            policy: dialog_corpus::Pick::Last,
+            policy: dialog_corpus::Cardinality::One,
         });
     }
     Ok(claims)
@@ -5509,7 +5802,7 @@ async fn assertions_at_version(
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            policy: dialog_corpus::Pick::All,
+            policy: dialog_corpus::Cardinality::Many,
         });
     }
     Ok(claims)
@@ -5591,16 +5884,9 @@ pub(crate) fn seed_record_facts(
     changes.into_instructions()
 }
 
-/// The entity naming a seed version: `seed:{hash}` over the bytes actually
-/// fetched.
-///
-/// The hash IS the identity, so two devices installing the same seed derive
-/// the same entity and converge. It is taken over what was fetched rather
-/// than read from a build manifest, so it cannot disagree with the bytes
-/// that were installed.
-///
-/// The source it came from rides `xyz.tonk.seed/source` alongside, since a
-/// custom seed is a different URL at the same shape.
+/// The version a document that includes nothing is recorded under, as
+/// [`super::library::version`] gives it.
+#[cfg(test)]
 fn seed_version(source: &str) -> String {
     format!("seed:{}", blake3::hash(source.as_bytes()).to_hex())
 }
@@ -5619,7 +5905,11 @@ const SEED_NONE: &str = "seed:none";
 /// A missing or unreadable library is a deployment fault, not a
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     String::from_utf8(fetch_library_bytes(url).await?)
         .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
@@ -5629,7 +5919,11 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
 /// library document includes (see [`super::library`]). Read from this
 /// worker's immutable generation first, then from the network with the
 /// HTTP cache sidestepped.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
@@ -5705,18 +5999,26 @@ async fn fetch_library_document(url: &str) -> Result<String, TonkWorkerError> {
     fetch_standard_library(url).await
 }
 
-/// The native sibling of the fetch above: the same documents the
-/// service worker fetches from its served assets are compiled in from
+/// Native and hosted workers have no served asset directory. The documents
+/// the browser fetches from its service worker are compiled in from
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+)))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     embedded_standard_library(url)
 }
 
 #[cfg(any(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    all(target_arch = "wasm32", target_os = "unknown", test)
+    not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(feature = "hosted-writer")
+    )),
+    test
 ))]
 fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
@@ -5745,11 +6047,20 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         "/library/table.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
         }
+        "/library/tasks.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tasks.yaml").to_owned())
+        }
+        "/library/tree-inspector.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/tree-inspector.yaml").to_owned())
+        }
         "/library/version-control.yaml" => {
             Ok(include_str!("../../../tonk-core/assets/library/version-control.yaml").to_owned())
         }
         "/library/notebook.clj" => {
             Ok(include_str!("../../../tonk-core/assets/library/notebook.clj").to_owned())
+        }
+        "/library/notebook-views.clj" => {
+            Ok(include_str!("../../../tonk-core/assets/library/notebook-views.clj").to_owned())
         }
         "/library/core.clj" => {
             Ok(include_str!("../../../tonk-core/assets/library/core.clj").to_owned())
@@ -5761,7 +6072,11 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 
 /// A language (`library::LANGUAGES`): generated, so not listed above;
 /// `tonk-library` bundles every document in a library subdirectory.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+)))]
 fn embedded_language(url: &str) -> Option<String> {
     let path = url
         .strip_prefix("/library/")
@@ -5772,9 +6087,30 @@ fn embedded_language(url: &str) -> Option<String> {
 
 /// The wasm tests embed no bundled library: a service worker fetches the
 /// served one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "hosted-writer")
+))]
 fn embedded_language(_url: &str) -> Option<String> {
     None
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod embedded_library_tests {
+    /// Every component a space can install is embedded for hosts that
+    /// cannot fetch the library, so installing one works on the CLI and in
+    /// native tests as it does in the browser.
+    #[dialog_common::test]
+    fn every_installable_component_is_embedded() {
+        for name in super::super::library::COMPONENTS {
+            let url = format!("/library/{name}.yaml");
+            assert!(
+                super::embedded_standard_library(&url).is_ok(),
+                "{url} is installable but not embedded"
+            );
+        }
+    }
 }
 
 /// Build the notation document asserting the repository's own
@@ -6417,7 +6753,7 @@ where
         tonk,
         display_name,
         &repository.did(),
-        Replica::blank_status(),
+        ReplicaListing::Publish(Replica::blank_status()),
     )
     .await?;
     record_space_mount(tonk, &repository.did(), configuration, Some(display_name)).await;
@@ -6496,6 +6832,30 @@ pub(crate) async fn record_space_mount(
     configuration: &RepositoryConfiguration,
     display_name: Option<&str>,
 ) {
+    if let Err(error) = write_space_mount(tonk, subject, configuration, display_name, None).await {
+        log!("record space mount for '{subject}': {error}");
+    }
+}
+
+/// First import of a created space publishes its listing and configuration together.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(super) async fn record_created_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+) -> Result<(), RepositoryError> {
+    let listing = tonk_schema::Space::new(subject, Replica::initialized_status());
+    write_space_mount(tonk, subject, configuration, display_name, Some(listing)).await
+}
+
+async fn write_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+    listing: Option<tonk_schema::Space>,
+) -> Result<(), RepositoryError> {
     use tonk_schema::domain::remote::Address as RemoteAddress;
 
     let anchor_entity = subject.this();
@@ -6505,6 +6865,9 @@ pub(crate) async fn record_space_mount(
         .profile_repository()
         .branch(&tonk.active_branch)
         .transaction();
+    if let Some(listing) = listing {
+        transaction = transaction.assert(listing);
+    }
     if let Some(name) = display_name {
         transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
     }
@@ -6549,9 +6912,12 @@ pub(crate) async fn record_space_mount(
                 transaction.assert(tonk_schema::SpaceHomeAddress::new(subject, ucan.endpoint()));
         }
     }
-    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
-        log!("record space mount for '{subject}': {error}");
-    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("record space mount: {error}")))?;
+    Ok(())
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile
@@ -6568,7 +6934,22 @@ pub(crate) async fn record_initialized_replica_in_profile(
         tonk,
         subject.repo_key(),
         subject,
-        Replica::initialized_status(),
+        ReplicaListing::Publish(Replica::initialized_status()),
+    )
+    .await
+}
+
+/// Adoption only records this device's replica. The listing may have been
+/// deleted on another device while the content pull was in flight.
+pub(crate) async fn record_adopted_replica_in_profile(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    record_replica_visibility(
+        tonk,
+        subject.repo_key(),
+        subject,
+        ReplicaListing::AlreadyListed,
     )
     .await
 }
@@ -6662,6 +7043,11 @@ where
     Ok(())
 }
 
+enum ReplicaListing {
+    Publish(tonk_schema::domain::replica::Status),
+    AlreadyListed,
+}
+
 /// Assert a [`Replica`] concept for a newly created repository in
 /// the profile repository's meta branch.
 ///
@@ -6673,13 +7059,21 @@ async fn record_replica_visibility(
     tonk: &TonkState,
     display_name: &str,
     subject: &Did,
-    status: tonk_schema::domain::replica::Status,
+    listing: ReplicaListing,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone());
-    // The account-level directory entry rides the same commit: the
-    // replica row is this device's mount, the `Space` entry is the one
-    // row per space every device's Hub lists.
-    let directory = tonk_schema::Space::new(subject, status.clone());
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction();
+    let status = match listing {
+        ReplicaListing::Publish(status) => {
+            transaction = transaction.assert(tonk_schema::Space::new(subject, status.clone()));
+            status
+        }
+        ReplicaListing::AlreadyListed => Replica::initialized_status(),
+    };
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
@@ -6690,14 +7084,9 @@ async fn record_replica_visibility(
     // which reads through the reactor — never sees this replica. Going
     // through the reactor advances the cached handle and re-polls its
     // subscriptions, so the new space appears in the Hub immediately.
-    let revision = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .transaction()
+    let revision = transaction
         .assert(replica)
         .assert(status)
-        .assert(directory)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -7015,7 +7404,7 @@ pub(crate) async fn retract_local_profile_library(
 async fn prepare_profile_library(
     library: String,
 ) -> Result<PreparedProfileLibrary, RepositoryError> {
-    let target = seed_version(&library);
+    let target = super::library::version(&library).await;
     let assertions = library_assertions(&library, "profile library").await?;
     Ok(PreparedProfileLibrary {
         source: library,
@@ -7089,10 +7478,9 @@ async fn notation_claims(
     let core = fetch_library_document(NOTATION_CORE_URL)
         .await
         .map_err(|e| RepositoryError::Internal(format!("fetch '{NOTATION_CORE_URL}': {e}")))?;
-    let lowered =
-        tonk_analyzer::notation::notation_library_claims(&core, library, true, &tonk.operator)
-            .await
-            .map_err(|error| RepositoryError::Internal(format!("{source}: {error}")))?;
+    let lowered = tonk_analyzer::notation::notation_library_claims(&core, library, &tonk.operator)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("{source}: {error}")))?;
     // The Dialog-DB compiler refuses every view, and the back end lowers
     // a view from its description all the same; any other refusal would
     // install the library without that form, so it is an error.
@@ -7376,7 +7764,7 @@ fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::Ra
                 the: artifact.the,
                 of: artifact.of,
                 is: artifact.is,
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             }
         })
         .collect()
@@ -8653,6 +9041,267 @@ mod space_creation_feedback_tests {
         }
     }
 
+    /// A profile rename, run the way the palette runs it when `stamped`:
+    /// its own `this`, stamped with when it was run and which command it is.
+    fn rename(run: &str, name: &str, stamped: bool) -> serde_json::Value {
+        let mut with = serde_json::json!({
+            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
+        });
+        let mut parameters = serde_json::json!({ "this": run, "name": name });
+        if stamped {
+            with["invoked-at"] =
+                serde_json::json!({ "the": "xyz.tonk.command/invoked-at", "as": "Float" });
+            with["invoked-concept"] =
+                serde_json::json!({ "the": "xyz.tonk.command/concept", "as": "Entity" });
+            parameters["invoked-at"] = serde_json::json!(1_700_000_000_000.0);
+            parameters["invoked-concept"] = serde_json::json!("tonk:profile/rename");
+        }
+        serde_json::json!({
+            "claims": [{ "op": "assert", "application": {
+                "predicate": { "kind": "transient", "concept": { "with": with } },
+                "parameters": parameters
+            } }]
+        })
+    }
+
+    /// The invocation of `run`, read the way the palette's `follow` reads
+    /// it: one query, everything past `invoked` and `of` optional.
+    fn invocation(run: &str) -> serde_json::Value {
+        let field = |name: &str, kind: &str, optional: bool| {
+            let mut field = serde_json::json!({
+                "the": format!("xyz.tonk.invocation/{name}"), "as": kind, "cardinality": "one",
+                "in": "session:"
+            });
+            if optional {
+                field["optional"] = true.into();
+            }
+            field
+        };
+        serde_json::json!({
+            "predicate": { "with": {
+                "invoked": field("invoked", "Float", false),
+                "of": field("of", "Entity", false),
+                "answered": field("answered", "Entity", true),
+                "failed": field("failed", "Text", true),
+                "unhandled": field("unhandled", "Boolean", true),
+                "output": field("output", "Entity", true)
+            } },
+            "terms": {
+                "this": run,
+                "invoked": { "?": { "name": "invoked" } },
+                "of": { "?": { "name": "of" } },
+                "answered": { "?": { "name": "answered" } },
+                "failed": { "?": { "name": "failed" } },
+                "unhandled": { "?": { "name": "unhandled" } },
+                "output": { "?": { "name": "output" } }
+            }
+        })
+    }
+
+    /// Reads the invocation of `run` until `settled` says it got somewhere,
+    /// since its answer lands a tick after the command does.
+    async fn settled(
+        app: &axum::Router,
+        path: &str,
+        run: &str,
+        settled: impl Fn(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        let mut rows = serde_json::Value::Null;
+        for _ in 0..200 {
+            rows = post(app, path, invocation(run)).await;
+            if rows.get(0).is_some_and(|row| settled(&row["fields"])) {
+                return rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the invocation of {run} never settled: {rows}");
+    }
+
+    /// A profile with its library installed, so the rules that follow an
+    /// invocation are on its branch.
+    async fn with_profile_library() -> super::TonkState {
+        let tonk = super::profile_library_tests::test_state().await;
+        super::reconcile_profile_library(&tonk)
+            .await
+            .expect("the profile library installs");
+        tonk
+    }
+
+    /// A command run the way the palette runs it keeps its invocation in
+    /// the stack's `session:` layer, through the same `/transact` and
+    /// `/query` the page uses: answered for a provider that succeeded, and
+    /// failed, saying why, for one that refused.
+    #[dialog_common::test]
+    async fn a_followed_command_keeps_how_it_went() {
+        let (app, state, _lsp) = crate::router::api_router_with_state(with_profile_library().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+        let query = format!("/api/repository/profile:tonk/branch/{branch}/query");
+
+        post(
+            &app,
+            &transact,
+            rename("urn:uuid:palette-rename", "Ada", true),
+        )
+        .await;
+        let done = settled(&app, &query, "urn:uuid:palette-rename", |fields| {
+            !fields["answered"].is_null() || !fields["failed"].is_null()
+        })
+        .await;
+        let fields = &done[0]["fields"];
+        assert_eq!(fields["of"], "tonk:profile/rename", "{done}");
+        assert_eq!(fields["invoked"], 1_700_000_000_000.0, "{done}");
+        assert!(
+            fields["failed"].is_null(),
+            "a rename that took did not fail: {done}"
+        );
+        assert!(
+            fields["unhandled"].is_null(),
+            "a provider claimed it: {done}"
+        );
+
+        post(
+            &app,
+            &transact,
+            rename("urn:uuid:palette-blank", "   ", true),
+        )
+        .await;
+        let failed = settled(&app, &query, "urn:uuid:palette-blank", |fields| {
+            !fields["answered"].is_null() || !fields["failed"].is_null()
+        })
+        .await;
+        let fields = &failed[0]["fields"];
+        assert!(
+            fields["failed"]
+                .as_str()
+                .is_some_and(|why| !why.trim().is_empty()),
+            "a refused rename says why: {failed}"
+        );
+        assert!(
+            fields["answered"].is_null(),
+            "a failed rename is not answered: {failed}"
+        );
+
+        // A later command on the branch does not sweep the first away: the
+        // palette commits on every keystroke.
+        let kept = post(&app, &query, invocation("urn:uuid:palette-rename")).await;
+        assert_eq!(kept[0]["fields"]["of"], "tonk:profile/rename", "{kept}");
+    }
+
+    /// A provider that reports progress and produces something leaves both
+    /// on the invocation: creating a space says what it is doing as it
+    /// goes, in words kept on its state, and produces the space.
+    #[dialog_common::test]
+    async fn a_followed_command_keeps_its_progress_and_its_output() {
+        let (app, state, _lsp) = crate::router::api_router_with_state(with_profile_library().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+        let query = format!("/api/repository/profile:tonk/branch/{branch}/query");
+        let run = "urn:uuid:palette-create";
+        let mut claim = tonk_worker_api::create_space_claim_json("Followed");
+        let application = &mut claim["claims"][0]["application"];
+        application["predicate"]["concept"]["with"]["invoked-at"] =
+            serde_json::json!({ "the": "xyz.tonk.command/invoked-at", "as": "Float" });
+        application["predicate"]["concept"]["with"]["invoked-concept"] =
+            serde_json::json!({ "the": "xyz.tonk.command/concept", "as": "Entity" });
+        application["parameters"]["this"] = run.into();
+        application["parameters"]["invoked-at"] = serde_json::json!(1_700_000_000_000.0);
+        application["parameters"]["invoked-concept"] = "tonk:space/create".into();
+        post(&app, &transact, claim).await;
+        let done = settled(&app, &query, run, |fields| {
+            !fields["answered"].is_null() || !fields["failed"].is_null()
+        })
+        .await;
+        let fields = &done[0]["fields"];
+        assert!(fields["failed"].is_null(), "the space was created: {done}");
+        let output = fields["output"].as_str().expect("it produced the space");
+        let created = post(&app, &query, serde_json::json!({
+            "predicate": { "with": {
+                "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": { "this": run, "detail": { "?": { "name": "detail" } } }
+        }))
+        .await;
+        let href = created[0]["fields"]["detail"]
+            .as_str()
+            .expect("a destination");
+        assert_eq!(
+            Some(output),
+            href.strip_prefix("/space/"),
+            "the output is the space it made"
+        );
+
+        let states = post(&app, &query, serde_json::json!({
+            "predicate": { "with": {
+                "state": { "the": "xyz.tonk.invocation/state", "as": "Entity", "cardinality": "one", "in": "session:" }
+            } },
+            "terms": { "this": run, "state": { "?": { "name": "state" } } }
+        }))
+        .await;
+        let reported = states[0]["fields"]["state"]
+            .as_str()
+            .expect("it reported progress");
+        assert!(reported.starts_with("status:"), "{states}");
+        let words = post(&app, &query, serde_json::json!({
+            "predicate": { "with": {
+                "status": { "the": "xyz.tonk.state/status", "as": "Text", "cardinality": "one", "in": "session:" }
+            } },
+            "terms": { "this": reported, "status": { "?": { "name": "status" } } }
+        }))
+        .await;
+        assert!(
+            words[0]["fields"]["status"]
+                .as_str()
+                .is_some_and(|said| !said.is_empty()),
+            "the state it reported has words a person can be shown: {words}"
+        );
+    }
+
+    /// A command nobody stamped (a keystroke's `intent/interpret`, a page's
+    /// load) leaves no invocation, though its provider runs.
+    #[dialog_common::test]
+    async fn an_unstamped_command_leaves_no_invocation() {
+        let (app, state, _lsp) = crate::router::api_router_with_state(with_profile_library().await);
+        let branch = state.read().await.active_branch.clone();
+        let transact = format!("/api/repository/profile:tonk/branch/{branch}/transact");
+        let query = format!("/api/repository/profile:tonk/branch/{branch}/query");
+        // Run a followed one after it, so once that one settled, the
+        // unstamped one had every tick it would have needed.
+        post(
+            &app,
+            &transact,
+            rename("urn:uuid:quiet-rename", "Ada", false),
+        )
+        .await;
+        post(
+            &app,
+            &transact,
+            rename("urn:uuid:loud-rename", "Grace", true),
+        )
+        .await;
+        settled(&app, &query, "urn:uuid:loud-rename", |fields| {
+            !fields["answered"].is_null() || !fields["failed"].is_null()
+        })
+        .await;
+        let rows = post(&app, &query, invocation("urn:uuid:quiet-rename")).await;
+        assert_eq!(
+            rows,
+            serde_json::json!([]),
+            "nothing follows an unstamped command"
+        );
+        let status = post(&app, &query, serde_json::json!({
+            "predicate": { "with": {
+                "status": { "the": "xyz.tonk.profile-rename/status", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": { "this": "urn:uuid:quiet-rename", "status": { "?": { "name": "status" } } }
+        }))
+        .await;
+        assert_eq!(
+            status[0]["fields"]["status"], "renamed",
+            "its provider still ran: {status}"
+        );
+    }
+
     #[dialog_common::test]
     async fn space_removal_reports_success_and_failure_for_the_submitted_request() {
         let (app, state, _lsp) =
@@ -8843,6 +9492,33 @@ mod remote_from_facts_tests {
             assert!(
                 !super::open_from_facts(&artifacts(changes)),
                 "`open={text:?}` must not navigate"
+            );
+        }
+    }
+
+    /// The hub's inline row says `open=false`: the creator stays on the
+    /// hub. A create with no `open` field still opens the space.
+    #[test]
+    fn it_stays_only_when_the_create_says_not_to_open() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(
+            !super::stays_from_facts(&artifacts(changes)),
+            "a create carrying no `open` field still opens the space"
+        );
+        for (text, stays) in [("false", true), ("0", true), ("true", false), ("", false)] {
+            let of: Entity = "did:key:zCreate".parse().expect("entity");
+            let mut changes = Changes::new();
+            name_fact(&mut changes, &of);
+            the!("xyz.tonk.command.create-space/open")
+                .of(of)
+                .is(text.to_string())
+                .assert(&mut changes);
+            assert_eq!(
+                super::stays_from_facts(&artifacts(changes)),
+                stays,
+                "`open={text:?}`"
             );
         }
     }
@@ -9143,6 +9819,154 @@ mod notebook_sequence_tests {
     use super::*;
 
     const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+
+    /// A retitle no provider claims: dialog alone would say nothing
+    /// handled it. Run the way the palette runs it, its rule also gives
+    /// the invocation the notebook it renamed as its output, so the
+    /// palette says it took.
+    #[dialog_common::test]
+    async fn a_followed_retitle_produces_the_notebook_it_renamed() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let key = create_space_inner(&state, "Followed retitle", None)
+            .await
+            .expect("the space creates");
+        seed(&state, &key, NOTEBOOK).await;
+        let repo = key.as_str();
+
+        let post = |path: String, body: serde_json::Value| {
+            let app = app.clone();
+            async move {
+                let response = tower::ServiceExt::oneshot(
+                    app,
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+                assert!(response.status().is_success(), "{}", response.status());
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+        let run = "urn:uuid:palette-retitle";
+        post(
+            format!("/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"),
+            serde_json::json!({
+                "claims": [{ "op": "assert", "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "subject": { "the": "xyz.tonk.notebook.retitle/subject", "as": "Entity" },
+                        "title": { "the": "xyz.tonk.notebook.retitle/title", "as": "Text" },
+                        "invoked-at": { "the": "xyz.tonk.command/invoked-at", "as": "Float" },
+                        "invoked-concept": { "the": "xyz.tonk.command/concept", "as": "Entity" }
+                    } } },
+                    "parameters": {
+                        "this": run,
+                        "subject": "id:notebook/scratch",
+                        "title": "Renamed",
+                        "invoked-at": 1_700_000_000_000.0,
+                        "invoked-concept": "tonk:notebook/retitle"
+                    }
+                } }]
+            }),
+        )
+        .await;
+        let field = |name: &str, kind: &str| {
+            serde_json::json!({
+                "the": format!("xyz.tonk.invocation/{name}"), "as": kind,
+                "cardinality": "one", "in": "session:", "optional": true
+            })
+        };
+        let query = serde_json::json!({
+            "predicate": { "with": {
+                "invoked": { "the": "xyz.tonk.invocation/invoked", "as": "Float", "cardinality": "one", "in": "session:" },
+                "output": field("output", "Entity"),
+                "unhandled": field("unhandled", "Boolean"),
+                "failed": field("failed", "Text")
+            } },
+            "terms": { "this": run, "invoked": { "?": { "name": "invoked" } },
+                "output": { "?": { "name": "output" } },
+                "unhandled": { "?": { "name": "unhandled" } },
+                "failed": { "?": { "name": "failed" } } }
+        });
+        let mut found = serde_json::Value::Null;
+        for _ in 0..200 {
+            found = post(
+                format!("/api/repository/{key}/branch/{CONTENT_BRANCH}/query"),
+                query.clone(),
+            )
+            .await;
+            if found
+                .get(0)
+                .is_some_and(|row| !row["fields"]["unhandled"].is_null())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let named = rows(
+            &state,
+            repo,
+            "notebook/named:\n  this: ?this\n  title: ?title\n",
+        )
+        .await;
+        assert!(
+            named
+                .iter()
+                .any(|row| row.get("title").and_then(|title| title.as_str()) == Some("Renamed")),
+            "and it took: {named:#?}"
+        );
+        let fields = &found[0]["fields"];
+        assert_eq!(
+            fields["output"], "id:notebook/scratch",
+            "its rule names the notebook: {found}"
+        );
+        assert_eq!(
+            fields["unhandled"], true,
+            "dialog still says no provider claimed it, which is why the output matters: {found}"
+        );
+        assert!(fields["failed"].is_null(), "{found}");
+        // Read the branch's own tree, not the stack: the output is the
+        // session's, and the branch holds none of it.
+        let committed = {
+            use futures_util::StreamExt as _;
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .repository(repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the branch opens");
+            let snapshot = session.handle().snapshot().expect("the branch has a head");
+            let claims = snapshot
+                .claims()
+                .select(
+                    dialog_corpus::Selector::new()
+                        .the(tonk_schema::invocation::Output::the().into()),
+                )
+                .perform(&tonk.operator)
+                .await
+                .expect("the branch reads");
+            futures_util::pin_mut!(claims);
+            let mut count = 0;
+            while let Some(claim) = claims.next().await {
+                claim.expect("a claim decodes");
+                count += 1;
+            }
+            count
+        };
+        assert_eq!(
+            committed, 0,
+            "the output stays in the session, never on the branch"
+        );
+    }
 
     /// A fresh space with the notebook library, and so its scratch
     /// notebook: blocks `1`, `2` and `3` under `N1`, `N5` and `N9`.
@@ -9647,6 +10471,149 @@ mod rename_repository_tests {
             mirror,
             vec!["After Rename".to_string()],
             "the profile's SpaceName directory mirror carries the new name"
+        );
+    }
+
+    fn rename(space: &str, name: &str) -> tonk_schema::command::RenameRepository {
+        tonk_schema::command::RenameRepository {
+            this: "cmd:rename".parse().unwrap(),
+            name: tonk_schema::domain::command::current::rename_repository::Name(name.into()),
+            space: tonk_schema::domain::command::rename_repository::Space(space.parse().unwrap()),
+        }
+    }
+
+    /// A space renaming itself through the provider reports the renamed
+    /// space as its outcome.
+    #[dialog_common::test]
+    async fn it_reports_the_renamed_space_as_the_outcome() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(&state, "Before", None).await.unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            CommandOrigin {
+                repo: key.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::RenameRepository>::execute(
+                &env,
+                rename(&key, "After"),
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            Done::with(key.parse::<dialog_corpus::Entity>().unwrap())
+        );
+    }
+
+    /// A space's branch cannot rename a different space: the outcome is
+    /// the containment refusal, and the target keeps its name in both
+    /// records.
+    #[dialog_common::test]
+    async fn it_refuses_to_rename_another_space_and_writes_nothing() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let asking = create_space_inner(&state, "Asking", None).await.unwrap();
+        let target = create_space_inner(&state, "Target", None).await.unwrap();
+        let before = names(&state, &target).await;
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            CommandOrigin {
+                repo: asking,
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::RenameRepository>::execute(
+                &env,
+                rename(&target, "Hijacked"),
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("only rename itself")),
+            "{outcome:?}"
+        );
+        assert_eq!(names(&state, &target).await, before);
+    }
+
+    /// Removing a space is the profile's to do: a space's branch asking
+    /// to remove another is refused, and the target is still there.
+    #[dialog_common::test]
+    async fn it_refuses_to_remove_a_space_from_a_space_branch() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let asking = create_space_inner(&state, "Asking", None).await.unwrap();
+        let target = create_space_inner(&state, "Kept", None).await.unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            CommandOrigin {
+                repo: asking,
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let outcome = dialog_capability::Provider::<tonk_schema::command::RemoveSpace>::execute(
+            &env,
+            tonk_schema::command::RemoveSpace {
+                this: "cmd:remove".parse().unwrap(),
+                subject: tonk_schema::domain::command::current::remove_space::Subject(
+                    target.parse().unwrap(),
+                ),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("only be removed from the profile")),
+            "{outcome:?}"
+        );
+        let (space, mut mirror) = names(&state, &target).await;
+        assert_eq!(space, ["Kept"]);
+        // The profile mirrors every space's name, the asking one's too:
+        // both are still listed, so nothing was removed.
+        mirror.sort();
+        assert_eq!(mirror, ["Asking", "Kept"]);
+    }
+
+    /// A check for updates naming something that is not a space's DID
+    /// fails with an outcome saying so.
+    #[dialog_common::test]
+    async fn it_fails_an_update_check_for_something_that_is_not_a_space() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, CommandOrigin::default());
+        let outcome = dialog_capability::Provider::<tonk_schema::command::CheckUpdate>::execute(
+            &env,
+            tonk_schema::command::CheckUpdate {
+                this: "cmd:check".parse().unwrap(),
+                time: tonk_schema::domain::command::current::check_update::Time(0.0),
+                space: tonk_schema::domain::command::check_update::Space(
+                    "id:not-a-space".parse().unwrap(),
+                ),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not a space's identity")),
+            "{outcome:?}"
+        );
+    }
+
+    /// A blank display name is refused rather than reported as saved.
+    #[dialog_common::test]
+    async fn it_refuses_a_blank_display_name() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, CommandOrigin::default());
+        let outcome = dialog_capability::Provider::<tonk_schema::command::ProfileRename>::execute(
+            &env,
+            tonk_schema::command::ProfileRename {
+                this: "cmd:profile-rename".parse().unwrap(),
+                name: tonk_schema::domain::command::current::profile_rename::Name("   ".into()),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("blank")),
+            "{outcome:?}"
         );
     }
 }
@@ -10291,6 +11258,7 @@ route!: &foreign-profile-route
                 profile_transition: Default::default(),
                 context_generation: Default::default(),
                 profile_swaps: Default::default(),
+                profile_hydration: Default::default(),
             },
         )
     }
@@ -10586,7 +11554,7 @@ route!: &foreign-profile-route
             "stale facet is gone: {after}"
         );
         assert!(
-            after.contains("create new space"),
+            after.contains("hub-rows"),
             "current facet resolves: {after}"
         );
         let mut delivered = Vec::new();
@@ -10598,7 +11566,7 @@ route!: &foreign-profile-route
         let asserted = serde_json::to_string(&delivered["asserted"]).unwrap();
         let retracted = serde_json::to_string(&delivered["retracted"]).unwrap();
         assert!(
-            !asserted.contains("no spaces yet") && asserted.contains("create new space"),
+            !asserted.contains("no spaces yet") && asserted.contains("hub-rows"),
             "the mounted view subscription receives the repaired facet: {delivered}"
         );
         assert!(
@@ -10623,7 +11591,10 @@ route!: &foreign-profile-route
             .await
             .expect("profile records resolve");
         assert_eq!(profile.len(), 1, "only the current profile record remains");
-        assert_eq!(profile[0].installed.this.to_string(), seed_version(CURRENT));
+        assert_eq!(
+            profile[0].installed.this.to_string(),
+            crate::router::library::version(CURRENT).await
+        );
         let assertions = assertions_at_version(&tonk, &session, &profile[0].installed.version.0)
             .await
             .expect("the recorded install revision exists");
@@ -10715,13 +11686,13 @@ route!: &foreign-profile-route
                 the: the.clone(),
                 of: of.clone(),
                 is: desired.clone(),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             })
             .assert(super::super::claim::RawClaim {
                 the: the.clone(),
                 of: of.clone(),
                 is: dialog_corpus::Value::String("stale account writer".to_owned()),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             })
             .commit()
             .publish()
@@ -10773,7 +11744,7 @@ route!: &foreign-profile-route
                 is: dialog_corpus::Value::String(
                     "<div data-stale-profile-library></div>".to_owned(),
                 ),
-                policy: dialog_corpus::Pick::All,
+                policy: dialog_corpus::Cardinality::Many,
             };
             let session = tonk
                 .reactor
@@ -10786,7 +11757,7 @@ route!: &foreign-profile-route
             if stale_first {
                 txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
                     super::super::claim::RawClaim {
-                        policy: dialog_corpus::Pick::All,
+                        policy: dialog_corpus::Cardinality::Many,
                         ..expected.clone()
                     },
                 );
@@ -11520,7 +12491,8 @@ mod tests {
         let record = installed()
             .await
             .expect("the first boot records its install");
-        assert_eq!(record.seed.to_string(), super::seed_version(&first));
+        let first_version = crate::router::library::version(&first).await;
+        assert_eq!(record.seed.to_string(), first_version);
         let seeded = head();
 
         super::reconcile_profile_library_from(&tonk, first.clone())
@@ -11542,7 +12514,10 @@ mod tests {
             .expect("a changed library upgrades");
         assert_ne!(head(), seeded, "an upgrade commits");
         let upgraded = installed().await.expect("the upgrade records itself");
-        assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
+        assert_eq!(
+            upgraded.seed.to_string(),
+            crate::router::library::version(&second).await
+        );
         let running: Vec<tonk_schema::SeedInstalled> = session
             .handle()
             .query()
@@ -11562,7 +12537,7 @@ mod tests {
         );
         assert_eq!(
             running[0].prior.0.to_string(),
-            super::seed_version(&first),
+            first_version,
             "the upgrade records what it replaced"
         );
         let paths = paths().await;
@@ -13067,6 +14042,27 @@ block/insert!:
         );
     }
 
+    /// A refusal reaches the share control where it listens: profile main.
+    ///
+    /// The control reads every share fact through one routing context,
+    /// profile main. With the refusal only on the space, a signed-out
+    /// copy-link click in the space bar waited out its 15-second timeout and
+    /// said "couldn't copy" instead of asking the person to sign in.
+    #[dialog_common::test]
+    async fn it_publishes_the_refusal_where_the_share_control_reads() {
+        let (_app, state, key) = fresh_repo_signed_out("test-refusal-on-profile").await;
+
+        run_invite_with_time(&state, &key, 5678.0).await;
+
+        let blocked = profile_share_blocked_rows(&state).await;
+        assert_eq!(blocked.len(), 1, "one refusal on profile main: {blocked:?}");
+        assert_eq!(
+            blocked[0].0,
+            tonk_worker_api::share::BLOCKED_ACCOUNT_REQUIRED
+        );
+        assert_eq!(blocked[0].2, 5678.0, "echoes the command's timestamp");
+    }
+
     /// POST a remote config to `key`, exactly as the topbar and the share
     /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
@@ -13195,6 +14191,38 @@ block/insert!:
         let env =
             crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
         let _ = super::run_invite(&env, repo, time).await;
+    }
+
+    /// Read back every `ShareBlocked` row on profile main (overlay
+    /// included) as `(blocked, detail, time)`.
+    async fn profile_share_blocked_rows(state: &AppState) -> Vec<(String, String, f64)> {
+        use dialog_query::{Output as _, Term};
+        use tonk_schema::command::ShareBlocked;
+
+        let tonk = state.read().await;
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main opens");
+        let rows: Vec<ShareBlocked> = main
+            .handle()
+            .query()
+            .select(dialog_query::Query::<ShareBlocked> {
+                this: Term::var("this"),
+                blocked: Term::var("blocked"),
+                detail: Term::var("detail"),
+                time: Term::var("time"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("share-blocked query");
+        rows.into_iter()
+            .map(|row| (row.blocked.0, row.detail.0, row.time.0))
+            .collect()
     }
 
     /// Read back every `ShareBlocked` row on the repo's content branch overlay
@@ -14321,14 +15349,17 @@ route!: &probe/dropped
     #[dialog_common::test]
     async fn it_evaluates_both_shipped_libraries() {
         const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
-        const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        // Sent as plain notation, which has no location to include from.
+        let profile = crate::router::library::inline_includes(include_str!(
+            "../../../tonk-core/assets/library/profile.yaml"
+        ));
 
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
 
         for (name, library, url) in [
             ("core", CORE, super::STANDARD_LIBRARY_URL),
-            ("profile", PROFILE, super::PROFILE_LIBRARY_URL),
+            ("profile", profile.as_str(), super::PROFILE_LIBRARY_URL),
         ] {
             let key = crate::router::tests::put_repo(&app, &format!("eval-{name}")).await;
             let tonk = state.read().await;
@@ -14677,7 +15708,8 @@ mod connection_invite_overlay_tests {
                 space: Some(selected_did.to_string()),
             },
         )
-        .await;
+        .await
+        .expect("the profile may hand off for the space it names");
         assert_eq!(response_count(&state, &selected).await, 1);
         assert_eq!(response_count(&state, &other).await, 0);
 
@@ -14689,7 +15721,7 @@ mod connection_invite_overlay_tests {
                 client: None,
             },
         );
-        dialog_capability::Provider::<AgentHandoffRequest>::execute(
+        let refused = dialog_capability::Provider::<AgentHandoffRequest>::execute(
             &selected_space,
             AgentHandoffRequest {
                 fresh: true,
@@ -14697,6 +15729,10 @@ mod connection_invite_overlay_tests {
             },
         )
         .await;
+        assert!(
+            matches!(&refused, Err(failure) if failure.0.contains("only connect tools to itself")),
+            "a space may not hand off for another space: {refused:?}"
+        );
         assert_eq!(response_count(&state, &other).await, 0);
     }
 
@@ -16527,6 +17563,211 @@ concept!: &writer-app
             .collect()
     }
 
+    /// The notebook's page, written in the notation, kept current in a
+    /// real space by the notation's driver: the notebook installed from
+    /// `notebook.clj` through the worker's install path, its page
+    /// (`notebook/ui` of `notebook-views.clj`) watched on the space's
+    /// content branch, and a retitle posted through the worker's own
+    /// `/evaluate` path arriving as one attribute patch. Run at 10, 100
+    /// and 1000 blocks, it prints what each step cost.
+    ///
+    /// The measure is wall time around each call, in the profile the
+    /// test runs in, with the space kept in memory. A page holds the
+    /// first poll's tree; a change costs the command's evaluation (the
+    /// commit, tonk's work) and the poll that follows it (the view's).
+    #[dialog_common::test]
+    async fn a_notation_page_is_kept_current_by_the_driver() {
+        use tonk_analyzer::notation::live::{View, ViewPatch};
+
+        const NOTEBOOK: &str = "notebook:probe";
+        let core = embedded_standard_library("/library/core.clj").expect("core.clj");
+        let notebook = embedded_standard_library("/library/notebook.clj").expect("notebook.clj");
+        let views =
+            embedded_standard_library("/library/notebook-views.clj").expect("notebook-views.clj");
+        let started = web_time::Instant::now();
+        let view = View::compile(&[&core, &notebook, &views], "(notebook/ui ?n is: ?ui)")
+            .expect("the notebook's page compiles");
+        println!("compile notebook/ui: {:?}", started.elapsed());
+
+        let sizes: Vec<usize> = std::env::var("TONK_NOTATION_SIZES")
+            .ok()
+            .map(|sizes| {
+                sizes
+                    .split(',')
+                    .filter_map(|size| size.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![10, 100, 1000]);
+        for blocks in sizes {
+            let tonk = test_state().await;
+            let (key, _) = new_space(&tonk, CORE, "Notation page").await;
+            assert!(
+                install_component(&tonk, &key, CONTENT_BRANCH, NOTEBOOK_NOTATION_SOURCE)
+                    .await
+                    .expect("the notebook installs from the notation"),
+                "a first install installs"
+            );
+            // The notebook written as facts, each block's entry under a
+            // key of its own, in one commit. Creating it through the
+            // notebook's commands (`create_notation`, one `block/insert` a
+            // block) does not commit at 1000 blocks: the position each
+            // insert derives from its neighbour chains past the commit's
+            // fixpoint, "did not converge after 1001 rounds".
+            let entries = (1..=blocks)
+                .map(|at| format!("N{at:05}V: id:probe/{at}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut document = format!(
+                "notebook/named!:\n  this: {NOTEBOOK}\n  title: \"Plan\"\n\n\
+                 notebook/blocks!:\n  this: {NOTEBOOK}\n  block: {{{entries}}}\n\n"
+            );
+            for at in 1..=blocks {
+                document.push_str(&format!(
+                    "notebook/block!:\n  this: id:probe/{at}\n  notebook: {NOTEBOOK}\n  source: \"item {at}\"\n\n"
+                ));
+            }
+            let started = web_time::Instant::now();
+            author(&tonk, &key, &document).await;
+            let created = started.elapsed();
+
+            let session = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("the content branch opens");
+            let entity: dialog_corpus::Entity = NOTEBOOK.parse().expect("an entity");
+            let mut page = view
+                .watch(session.handle(), Some(entity))
+                .expect("the page is watched");
+
+            let started = web_time::Instant::now();
+            let first = page.poll(&tonk.operator).await.expect("the first poll");
+            let rendered = started.elapsed();
+            assert_eq!(first.len(), 1, "the first poll inserts the page whole");
+            let html = page.html();
+            assert!(html.contains(r#"title="Plan""#), "{html}");
+            assert_eq!(
+                html.matches(r#"class="notebook-block-row""#).count(),
+                blocks,
+                "a row for each block"
+            );
+            assert_eq!(
+                html.matches(r#"class="notebook-order__item""#).count(),
+                blocks,
+                "an order item for each block"
+            );
+
+            let started = web_time::Instant::now();
+            assert!(
+                page.poll(&tonk.operator)
+                    .await
+                    .expect("a quiet poll")
+                    .is_empty(),
+                "nothing moved, nothing patched"
+            );
+            let quiet = started.elapsed();
+            let before = page.recomputes();
+
+            let started = web_time::Instant::now();
+            author(
+                &tonk,
+                &key,
+                &format!("notebook/retitle!:\n  subject: {NOTEBOOK}\n  title: \"Shopping\"\n"),
+            )
+            .await;
+            let command = started.elapsed();
+            let started = web_time::Instant::now();
+            let patches = page.poll(&tonk.operator).await.expect("the poll after");
+            let changed = started.elapsed();
+            assert!(
+                patches.iter().any(|patch| matches!(
+                    patch,
+                    ViewPatch::SetAttribute { name, value, .. }
+                        if name == "title" && value == "Shopping"
+                )),
+                "the retitle is an attribute patch: {patches:?}"
+            );
+            assert!(page.html().contains(r#"title="Shopping""#));
+            assert_eq!(
+                page.html(),
+                page.maintained_html(),
+                "the patches make the tree"
+            );
+            let retitled = page.recomputes();
+            let retitle_delivered = page.delivered();
+
+            // One item changes: the middle block's source is edited.
+            let rows = read_rows(
+                &tonk,
+                &key,
+                &format!(
+                    "notebook/block:\n  this: ?this\n  notebook: {NOTEBOOK}\n  source: \"item {}\"\n",
+                    blocks / 2 + 1
+                ),
+            )
+            .await;
+            let block = text(&rows[0], "this");
+            let started = web_time::Instant::now();
+            author(
+                &tonk,
+                &key,
+                &format!(
+                    "block/edit!:\n  subject: {block}\n  notebook: {NOTEBOOK}\n  source: \"edited\"\n"
+                ),
+            )
+            .await;
+            let edit_command = started.elapsed();
+            let started = web_time::Instant::now();
+            let edited = page
+                .poll(&tonk.operator)
+                .await
+                .expect("the poll after the edit");
+            let edit_changed = started.elapsed();
+            assert!(
+                edited.iter().any(|patch| matches!(
+                    patch,
+                    ViewPatch::SetAttribute { name, value, .. }
+                        if name == "data-source" && value == "edited"
+                )),
+                "the edit is an attribute patch: {edited:?}"
+            );
+            assert_eq!(
+                page.html(),
+                page.maintained_html(),
+                "the patches make the tree"
+            );
+            println!(
+                "blocks {blocks}: edit command {edit_command:?}, poll after {edit_changed:?}, \
+                 {} patches, rows delivered {:?}, recomputes {retitled:?} -> {:?}",
+                edited.len(),
+                page.delivered(),
+                page.recomputes(),
+            );
+            println!(
+                "blocks {blocks}: create {created:?}, first poll {rendered:?} ({} bytes), \
+                 quiet poll {quiet:?}, retitle command {command:?}, poll after {changed:?}, \
+                 {} patches {:?}, rows delivered {:?}, recomputes {:?} -> {:?}",
+                html.len(),
+                patches.len(),
+                patches
+                    .iter()
+                    .map(|patch| match patch {
+                        ViewPatch::Insert { .. } => "insert",
+                        ViewPatch::Remove { .. } => "remove",
+                        ViewPatch::SetText { .. } => "text",
+                        ViewPatch::SetAttribute { .. } => "attribute",
+                        ViewPatch::SetEvent { .. } => "event",
+                    })
+                    .collect::<Vec<_>>(),
+                retitle_delivered,
+                before,
+                retitled,
+            );
+        }
+    }
+
     /// The same commands in, the same facts out: two spaces on YAML core,
     /// one with the notebook installed from `notebook.yaml`, one from the
     /// notation sketch, run one script, and after every step read their
@@ -16661,27 +17902,23 @@ concept!: &writer-app
         );
         assert_eq!(differing, Vec::<&str>::new());
 
-        // Every view named by its concept's name renders alike. A route
-        // concept the YAML pins to an entity (`tonk:notebook/route`,
-        // `tonk:notebook/index-route`), the entity the router names as a
-        // site's concept, resolves only from YAML: the notation cannot
-        // pin a concept to an entity.
-        let pinned = |line: &&String| line.starts_with("tonk:") || line.contains("@tonk:");
-        let by_name = |lines: &[String]| -> Vec<String> {
-            lines.iter().filter(|line| !pinned(line)).cloned().collect()
-        };
-        assert_eq!(by_name(&outlines[0]), by_name(&outlines[1]));
+        // The notation's views are queries, which this revision of the
+        // notation does not store on the branch: they are kept current by
+        // `tonk_analyzer::notation::live` from the library's text
+        // (`a_notation_page_is_kept_current_by_the_driver`), so the outline,
+        // which reads tonk's stored views, finds none in the notation's
+        // space. Every view resolves in the YAML's.
         assert!(
             outlines[0]
                 .iter()
-                .filter(pinned)
-                .all(|line| line.contains("resolved=true"))
+                .all(|line| !line.contains("no view found")),
+            "{outlines:?}"
         );
         assert!(
             outlines[1]
                 .iter()
-                .filter(pinned)
-                .all(|line| line.contains("fails: no concept matched"))
+                .any(|line| line.contains("no view found for model `notebook`")),
+            "{outlines:?}"
         );
     }
 
@@ -17074,6 +18311,14 @@ mod library_quarantine_tests {
             (
                 "table",
                 include_str!("../../../tonk-core/assets/library/table.yaml"),
+            ),
+            (
+                "tasks",
+                include_str!("../../../tonk-core/assets/library/tasks.yaml"),
+            ),
+            (
+                "tree-inspector",
+                include_str!("../../../tonk-core/assets/library/tree-inspector.yaml"),
             ),
             (
                 "version-control",

@@ -377,7 +377,7 @@ async fn enumerate_attributes(site: &TonkSite) -> Result<Vec<AttributeInfo>> {
 /// `id:<name>`; the *target* is the value. We invert that mapping
 /// here so callers can ask "what's this entity's display name?"
 /// in one lookup.
-async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
+pub(crate) async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
     let name_attr: dialog_corpus::Relation = "db.name/referent"
         .parse()
         .context("db.name/referent should be a valid attribute URI")?;
@@ -601,10 +601,8 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let pick = attr_descriptor.descriptor().pick();
-                let implied = if among.is_empty() { "last" } else { "top" };
-                if pick.name() != implied {
-                    let _ = writeln!(out, "      pick:        :{}", pick.name());
+                if attr_descriptor.descriptor().cardinality() == dialog_query::Cardinality::Many {
+                    let _ = writeln!(out, "      pick:        :all");
                 }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {
@@ -618,7 +616,7 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
 
 /// A listed value as the notation writes it: an entity as its URI, text
 /// quoted, anything else as dialog spells it.
-fn value_to_notation(value: &dialog_corpus::Value) -> String {
+pub(crate) fn value_to_notation(value: &dialog_corpus::Value) -> String {
     match value {
         dialog_corpus::Value::Entity(entity) => entity.to_string(),
         dialog_corpus::Value::String(text) => quote_string(text),

@@ -950,8 +950,8 @@ mod tests {
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }
@@ -1019,8 +1019,8 @@ mod tests {
                     .expect("descriptor JSON is well-formed");
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }
@@ -1193,6 +1193,19 @@ concept!: &job
       as:
         - case:suspended
         - case:active
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
+
+        // A ranked list of relations is no longer read by dialog: a
+        // rule deriving one relation from each, read by a field that
+        // ranks, replaces it. The refusal is dialog's.
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
     handle:
       description: \"the email, else the phone\"
       the:
@@ -1202,7 +1215,13 @@ concept!: &job
 ",
         );
         let result = super::analyze_local(&syntax);
-        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| format!("{error:?}").contains("names one relation")),
+            "a ranked list of relations is refused: {result:?}"
+        );
 
         let syntax = must_parse(
             "\
@@ -1280,6 +1299,50 @@ concept!: &job
                 AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("unknown pick \"all:\"")
             ),
             "a pick quoted as its entity is refused: {error:?}"
+        );
+    }
+
+    /// `in:` places an attribute's writes in a layer. A layer is not part
+    /// of an attribute's identity, so the stored attribute does not
+    /// carry it: it travels in the descriptor a rule's head writes
+    /// through, which is where a write is routed from. A value that is
+    /// no entity is refused.
+    #[dialog_common::test]
+    async fn it_places_an_attribute_in_a_layer() {
+        let document = |layer: &str| {
+            format!(
+                "command!: &touch\n  description: \"Touch a thing.\"\n  with:\n    thing:\n      description: \"The thing.\"\n      the: x.touch/thing\n      as: entity\n\n\
+                 concept!: &touched\n  description: \"A thing touched this session.\"\n  with:\n    at:\n      description: \"When.\"\n      the: x.y/touched\n      as: entity\n      in: {layer}\n\n\
+                 rule!:\n  description: \"A touch is kept in the session.\"\n  assert!: touched\n  when:\n    - assert: touch\n      where: {{ this: ?at, thing: ?this }}\n"
+            )
+        };
+        let syntax = must_parse(&document("\"session:\""));
+        let analysis = flat(super::analyze_local(&syntax).expect("lowers"));
+        let rule = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                Statement::Assert(Application::Rule { rule, .. }) => Some(rule),
+                _ => None,
+            })
+            .expect("the rule lowers");
+        let layers: Vec<String> = rule
+            .conclusion()
+            .with()
+            .iter()
+            .filter_map(|(_, field)| field.descriptor().layer().map(|layer| format!("{layer:?}")))
+            .collect();
+        assert!(
+            layers.iter().any(|layer| layer.contains("session:")),
+            "the rule's head writes into the session: {layers:?}"
+        );
+
+        let syntax = must_parse(&document("\"not a layer\""));
+        let error = super::analyze_local(&syntax).expect_err("refused");
+        assert!(
+            matches!(&error.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("`in:`")),
+            "a layer that is no entity is refused: {error:?}"
         );
     }
 
@@ -1749,10 +1812,8 @@ concept!: &person
         // 3 statements: 2 inline attrs + 1 concept.
         assert_eq!(analysis.mutate.statements.len(), 3);
         // First two are anonymous attributes (no published name).
-        for i in 0..2 {
-            let Statement::Assert(Application::Concept { name, .. }) =
-                &analysis.mutate.statements[i]
-            else {
+        for (i, statement) in analysis.mutate.statements.iter().take(2).enumerate() {
+            let Statement::Assert(Application::Concept { name, .. }) = statement else {
                 panic!("expected Assert(Concept) for inline attr {i}");
             };
             assert!(name.is_none(), "inline attr should have no published name");

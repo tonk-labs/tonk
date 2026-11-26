@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/sketches/core.clj at c938ec9c78d86512b0ad8c3cff7ec8a2632006aa
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/core.clj at fbcd06b74692fd6a8e6dc9fe7a214c867e5cb7bf
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; core: the concepts of tonk's core that the notebook reads and does not

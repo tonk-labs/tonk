@@ -784,7 +784,7 @@ struct RawClaim {
 
 impl dialog_corpus::Statement for RawClaim {
     fn assert(self, update: &mut impl dialog_corpus::Update) {
-        update.associate(self.the, self.of, self.is, dialog_corpus::Pick::All);
+        update.associate(self.the, self.of, self.is, dialog_corpus::Cardinality::Many);
     }
     fn retract(self, update: &mut impl dialog_corpus::Update) {
         update.dissociate(self.the, self.of, self.is);
@@ -1439,8 +1439,8 @@ mod tests {
         descriptor: &ConceptDescriptor,
     ) -> Transaction<&'a Branch> {
         for (_, attr) in descriptor.with().iter() {
-            for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                .expect("attribute facts")
+            for statement in
+                tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
             {
                 txn = txn.assert(statement);
             }

@@ -171,7 +171,10 @@ pub(crate) async fn enroll_customer(
 impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::EnrollCustomer) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::EnrollCustomer,
+    ) -> tonk_schema::invocation::Outcome {
         let email = (!command.email.0.trim().is_empty()).then(|| command.email.0.trim().to_owned());
         // Enrollment must present custody material, and minting it
         // needs a passkey the worker cannot prompt for. So the page
@@ -180,9 +183,14 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
         // including this enrollment, which travels with it.
         let Some(client) = self.client().cloned() else {
             log!("tonk:enroll: no originating client to mediate a passkey; skipping");
-            return;
+            return Err(tonk_schema::invocation::Failure::new(
+                "no page asked for this, so no passkey can be asked for",
+            ));
         };
+        // Enrollment finishes in the custody handoff, and lands as the
+        // `AccountCustomer` fact, not this outcome.
         super::custody::request_mediation(&client, email).await;
+        tonk_schema::invocation::Done::nothing()
     }
 }
 
@@ -203,18 +211,37 @@ impl dialog_capability::Provider<tonk_schema::command::EnrollCustomer>
 impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     for crate::router::CommandEnv
 {
-    async fn execute(&self, command: tonk_schema::command::ResendActivation) {
-        let (status, detail) = match request_resend(self.state()).await {
-            Ok(()) => ("requested", "Another activation email was requested."),
+    async fn execute(
+        &self,
+        command: tonk_schema::command::ResendActivation,
+    ) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+
+        match request_resend(self.state()).await {
+            Ok(()) => {
+                report_resend_activation(
+                    self.state(),
+                    &command.this,
+                    "requested",
+                    "Another activation email was requested.",
+                )
+                .await;
+                Done::nothing()
+            }
             Err(error) => {
                 log!("resend-activation: {error}");
-                (
+                report_resend_activation(
+                    self.state(),
+                    &command.this,
                     "failed",
                     "Couldn't request another activation email. Try again.",
                 )
+                .await;
+                Err(Failure::new(format!(
+                    "the activation email was not resent: {error}"
+                )))
             }
-        };
-        report_resend_activation(self.state(), &command.this, status, detail).await;
+        }
     }
 }
 
@@ -524,6 +551,40 @@ pub(crate) async fn record_custody_cell(
     Ok(())
 }
 
+/// Record the account's recovery phrase on profile main: the account
+/// secret sealed to the custody DID the words derive, and the phrase's
+/// row on that same entity, in one transaction.
+///
+/// The row is what settings reads to know a phrase exists, and what
+/// [`super::account_state::recovery_phrase`] checks to refuse a second
+/// one.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) async fn record_recovery_phrase(
+    state: &crate::worker::TonkState,
+    custody: &dialog_varsig::Did,
+    sealed: &[u8],
+    created_at: u64,
+) -> Result<(), TonkWorkerError> {
+    let account = super::identity::root_did(state).await?;
+    state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .transaction()
+        .assert(tonk_schema::SecretMessage::new(custody, sealed.to_vec()).sealed_by(&account))
+        .assert(tonk_schema::RecoveryPhrase::new(custody, created_at))
+        .commit()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to record the recovery phrase: {error}"))
+        })?;
+    Ok(())
+}
+
 /// Provision `consumer`, or queue it when the account has not yet
 /// confirmed its email.
 ///
@@ -648,6 +709,33 @@ pub(crate) async fn provision_consumer(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Add a custodian to this account with one `/custody/add`: the
+/// service writes the custody cell, then provisions the custody space.
+///
+/// Answers success when the service already provides that custody space
+/// for this account, so a retry after a lost answer finishes rather than
+/// failing.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) async fn add_custody(
+    state: &crate::worker::TonkState,
+    custody: &tonk_identity::request::CustodyMaterial<'_>,
+) -> Result<(), TonkWorkerError> {
+    use tonk_identity::request::build_custody_add_invocation;
+
+    let link = super::account::account_link(state).await.ok_or_else(|| {
+        TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
+    })?;
+    let device = state.profile.credential().signer().clone();
+    let body = build_custody_add_invocation(device, &link, custody)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to build the custody invocation: {error}"))
+        })?;
+    let origin = home_service_origin(state).await?;
+    post_cbor(&ucan_endpoint(&origin)?, &body).await?;
+    Ok(())
 }
 
 /// Record that this account provides `consumer`, on the space's
@@ -1583,6 +1671,50 @@ mod home_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Enrollment needs a passkey only a page can run. With no page to
+    /// ask, the outcome fails rather than reporting an enrollment that
+    /// never started.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_an_enrollment_no_page_asked_for() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, crate::router::CommandOrigin::default());
+        let command = tonk_schema::command::EnrollCustomer {
+            this: "id:enroll".parse().unwrap(),
+            email: tonk_schema::domain::command::enroll::Email("".into()),
+        };
+        let outcome = dialog_capability::Provider::<tonk_schema::command::EnrollCustomer>::execute(
+            &env, command,
+        )
+        .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("no page asked")),
+            "{outcome:?}"
+        );
+    }
+
+    /// A profile with no account has nobody to resend an activation to,
+    /// and the outcome says so instead of passing as sent.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_resend_an_activation_without_an_account() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state, crate::router::CommandOrigin::default());
+        let command = tonk_schema::command::ResendActivation {
+            this: "id:resend".parse().unwrap(),
+            at: tonk_schema::domain::command::resend::At(0),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::ResendActivation>::execute(
+                &env, command,
+            )
+            .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("no account root")),
+            "{outcome:?}"
+        );
+    }
 
     fn refusal(status: u16, code: Option<&str>) -> TonkWorkerError {
         TonkWorkerError::Upstream {

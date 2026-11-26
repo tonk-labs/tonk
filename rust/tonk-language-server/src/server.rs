@@ -40,7 +40,15 @@ use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 #[derive(Debug, Clone, Default)]
 struct Document {
     text: String,
+    /// The `languageId` the document was opened as.
+    language: String,
 }
+
+/// The `languageId` of a document in the Dialog notation. The server
+/// holds such a document and answers it nothing yet: no diagnostics and
+/// no completions, until a dialog query checks the notation. A document
+/// of any other language is read as tonk's YAML notation, as before.
+pub const NOTATION_LANGUAGE: &str = "dialog-notation";
 
 /// LSP language server for `tonk-notation` documents.
 ///
@@ -208,8 +216,13 @@ impl Server {
                     let uri = p.text_document.uri;
                     let text = p.text_document.text;
                     let version = p.text_document.version;
-                    self.documents
-                        .insert(uri.clone(), Document { text: text.clone() });
+                    self.documents.insert(
+                        uri.clone(),
+                        Document {
+                            text: text.clone(),
+                            language: p.text_document.language_id,
+                        },
+                    );
                     self.publish(uri, &text, Some(version), env).await;
                 }
             }
@@ -225,10 +238,16 @@ impl Server {
                     };
                     let uri = p.text_document.uri;
                     let version = p.text_document.version;
+                    let language = self
+                        .documents
+                        .get(&uri)
+                        .map(|document| document.language.clone())
+                        .unwrap_or_default();
                     self.documents.insert(
                         uri.clone(),
                         Document {
                             text: last.text.clone(),
+                            language,
                         },
                     );
                     self.publish(uri, &last.text, Some(version), env).await;
@@ -258,6 +277,9 @@ impl Server {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
+        if doc.language == NOTATION_LANGUAGE {
+            return Vec::new();
+        }
         let text = doc.text.as_str();
         let position = params.text_document_position.position;
         let Some(line_prefix) = line_prefix_at(text, position) else {
@@ -410,16 +432,25 @@ impl Server {
         version: Option<i32>,
         env: &impl EnvProvider,
     ) {
-        let parsed = tonk_notation::parse(text);
-        let mut diagnostics = parsed.diagnostics.clone();
-        // Only run the analyzer when the parser is happy — its
-        // errors are noise on top of structural parse failures.
-        if diagnostics.is_empty()
-            && let Some(syntax) = &parsed.syntax
-            && !syntax.expressions.is_empty()
-        {
-            let opened = open_for(&uri, env).await;
-            diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
+        let notation = self
+            .documents
+            .get(&uri)
+            .is_some_and(|document| document.language == NOTATION_LANGUAGE);
+        // A notation document is answered with an empty frame: nothing
+        // checks the notation here yet.
+        let mut diagnostics = Vec::new();
+        if !notation {
+            let parsed = tonk_notation::parse(text);
+            diagnostics = parsed.diagnostics.clone();
+            // Only run the analyzer when the parser is happy — its
+            // errors are noise on top of structural parse failures.
+            if diagnostics.is_empty()
+                && let Some(syntax) = &parsed.syntax
+                && !syntax.expressions.is_empty()
+            {
+                let opened = open_for(&uri, env).await;
+                diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
+            }
         }
         // Clamp every range against the live text. The parser
         // already clamps its own emissions, but analyzer
@@ -1539,6 +1570,120 @@ mod tests {
         assert_eq!(diags.len(), 1);
     }
 
+    /// A document opened as the Dialog notation is held and answered
+    /// with an empty frame, on open and on every change, whatever its
+    /// text: the YAML reader that would refuse `a:\n  b: 1\n c: 2\n`
+    /// is not run on it.
+    #[dialog_common::test]
+    async fn a_notation_document_publishes_empty_diagnostics() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/main/notation-0",
+                        "languageId": NOTATION_LANGUAGE,
+                        "version": 1,
+                        "text": "a:\n  b: 1\n c: 2\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let outbound = server.take_outbound();
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
+        assert_eq!(outbound[0].params["version"], 1);
+        assert_eq!(outbound[0].params["diagnostics"], json!([]));
+
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/main/notation-0",
+                        "version": 2
+                    },
+                    "contentChanges": [{ "text": "(select (todo ?t" }]
+                }
+            }),
+        )
+        .await;
+        let outbound = server.take_outbound();
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].params["version"], 2);
+        assert_eq!(outbound[0].params["diagnostics"], json!([]));
+    }
+
+    /// A notation document is offered no completions: what the YAML
+    /// reader would offer is not the notation's.
+    #[dialog_common::test]
+    async fn a_notation_document_offers_no_completions() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/main/notation-1",
+                        "languageId": NOTATION_LANGUAGE,
+                        "version": 1,
+                        "text": "\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let reply = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": "tonk-buffer:///test/main/notation-1" },
+                    "position": { "line": 0, "character": 0 }
+                }
+            }),
+        )
+        .await
+        .expect("a response");
+        let result = &reply["result"];
+        let items = result["items"].as_array().or(result.as_array());
+        assert!(
+            items.is_none_or(Vec::is_empty),
+            "no completions for the notation, got {result}"
+        );
+    }
+
     /// `person!:\n  this: ?alice\n  age: 29` — the user's
     /// exact reproducer. `person` is unknown to the LSP's noop
     /// resolver, but the structural variable scan still
@@ -1766,7 +1911,7 @@ mod tests {
             "tree/node",
             "tree/span",
             "tree/entry",
-            "tree/key",
+            "tree/block",
         ] {
             assert!(
                 labels.contains(&name),

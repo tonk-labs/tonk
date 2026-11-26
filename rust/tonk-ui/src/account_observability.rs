@@ -261,6 +261,7 @@ fn classification(action: AccountAction) -> (Journey, AnalyticsAction, Stage) {
         Ui::CreateAccount => (Journey::Onboarding, Event::CreateAccount, Stage::Input),
         Ui::LogIn => (Journey::Login, Event::Login, Stage::Input),
         Ui::AddPasskey => (Journey::Passkey, Event::AddPasskey, Stage::Input),
+        Ui::AddRecoveryPhrase => (Journey::Passkey, Event::AddRecoveryPhrase, Stage::Input),
         Ui::ChangeDisplayName => (
             Journey::AccountManagement,
             Event::ChangeDisplayName,
@@ -505,6 +506,7 @@ mod tests {
             AccountAction::CreateAccount,
             AccountAction::LogIn,
             AccountAction::AddPasskey,
+            AccountAction::AddRecoveryPhrase,
             AccountAction::ChangeDisplayName,
             AccountAction::ResendActivation,
             AccountAction::LoadDevices,

@@ -155,6 +155,9 @@ pub struct AttributeDefinition {
     pub entity: Entity,
     /// The reconstructed descriptor.
     pub descriptor: AttributeDescriptor,
+    /// How tonk reads it: its cardinality and the rank a concept field
+    /// reading it picks (see [`crate::pick`]).
+    pub reading: crate::pick::Reading,
 }
 
 // -----------------------------------------------------------------
@@ -257,6 +260,7 @@ impl ResolveAttribute<'_> {
         Ok(Some(AttributeDefinition {
             entity: attribute.entity,
             descriptor: attribute.descriptor,
+            reading: attribute.reading,
         }))
     }
 }
@@ -428,7 +432,7 @@ mod tests {
         let mut txn = txn;
         for (_, attr) in descriptor.with().iter() {
             for statement in
-                crate::concept::attribute_statements(attr.descriptor()).expect("attribute facts")
+                crate::concept::field_attribute_statements(attr).expect("attribute facts")
             {
                 txn = txn.assert(statement);
             }

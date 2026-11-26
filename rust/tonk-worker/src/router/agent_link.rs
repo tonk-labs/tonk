@@ -258,7 +258,7 @@ pub(super) async fn request_detailed(
                 .map_err(|error| error.to_string())?,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .unwrap_or_else(|never| match never {});
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 2_000_000)
         .await

@@ -25,8 +25,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::pick::Reading;
 use dialog_corpus::{
-    Entity, Fact, Pick, Relation as CorpusRelation, Selector, Statement, Update, Value,
+    Cardinality, Entity, Fact, Relation as CorpusRelation, Selector, Statement, Update, Value,
 };
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use dialog_repository::Branch;
@@ -171,10 +172,10 @@ async fn plan<Env: QueryEnv>(
             legacy.insert(claim.of);
         }
     }
-    let mut attributes: HashMap<Entity, AttributeDescriptor> = HashMap::new();
+    let mut attributes: HashMap<Entity, (AttributeDescriptor, Reading)> = HashMap::new();
     for entity in legacy {
         let claims = select(branch, env, Selector::new().of(entity.clone())).await?;
-        let Some(descriptor) = legacy_descriptor(&claims) else {
+        let Some((descriptor, reading)) = legacy_descriptor(&claims) else {
             upgraded.undecodable.push(entity);
             continue;
         };
@@ -188,7 +189,7 @@ async fn plan<Env: QueryEnv>(
         {
             writes.push(Write::retract(claim));
         }
-        for statement in attribute_statements(&descriptor)? {
+        for statement in attribute_statements(&descriptor, reading)? {
             writes.push(Write::Statement(statement));
         }
         if now == entity {
@@ -196,7 +197,7 @@ async fn plan<Env: QueryEnv>(
         } else {
             upgraded.moves.push((entity.clone(), now));
         }
-        attributes.insert(entity, descriptor);
+        attributes.insert(entity, (descriptor, reading));
     }
 
     // Concepts with a field over one of them: written again over the
@@ -241,28 +242,25 @@ async fn plan<Env: QueryEnv>(
         let mut with: Vec<(String, ConceptFieldDescriptor)> = Vec::new();
         let mut complete = true;
         for (field, attribute) in &fields {
-            let descriptor = match attributes.get(attribute) {
-                Some(descriptor) => descriptor.clone(),
+            let (descriptor, reading) = match attributes.get(attribute) {
+                Some(known) => known.clone(),
                 None => match AttributeByEntity::new(attribute.clone())
                     .resolve(&source, env)
                     .await
                     .map_err(|e| e.to_string())?
                 {
-                    Some(current) => current.descriptor,
+                    Some(current) => (current.descriptor, current.reading),
                     None => {
                         complete = false;
                         break;
                     }
                 },
             };
-            with.push((
-                field.clone(),
-                if optional.contains(field) {
-                    ConceptFieldDescriptor::optional(descriptor)
-                } else {
-                    ConceptFieldDescriptor::required(descriptor)
-                },
-            ));
+            let Ok(read) = reading.field(descriptor, optional.contains(field)) else {
+                complete = false;
+                break;
+            };
+            with.push((field.clone(), read));
         }
         if !complete {
             continue;
@@ -330,7 +328,7 @@ async fn plan<Env: QueryEnv>(
                 the: claim.the.clone(),
                 of: claim.of.clone(),
                 is: follow(&claim.is),
-                pick: Pick::All,
+                pick: Cardinality::Many,
             }));
         }
         let about = select(branch, env, Selector::new().of(earlier.clone())).await?;
@@ -346,9 +344,9 @@ async fn plan<Env: QueryEnv>(
         }
         for claims in by_relation.into_values() {
             let pick = if claims.len() == 1 {
-                Pick::Last
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
                 writes.push(Write::retract(&claim));
@@ -356,7 +354,7 @@ async fn plan<Env: QueryEnv>(
                     the: claim.the.clone(),
                     of: now.clone(),
                     is: follow(&claim.is),
-                    pick: pick.clone(),
+                    pick,
                 }));
             }
         }
@@ -368,7 +366,7 @@ async fn plan<Env: QueryEnv>(
 /// The descriptor an attribute recorded the earlier way spells, from its
 /// `db.attribute/id`, `type`, `cardinality`, `select`, `among` and
 /// `db.meta/description` claims.
-fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
+fn legacy_descriptor(claims: &[Fact]) -> Option<(AttributeDescriptor, Reading)> {
     let text = |name: &str| {
         claims.iter().find_map(|claim| match &claim.is {
             Value::String(text) if claim.the.as_str() == name => Some(text.clone()),
@@ -382,15 +380,17 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
     if let Some(kind) = text("db.attribute/type").filter(|kind| !kind.is_empty()) {
         shape.insert("as".to_owned(), serde_json::Value::String(kind));
     }
-    if let Some(cardinality) = text("db.attribute/cardinality").filter(|c| !c.is_empty()) {
-        shape.insert(
-            "cardinality".to_owned(),
-            serde_json::Value::String(cardinality),
-        );
-    }
+    let mut reading = match text("db.attribute/cardinality").as_deref() {
+        Some("many") => Reading::plain(Cardinality::Many),
+        _ => Reading::default(),
+    };
     if let Some(select) = text("db.attribute/select").filter(|s| !s.is_empty()) {
-        shape.insert("pick".to_owned(), serde_json::Value::String(select));
+        reading = Reading::of_pick(&select)?;
     }
+    shape.insert(
+        "cardinality".to_owned(),
+        serde_json::Value::String(reading.cardinality.name().to_owned()),
+    );
     if let Some(among) = text("db.attribute/among") {
         shape.insert("as".to_owned(), serde_json::from_str(&among).ok()?);
     }
@@ -400,7 +400,10 @@ fn legacy_descriptor(claims: &[Fact]) -> Option<AttributeDescriptor> {
             serde_json::Value::String(description),
         );
     }
-    serde_json::from_value(serde_json::Value::Object(shape)).ok()
+    Some((
+        serde_json::from_value(serde_json::Value::Object(shape)).ok()?,
+        reading,
+    ))
 }
 
 /// Whether a claim about an attribute entity is part of its definition,
@@ -461,7 +464,7 @@ impl Write {
             the: claim.the.clone(),
             of: claim.of.clone(),
             is: claim.is.clone(),
-            pick: Pick::All,
+            pick: Cardinality::Many,
         })
     }
 }
@@ -473,7 +476,7 @@ struct Raw {
     the: CorpusRelation,
     of: Entity,
     is: Value,
-    pick: Pick,
+    pick: Cardinality,
 }
 
 impl Statement for Raw {
@@ -494,7 +497,7 @@ mod tests {
     use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
     use tonk_core::meta::{Name, name};
 
-    fn raw(the: &str, of: &Entity, is: Value, pick: Pick) -> anyhow::Result<Raw> {
+    fn raw(the: &str, of: &Entity, is: Value, pick: Cardinality) -> anyhow::Result<Raw> {
         Ok(Raw {
             the: the.parse()?,
             of: of.clone(),
@@ -519,7 +522,7 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
             "with": {
                 "title": { "the": "xyz.tonk.note/title", "as": "text:", "description": "A title" },
-                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "pick": "all:" }
+                "tags": { "the": "xyz.tonk.note/tags", "as": "text:", "cardinality": "many" }
             }
         }))?;
         let earlier_concept = concept_identity_v0(&descriptor);
@@ -543,13 +546,13 @@ mod tests {
                     Value::String(attribute.description().into()),
                 ),
             ] {
-                transaction = transaction.assert(raw(the, &earlier, is, Pick::Last)?);
+                transaction = transaction.assert(raw(the, &earlier, is, Cardinality::One)?);
             }
             transaction = transaction.assert(raw(
                 &format!("db.concept.with/{field}"),
                 &earlier_concept,
                 Value::Entity(earlier),
-                Pick::All,
+                Cardinality::Many,
             )?);
         }
         transaction = transaction
@@ -557,13 +560,13 @@ mod tests {
                 "db.meta/concept",
                 &earlier_concept,
                 Value::Entity("db:concept".parse()?),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(raw(
                 "xyz.tonk.view/ui",
                 &earlier_concept,
                 Value::String("<p>{title}</p>".into()),
-                Pick::Last,
+                Cardinality::One,
             )?)
             .assert(Name {
                 this: "id:note".parse()?,

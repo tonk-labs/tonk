@@ -46,3 +46,33 @@ test("the in-space account ceremony wears the FABB's bright twin in both schemes
     "the backdrop dims the page in the page's own scheme",
   );
 });
+
+test("the guest iframe takes no margin, so the page is never taller than the window", () => {
+  assert.match(appStyles, /tonk-site > iframe \{\s*margin: 0;\s*\}/);
+});
+
+test("task pages follow the system's scheme like the hub and settings", () => {
+  // gooey keeps task pages light; a light sign-in page between a dark hub
+  // and dark settings is what this overrides.
+  assert.match(
+    appStyles,
+    /:root :is\(\.tonk-task, \.fabb-page\):not\(#tonk-register\[data-fabb-task\] \*\) \{\s*color-scheme: light dark;\s*\}/,
+    "task pages must follow the system, except the ceremony seated in the FABB",
+  );
+  const register = appStyles.match(/#tonk-register\.register-page\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.doesNotMatch(register, /color-scheme:\s*light;/, "the sign-in page must not pin itself light");
+});
+
+test("a task page names tonk-look's paper for the bar's knobs, not their light fallbacks", () => {
+  // gooey's rules read `var(--fabb-ink, #38182a)`: a knob left `initial`
+  // falls through to the light literal, dark plum on a dark sheet.
+  const page = appStyles.match(/\n\.fabb-page \{([^}]*)\}/)?.[1] ?? "";
+  for (const [knob, token] of [
+    ["--fabb-ink", "--tonk-text"],
+    ["--fabb-ink-soft", "--tonk-text-soft"],
+    ["--fabb-hover", "--tonk-wash"],
+    ["--fabb-press", "--tonk-wash-strong"],
+  ]) {
+    assert.ok(page.includes(`${knob}: var(${token});`), `${knob} must name ${token} on a task page`);
+  }
+});

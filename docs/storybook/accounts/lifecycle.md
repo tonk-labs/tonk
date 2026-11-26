@@ -68,6 +68,14 @@ The display-name field commits when Enter or blur ends the edit. Its normal
 native caret is visible while focused; an unfocused field has no blinking
 cursor, so a settled value does not continue to look editable or active.
 
+Every account surface in the browser wears the same palette and the same
+sheet as settings, in the system's light or dark scheme: the sign-in, email
+confirmation and activation pages, the passkey consent card, and the recovery
+phrase dialogs (showing the words, asking some back, and asking for the phrase
+in place of a passkey). A dark hub never opens onto a light sign-in page, and
+the phrase dialogs are task sheets like the rest rather than separate blocks
+(`LIFE-32`).
+
 This is a source-derived presentation decision for `ACCT-B04`, `ACCT-B14`,
 `ACCT-B15`, `ACCT-B13`, `LIFE-21`, `WEB-11`, `WEB-12`, and `WEB-13`, pinned to
 `a3f8657d3` and refined by the focused browser regression on 2026-09-02. The
@@ -209,6 +217,20 @@ sharing are waiting on confirmation.
 > only structured part is whether retrying can help. The registration row reads
 > the resulting fact through a subscription rather than a fetch, so an
 > activation performed anywhere repaints every open tab.
+
+Signing in on a browser that has never seen the account brings the account's
+spaces in over the network, which takes as long as the account is large and
+the link is slow. Until they arrive, the Hub says “Bringing your spaces from
+your account…” where the spaces will be, and never “No spaces yet”. A person
+who moves between their spaces and settings meanwhile sees that same waiting
+state; no page draws the half-synced profile, and a navigation made during the
+sync lands once it ends (`LIFE-31`, `BUG-351`).
+
+> Technical note: on first contact the browser withdraws its own profile
+> library before pulling the account's, so profile main briefly holds no routes
+> or views. The worker holds delivery on that branch for the take-over and
+> answers streams opened meanwhile with `pending`, so readers go from the
+> device's library straight to the account's.
 
 CLI login waits on a loopback callback and Ctrl-C concurrently. After browser
 approval, it validates the returned grant before writing it, then writes the

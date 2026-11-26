@@ -23,8 +23,12 @@ use super::{AppState, LspHub};
 use crate::TonkWorkerError;
 
 pub mod access;
+pub mod card;
+pub mod creation;
+pub mod in_agent;
 pub mod join;
 pub mod mcp;
+pub mod propose;
 pub mod telemetry;
 pub mod view;
 mod writer;
@@ -97,6 +101,47 @@ impl HostedPeer {
         proofs: &[DelegationChain],
         caches: HeldCaches,
     ) -> Result<Self, TonkWorkerError> {
+        Self::open_with(
+            directory,
+            signer,
+            proofs,
+            caches,
+            crate::router::command_providers(),
+        )
+        .await
+    }
+
+    /// [`open_in`](Self::open_in) for an agent's writes over MCP: its
+    /// writes run only the commands an MCP tool exposes
+    /// ([`agent_command_providers`](crate::router::agent_command_providers)).
+    /// A shown view's peer opens with [`open_as`](Self::open_as) instead:
+    /// what the person does in a view is theirs, not the model's.
+    pub async fn open_for_agent_in(
+        directory: Directory,
+        seed: &[u8; 32],
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+    ) -> Result<Self, TonkWorkerError> {
+        let signer = Ed25519Signer::import(seed)
+            .await
+            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+        Self::open_with(
+            directory,
+            signer,
+            proofs,
+            caches,
+            crate::router::agent_command_providers(),
+        )
+        .await
+    }
+
+    async fn open_with(
+        directory: Directory,
+        signer: Ed25519Signer,
+        proofs: &[DelegationChain],
+        caches: HeldCaches,
+        commands: crate::router::CommandProviders,
+    ) -> Result<Self, TonkWorkerError> {
         let internal = |error: &dyn std::fmt::Display| TonkWorkerError::Internal(error.to_string());
         let (credentials, _) = crate::device::open_system(directory.clone())
             .await
@@ -121,7 +166,7 @@ impl HostedPeer {
         // The profile is this peer's signing identity and nothing else: it
         // is never synced or browsed, so it skips the bootstrap a device's
         // profile gets on every boot.
-        let state = crate::worker::boot_unbootstrapped_state(
+        let mut state = crate::worker::boot_unbootstrapped_state(
             storage,
             "hosted".to_owned(),
             profile,
@@ -131,6 +176,7 @@ impl HostedPeer {
         if state.profile.did() != did {
             return Err(TonkWorkerError::Internal("hosted identity mismatch".into()));
         }
+        state.shared_mut().commands = commands;
         save_proofs(&state, proofs).await?;
         let (router, state, hub) = super::api_router_with_state(state);
         Ok(Self {

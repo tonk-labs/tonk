@@ -11,7 +11,7 @@ use ::axum::{
 };
 use axum::extract::Query as AxumQuery;
 use base64::Engine;
-use dialog_corpus::{Entity, Pick, Relation, Selector, Statement, Update, Value};
+use dialog_corpus::{Cardinality, Entity, Relation, Selector, Statement, Update, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -103,7 +103,7 @@ pub(crate) struct RawClaim {
     pub(crate) the: Relation,
     pub(crate) of: Entity,
     pub(crate) is: Value,
-    pub(crate) policy: Pick,
+    pub(crate) policy: Cardinality,
 }
 
 impl Statement for RawClaim {
@@ -193,6 +193,8 @@ fn value_to_json(value: &Value) -> serde_json::Value {
             serde_json::Value::String(encoded)
         }
         Value::Symbol(s) => serde_json::Value::String(s.to_string()),
+        // A map or a list, as the JSON dialog writes it in.
+        Value::Composite(c) => serde_json::to_value(c).unwrap_or(serde_json::Value::Null),
     }
 }
 
@@ -239,7 +241,7 @@ pub async fn assert_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_corpus::Pick::All,
+        policy: dialog_corpus::Cardinality::Many,
     };
 
     tonk_state
@@ -313,7 +315,7 @@ pub async fn retract_claim(
         the: attribute,
         of: entity,
         is: value,
-        policy: dialog_corpus::Pick::All,
+        policy: dialog_corpus::Cardinality::Many,
     };
 
     tonk_state

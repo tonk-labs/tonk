@@ -1,0 +1,17 @@
+(concept (todo ?t title: ?title state: ?state list: ?list)
+  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one)
+  (tour.todo/state of: ?t is: ?state as: [:open :done] cardinality: :one)
+  (tour.todo/list of: ?t is: ?list as: :entity cardinality: :one))
+
+(concept (todo/complete todo: ?t)
+  (tour.todo.complete/todo of: ?c is: ?t as: :entity in: :control cardinality: :one))
+
+(assert (todo todo:milk title: "Buy milk" state: :open list: list:home))
+
+(rule (assert (todo ?t title: ?title state: :done list: ?l))
+  (todo/complete todo: ?t)
+  (todo ?t title: ?title state: :open list: ?l))
+
+(rule (retract (todo ?t title: ?title state: :open list: ?l))
+  (todo/complete todo: ?t)
+  (todo ?t title: ?title state: :open list: ?l))

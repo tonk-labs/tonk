@@ -32,162 +32,89 @@
           -++    .+%=*::+.*-    ##*@+--#@@@+.....=:.==. *-*+%  +%+-
 ```
 
-Tonk is a system for co-computing over live data in a programmable environment. It allows for the provisioning and syncing of **space** which is a data store that people and programs read and write through links with object capabilities attached. Each client that opens the
-link keeps a local copy of the space and syncs its changes with the other copies. A space contains its data, the schemas that describe the data, views (web pages that show and edit the data), rules, and a signed history of all changes.
-
-## System Components
-
-[ARCHITECTURE.md](ARCHITECTURE.md) describes six different system components,
-its technical basis, and the crates that implement it.
+Tonk is a system for co-computing over live data in a programmable environment.
+People and programs share a **space** through links that grant capabilities
+such as reading or writing. A space holds its data, the schemas that describe
+it, the views that show and edit it, its rules, and a signed history of changes.
+Local copies can work offline and sync when they reconnect.
 
 ## Typical uses
 
-- State machines for programmable agentic automations, views can be used for human operators to interact
-- These state machines can become templates and then quickly run with pluggable credentials, for on-demand, situated automations.
-- Cost-efficient, agent-first internal team tools.
-- Low-friction distribution of software that serves small groups of people.
-- Multi-agent coordination control and messaging plane
-- Edge-device or remote applications that must work offline and sync later.
+- Automate workflows with state machines that agents run and people operate through views.
+- Reuse a workflow as a template with different credentials.
+- Build internal tools that agents and teammates use together.
+- Share an application with a small group through a link.
+- Coordinate multiple agents through shared tasks and messages.
+- Run applications on remote devices that work offline and sync later.
 
-For background, see
-[Defining the common primitive](https://tonk.xyz/updates/defining-the-common-primitive).
+## Web
 
-## Download Tonk Desktop
+[Open Tonk](https://tonk.network) to create a space or open one someone has
+shared with you.
 
-For macOS 15+ on Apple Silicon. Unzip the download and move **Tonk Nightly.app**
-to **Applications**.
+## MCP
 
-| Channel | Download | Published from |
-| --- | --- | --- |
-| Nightly | [Download for Mac](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip) | Latest successfully published `main` build |
+Connect an agent to `https://tonk.network/mcp`. Sign in to Tonk and choose
+which spaces the agent can read or write. For example, an agent with write
+access can update a task that teammates see on their board.
+[Add Tonk to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tonk&connectorUrl=https%3A%2F%2Ftonk.network%2Fmcp)
+or follow the [MCP setup guide](https://tonk-labs.github.io/docs/mcp.html).
 
-Nightly is its own app, **Tonk Nightly** (`xyz.tonk.nightly`), and uses
-`tonk.foundation` by default. The stable app, **Tonk** (`xyz.tonk`), uses
-`tonk.network`; it is not published until Desktop ships to production. The two
-have separate identities and local data, so they can be installed side by side.
-Builds are Developer ID signed and notarized, and include
-`Tonk-macos-arm64.sha256` and `Tonk-desktop-manifest.json` with the exact
-version, channel and source commit. Downloads are manual.
+## Desktop
 
-## The `tonk` CLI
+Tonk Desktop is a native macOS workspace for spaces and agents.
+[Download Tonk Nightly for Apple Silicon](https://github.com/tonk-labs/tonk/releases/download/tonk-desktop-dev/Tonk-macos-arm64.zip)
+(macOS 15+), unzip it and move **Tonk Nightly.app** to **Applications**.
+Nightly connects to `tonk.foundation` by default.
 
-`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a *space* — a named Dialog repository in a central registry. `tonk space use <name>` binds the current directory to a space without copying data there; `--space` and `TONK_SPACE` override that binding for one invocation or process. The CLI speaks the same asserted-notation as the rest of Tonk: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk show`, `tonk concept`, `tonk view`) and built-in guides (`tonk help -g`, e.g. `tonk help notation`).
+## CLI
 
-### Install
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
-```
-
-This detects your platform, verifies the download against the release checksums, and installs the `tonk` binary to `/usr/local/bin` (or `~/.local/bin` if that is not writable). Apple Silicon macOS and x86_64 Linux are published. If `tonk` isn't found afterward, the install location isn't on your `PATH` — add it, e.g. `export PATH="$HOME/.local/bin:$PATH"`. Set `TONK_INSTALL_DIR` to install elsewhere.
-
-To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
-```
-
-To follow the latest build of `main`, set `TONK_CHANNEL=dev`. It moves with every merge, so it can read and write whatever `main` does:
-
-```sh
-curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=dev sh
-```
-
-You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. Newly published macOS binaries are Developer ID signed and notarized by Apple.
-
-### Update
-
-```sh
-tonk update
-```
-
-This upgrades an install made by the install script on its recorded
-channel. A default install follows the stable GitHub release; an install
-made with `TONK_CHANNEL=staging` follows the rolling staging release, and
-one made with `TONK_CHANNEL=dev` the rolling build of `main`. It
-verifies the download against the release checksums, checks the new
-binary runs, and only then replaces the old one — so a failed update
-leaves your working `tonk` untouched. On macOS it preserves the published
-Developer ID signature while replacing the executable.
-
-`tonk` checks for new releases once a day and prints a one-line notice
-on stderr when one exists. Turn that off with `tonk update
---disable-check` (or `TONK_NO_UPDATE_CHECK=1`), and back on with `tonk
-update --enable-check`. It never runs in CI.
-
-Check what you have with `tonk --version`. `tonk update` and the daily
-release check follow the channel in the matching install receipt; the
-ambient `TONK_CHANNEL` value does not switch an existing binary. Rerun
-the installer with or without `TONK_CHANNEL=staging` (or `dev`) to deliberately
-switch that installation's channel.
-
-If `tonk` was installed some other way, `tonk update` says so instead
-of interfering: use `npm i -g @tonk/cli` for a stable npm install,
-`npm i -g @tonk/cli@next` for a prerelease npm install, or your flake for
-a nix one. Re-running the install command also still works:
+The `tonk` CLI reads and writes space data from the terminal. Install it on
+Apple Silicon macOS or x86_64 Linux, then run `tonk help tutorial` for a walkthrough.
 
 ```sh
 curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
 ```
 
-### Quick start
+Create a local space in a fresh working directory, then write and query a task.
 
 ```sh
-tonk space new garden      # register a space and select it
-tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
-tonk show                  # the schema: concepts and their fields
-tonk help notation         # built-in asserted-notation reference
+tonk space new garden
+tonk concept add task --field title:text:one --description "A task to do"
+tonk eval -c 'task!: {title: Water the garden}'
+tonk query task
 ```
 
-## Agents
-
-An agent can use Tonk through the `tonk` CLI (start with `tonk help agent`
-and `tonk help tutorial`) or through an MCP connection. For the data model and
-the code layout, read [ARCHITECTURE.md](ARCHITECTURE.md). The MCP contracts are
-in [`mcp/AGENT-LINKS.md`](mcp/AGENT-LINKS.md), and the Claude Code plugin is
-in [`plugins/tonk`](plugins/tonk).
-
-### Connect Claude to Tonk
-
-**[Add Tonk to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Tonk&connectorUrl=https%3A%2F%2Ftonk.network%2Fmcp)**
-
-The link opens Claude's Add custom connector dialog with the name and the
-server URL (`https://tonk.network/mcp`) filled in. Confirm, select
-**Connect**, and approve the agent in Tonk. Other clients, ChatGPT included,
-are covered in the [MCP server docs](https://tonk-labs.github.io/docs/mcp.html).
-
-# What's in This Repo
-
-This repository contains the Tonk Rust workspace (sync and storage, the web
-app, the CLI and the agent connections) and the macOS desktop app.
-
-> ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try it, the [`tonk` CLI](#the-tonk-cli) is the easiest entry point.
-
-The crates and their roles are listed in
-[ARCHITECTURE.md](ARCHITECTURE.md#crate-map).
-
-## Developer setup
-
-The toolchain comes from the Nix flake. Run commands inside its shell:
-
-```sh
-nix develop . -c dev:web          # web app with a local access service
-nix develop . -c test:native:debug
-nix develop . -c test:web:debug   # browser (wasm) tests, see docs/wasm-testing.md
-nix develop . -c lint
-nix develop . -c dev:desktop      # build and open Tonk Desktop
-```
-
-`nix develop` with no command opens the shell and lists every command.
-Without Nix, see [`docs/wasm-tests-without-nix.md`](docs/wasm-tests-without-nix.md).
-
-# Resources
+## Resources
 
 - [Website](https://tonk.xyz)
 - [Updates](https://tonk.xyz/updates)
-- [For agents: llms.txt](https://tonk.xyz/llms.txt)
+- [Defining the common primitive](https://tonk.xyz/updates/defining-the-common-primitive)
 - [Discord](https://discord.com/invite/hBPQ9xPWF7)
+- For agents only: [Tonk guide](https://tonk.network/guide/) and [llms.txt](https://tonk.xyz/llms.txt).
 
 ## License
 
-MIT © Tonk Labs
+[MIT](LICENSE) © Tonk Labs
+
+## Development
+
+From the repository root, use [Nix](https://nixos.org/download/) with flakes
+enabled to start the web app and its local access service.
+
+```sh
+ACCESS_STATE_DIR="$PWD/.tonk-dev/access" nix develop . -c dev:web
+```
+
+Open [localhost:8080](http://localhost:8080). The state directory preserves the
+local service's identity and data between runs.
+
+```sh
+nix develop . -c test:native:debug
+nix develop . -c test:web:debug
+nix develop . -c lint
+```
+
+Run `nix develop` for the full command list. See the
+[architecture and crate map](ARCHITECTURE.md) for the implementation and the
+[desktop build instructions](desktop/README.md#build) for macOS development.

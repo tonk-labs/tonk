@@ -470,10 +470,47 @@ async fn perform(
             login(&state, source, &custodian, link).await
         }
         tonk_worker_api::CustodyIntent::AddPasskey(addition) => {
-            let holder = custodian_named(data, "holder")
+            // The account sheet follows the ceremony row, so the outcome is
+            // reported there, done or failed, as every other ceremony is.
+            let outcome = match custodian_named(data, "holder").await {
+                Ok(Some(holder)) => add_passkey(&state, &custodian, &holder, addition).await,
+                Ok(None) => Err("the handoff carried no holder passkey".to_string()),
+                Err(error) => Err(error),
+            };
+            let tonk = state.read().await;
+            match &outcome {
+                Ok(_) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::DONE,
+                        "",
+                    )
+                    .await
+                }
+                Err(error) => {
+                    super::ceremony::report(
+                        &tonk,
+                        tonk_schema::ceremony::ADD_PASSKEY,
+                        tonk_schema::ceremony_state::FAILED,
+                        split_refusal(error).1,
+                    )
+                    .await
+                }
+            }
+            outcome
+        }
+        tonk_worker_api::CustodyIntent::AddRecoveryPhrase(addition) => {
+            let phrase = phrase_custodian(data)
                 .await?
-                .ok_or_else(|| "the handoff carried no holder passkey".to_string())?;
-            add_passkey(&state, &custodian, &holder, addition).await
+                .ok_or_else(|| "the handoff carried no recovery phrase".to_string())?;
+            add_recovery_phrase(&state, &custodian, &phrase, addition).await
+        }
+        tonk_worker_api::CustodyIntent::LoginWithRecoveryPhrase(link) => {
+            if !matches!(custodian, tonk_identity::custodian::Custodian::Phrase(_)) {
+                return Err("a recovery-phrase sign-in carried no recovery phrase".to_string());
+            }
+            login(&state, source, &custodian, link).await
         }
         // Both answer with where the page goes next: the guest that
         // asked is on a page the outcome retires (a purged profile, or
@@ -587,7 +624,225 @@ async fn add_passkey(
         .map_err(|error| format!("the account did not seal under the new passkey: {error:#}"))?;
 
     let tonk = state.read().await;
-    enroll(&tonk, added, &sealed, None, None).await
+    add_custodian(
+        &tonk,
+        added,
+        &sealed,
+        AddedCustodian::Passkey {
+            // The page's own label, so the account's passkey list names
+            // it; the device title when the page sent none.
+            created_on: addition
+                .created_on
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(crate::onboarding::device_title),
+        },
+    )
+    .await?;
+    customer_reply(&root.did().to_string())
+}
+
+/// The reply an added custodian answers with: the account it joined.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn customer_reply(customer: &str) -> Result<wasm_bindgen::JsValue, String> {
+    let answer = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &answer,
+        &wasm_bindgen::JsValue::from_str("customer"),
+        &wasm_bindgen::JsValue::from_str(customer),
+    )
+    .map_err(|_| "the reply could not be built".to_string())?;
+    Ok(answer.into())
+}
+
+/// The code a custody reply carries when the account already has a
+/// recovery phrase. A phrase cannot be revoked, so a second one would
+/// only add another way in beside the first.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) const RECOVERY_PHRASE_EXISTS: &str = "RecoveryPhraseExists";
+
+/// Seal the account the passkey holds under a recovery phrase, and make
+/// the phrase a way in from any device ([`add_custodian`]).
+///
+/// Refused, before anything is opened or written, for an account that is
+/// not active or already has a phrase.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn add_recovery_phrase(
+    state: &AppState,
+    holder: &tonk_identity::custodian::Custodian,
+    phrase: &tonk_identity::custodian::Custodian,
+    addition: tonk_worker_api::RecoveryPhraseAddition,
+) -> Result<wasm_bindgen::JsValue, String> {
+    use dialog_varsig::Principal as _;
+
+    {
+        let tonk = state.read().await;
+        if !crate::router::customer::is_active(&tonk).await {
+            return Err(account_not_active());
+        }
+        if crate::router::account_state::recovery_phrase(&tonk)
+            .await
+            .map_err(|error| format!("{error}"))?
+            .is_some()
+        {
+            return Err(format!(
+                "{RECOVERY_PHRASE_EXISTS}\u{1f}This account already has a recovery phrase, and it cannot be replaced."
+            ));
+        }
+    }
+
+    let account = holder
+        .account()
+        .load(addition.endpoint.clone())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| refusal("the custody cell did not open", &error))?
+        .ok_or_else(|| "that passkey has published no account".to_string())?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    if root.did().to_string() != addition.account_did {
+        return Err("the asserted passkey unlocks a different account".to_string());
+    }
+
+    let sealed = phrase
+        .account()
+        .adopt(account.into_secret())
+        .perform(&tonk_identity::account::Crypto)
+        .await
+        .map_err(|error| format!("the account did not seal under the phrase: {error:#}"))?;
+    let tonk = state.read().await;
+    add_custodian(&tonk, phrase, &sealed, AddedCustodian::Phrase).await?;
+    customer_reply(&root.did().to_string())
+}
+
+/// The code a custody reply carries when the account is not active yet,
+/// so the page can say to open the activation link first rather than
+/// showing a generic failure.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) const ACCOUNT_NOT_ACTIVE: &str = "AccountNotActive";
+
+/// The refusal [`add_custodian`] answers for an account the access
+/// service does not serve yet.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+pub(crate) fn account_not_active() -> String {
+    format!(
+        "{ACCOUNT_NOT_ACTIVE}\u{1f}Activate your account first: open the link in the email we sent you."
+    )
+}
+
+/// What a custodian added to an existing account is, for its row.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) enum AddedCustodian {
+    /// A second passkey, labelled with the device that added it.
+    Passkey { created_on: String },
+    /// The account's recovery phrase.
+    Phrase,
+}
+
+/// Make `custodian` a way into the account from any device.
+///
+/// The account provisions the custody DID the custodian derives, under
+/// the custody key's own consent, and the custody key then writes the
+/// sealed account secret into that space's cell. That is what lets a
+/// browser holding nothing but the custodian find the account: it
+/// derives the same custody DID and resolves the cell. Only then is the
+/// envelope recorded on profile main with the custodian's row.
+///
+/// Sign-up does not come here. Its first passkey's cell rides on
+/// `/customer/enroll`, the one call a not-yet-activated customer is
+/// served; everything added later goes through `/provider/add`, which is
+/// why the account must be active. An inactive account is refused before
+/// anything is provisioned, written or recorded, and nothing is queued:
+/// a custodian that cannot reach the account from another device is
+/// not added at all.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn add_custodian(
+    tonk: &crate::worker::TonkState,
+    custodian: &tonk_identity::custodian::Custodian,
+    account: &tonk_identity::account::Account,
+    kind: AddedCustodian,
+) -> Result<(), String> {
+    use dialog_varsig::Principal as _;
+
+    if !crate::router::customer::is_active(tonk).await {
+        return Err(account_not_active());
+    }
+    let custody = custodian
+        .signer()
+        .await
+        .map_err(|error| format!("the custody signer did not derive: {error:#}"))?;
+    let root = account
+        .signer()
+        .await
+        .map_err(|error| format!("the account signer did not derive: {error:#}"))?;
+    // One `/custody/add`: the service writes the cell and then
+    // provisions the custody space, so a refusal or a failed write
+    // leaves no half-added custodian behind. The consent is issued to
+    // the account, which is what binds the write to it.
+    let consent = tonk_identity::custody::sign_custody_consent(custody.clone(), &root.did())
+        .await
+        .map_err(|error| format!("the custody consent did not sign: {error:#}"))?;
+    let sealed = account.envelope().encode();
+    let recovery = tonk_identity::custody::sign_publish_invocation(
+        custody.clone(),
+        &sealed,
+        None,
+        dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
+    )
+    .await
+    .map_err(|error| format!("the custody cell write did not sign: {error:#}"))?;
+    crate::router::customer::add_custody(
+        tonk,
+        &tonk_identity::request::CustodyMaterial {
+            custody: &custody.did(),
+            consent: &consent,
+            recovery: &recovery,
+            sealed: &sealed,
+        },
+    )
+    .await
+    .map_err(|error| format!("the custodian was not added: {error}"))?;
+
+    let created_at = (js_sys::Date::now() / 1000.0) as u64;
+    match kind {
+        AddedCustodian::Passkey { created_on } => {
+            crate::router::customer::record_custody_cell(
+                tonk,
+                &custody.did().to_string(),
+                &hex::encode(&sealed),
+                Some(tonk_worker_api::PasskeyMetadata {
+                    created_at,
+                    created_on,
+                }),
+                &custodian
+                    .credential_id()
+                    .map(hex::encode)
+                    .unwrap_or_default(),
+                None,
+            )
+            .await
+        }
+        AddedCustodian::Phrase => {
+            crate::router::customer::record_recovery_phrase(
+                tonk,
+                &custody.did(),
+                &sealed,
+                created_at,
+            )
+            .await
+        }
+    }
+    .map_err(|error| format!("the new way in was not recorded: {error}"))
 }
 
 /// Open the account this passkey holds and link this browser to it.
@@ -1238,9 +1493,56 @@ async fn link_account(
 async fn custodian_from(
     data: &wasm_bindgen::JsValue,
 ) -> Result<tonk_identity::custodian::Custodian, String> {
+    // A sign-in with a recovery phrase carries the words in place of a
+    // passkey's handles. Anything that adds a phrase carries both, and
+    // the passkey is the primary: it is what opens the account.
+    let has_key = js_sys::Reflect::has(data, &wasm_bindgen::JsValue::from_str("key"))
+        .map_err(|_| "the handoff could not inspect key".to_string())?;
+    if !has_key && let Some(phrase) = phrase_custodian(data).await? {
+        return Ok(phrase);
+    }
     custodian_named(data, "")
         .await?
         .ok_or_else(|| "the handoff carried no primary custodian".to_string())
+}
+
+/// The custodian a recovery phrase in the handoff derives, or `None`
+/// when the handoff carries none.
+///
+/// The page posts the phrase's 16 bytes as a `Uint8Array`, never the
+/// words, and the array is cleared as soon as it is copied, as the PRF
+/// arrays are.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn phrase_custodian(
+    data: &wasm_bindgen::JsValue,
+) -> Result<Option<tonk_identity::custodian::Custodian>, String> {
+    use tonk_identity::phrase::{PHRASE_ENTROPY, RecoveryPhrase};
+    use wasm_bindgen::{JsCast, JsValue};
+    use zeroize::Zeroizing;
+
+    let field = JsValue::from_str("phrase");
+    if !js_sys::Reflect::has(data, &field).map_err(|_| "the handoff could not inspect phrase")? {
+        return Ok(None);
+    }
+    let array = js_sys::Reflect::get(data, &field)
+        .map_err(|_| "the handoff could not read phrase".to_string())?
+        .dyn_into::<js_sys::Uint8Array>()
+        .map_err(|_| "the handoff carried a non-Uint8Array phrase".to_string())?;
+    let length = array.length();
+    if length as usize != PHRASE_ENTROPY {
+        array.fill(0, 0, length);
+        return Err(format!(
+            "the handoff carried a phrase of {length} bytes; expected {PHRASE_ENTROPY}"
+        ));
+    }
+    let mut entropy = Zeroizing::new([0u8; PHRASE_ENTROPY]);
+    array.copy_to(entropy.as_mut());
+    array.fill(0, 0, length);
+    RecoveryPhrase::from_entropy(entropy)
+        .custodian()
+        .await
+        .map(Some)
+        .map_err(|error| format!("the recovery phrase did not derive its custodian: {error:#}"))
 }
 
 /// A custodian from one posted byte pair, by field prefix: `""` for the
@@ -1573,5 +1875,192 @@ mod tests {
             rows[0].message.0, material.sealed,
             "the row carries the sealed envelope, not a reference to one"
         );
+    }
+
+    /// Every sealed envelope recorded on profile main.
+    async fn recorded_envelopes(tonk: &crate::worker::TonkState) -> usize {
+        use dialog_query::{Output as _, Query, Term};
+        let branch = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile main acquires");
+        let rows: Vec<tonk_schema::SecretMessage> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SecretMessage> {
+                this: Term::var("this"),
+                to: Term::var("to"),
+                message: Term::var("message"),
+                from: Term::var("from"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the branch answers");
+        rows.len()
+    }
+
+    async fn phrase_custodian(byte: u8) -> tonk_identity::custodian::Custodian {
+        tonk_identity::phrase::RecoveryPhrase::from_entropy(zeroize::Zeroizing::new([byte; 16]))
+            .custodian()
+            .await
+            .expect("the phrase derives a custodian")
+    }
+
+    async fn holder() -> tonk_identity::custodian::Custodian {
+        tonk_identity::custodian::Custodian::Passkey(
+            tonk_identity::webcrypto_kek::Custodian::adopt(vec![4], &[14u8; 32], &[24u8; 32])
+                .await
+                .expect("handles import"),
+        )
+    }
+
+    fn addition() -> tonk_worker_api::RecoveryPhraseAddition {
+        tonk_worker_api::RecoveryPhraseAddition {
+            account_did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+            endpoint: "https://example.test/ucan/".into(),
+        }
+    }
+
+    /// An account that has not opened its activation link cannot set up
+    /// a recovery phrase: the custody space could not be provisioned, so
+    /// the phrase would open the account nowhere but here. Refused with
+    /// the code the page words, and nothing is recorded.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_refuses_a_recovery_phrase_for_an_unactivated_account() {
+        let state = Arc::new(crate::StateLock::new(test_state().await));
+        {
+            let tonk = state.read().await;
+            crate::router::customer::record_test_customer(
+                &tonk,
+                tonk_account::customer::CustomerStatus::Registered,
+            )
+            .await
+            .expect("the customer records");
+        }
+
+        let refused = add_recovery_phrase(
+            &state,
+            &holder().await,
+            &phrase_custodian(1).await,
+            addition(),
+        )
+        .await
+        .expect_err("an unactivated account is refused");
+        assert!(
+            matches!(split_refusal(&refused), (Some(ACCOUNT_NOT_ACTIVE), _)),
+            "{refused}"
+        );
+
+        let tonk = state.read().await;
+        assert_eq!(
+            recorded_envelopes(&tonk).await,
+            0,
+            "nothing was sealed or recorded"
+        );
+        assert!(matches!(
+            crate::router::account_state::recovery_phrase(&tonk).await,
+            Ok(None)
+        ));
+    }
+
+    /// A phrase cannot be revoked, so an account that has one is refused
+    /// a second, and the refusal writes nothing beside the first.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_refuses_a_second_recovery_phrase() {
+        use dialog_varsig::Principal as _;
+
+        let state = Arc::new(crate::StateLock::new(test_state().await));
+        let first = phrase_custodian(2)
+            .await
+            .signer()
+            .await
+            .expect("a signer")
+            .did();
+        {
+            let tonk = state.read().await;
+            crate::router::customer::record_test_customer(
+                &tonk,
+                tonk_account::customer::CustomerStatus::Active,
+            )
+            .await
+            .expect("the customer records");
+            crate::router::customer::record_recovery_phrase(&tonk, &first, b"sealed", 7)
+                .await
+                .expect("the first phrase records");
+        }
+
+        let refused = add_recovery_phrase(
+            &state,
+            &holder().await,
+            &phrase_custodian(3).await,
+            addition(),
+        )
+        .await
+        .expect_err("a second phrase is refused");
+        assert!(
+            matches!(split_refusal(&refused), (Some(RECOVERY_PHRASE_EXISTS), _)),
+            "{refused}"
+        );
+
+        let tonk = state.read().await;
+        assert_eq!(
+            recorded_envelopes(&tonk).await,
+            1,
+            "only the first phrase's envelope"
+        );
+        assert!(matches!(
+            crate::router::account_state::recovery_phrase(&tonk).await,
+            Ok(Some(7))
+        ));
+    }
+
+    /// The command refuses both before the passkey is asked for: the
+    /// person is never shown a passkey prompt for a setup that cannot
+    /// finish.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn the_command_refuses_before_asking_for_the_passkey() {
+        use dialog_varsig::Principal as _;
+
+        let state = test_state().await;
+        crate::router::customer::record_test_customer(
+            &state,
+            tonk_account::customer::CustomerStatus::Registered,
+        )
+        .await
+        .expect("the customer records");
+        assert_eq!(
+            crate::router::ceremony::recovery_phrase_refusal(&state).await,
+            Some(crate::router::ceremony::ACTIVATE_FIRST)
+        );
+
+        crate::router::customer::record_test_customer(
+            &state,
+            tonk_account::customer::CustomerStatus::Active,
+        )
+        .await
+        .expect("the customer records");
+        assert_eq!(
+            crate::router::ceremony::recovery_phrase_refusal(&state).await,
+            None,
+            "an active account with no phrase may set one up"
+        );
+
+        let first = phrase_custodian(4)
+            .await
+            .signer()
+            .await
+            .expect("a signer")
+            .did();
+        crate::router::customer::record_recovery_phrase(&state, &first, b"sealed", 9)
+            .await
+            .expect("a phrase records");
+        assert!(matches!(
+            crate::router::ceremony::recovery_phrase_refusal(&state).await,
+            Some(reason) if reason.contains("already has a recovery phrase")
+        ));
     }
 }

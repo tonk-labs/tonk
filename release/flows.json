@@ -69,7 +69,7 @@
       "manual_group": "spaces",
       "tests": [
         "tonk-ui::account_flow::tests::it_creates_a_local_only_space_from_the_hub_wizard",
-        "tonk-ui::account_flow::tests::it_removes_a_space_without_letting_focus_escape_the_sealed_guest"
+        "tonk-ui::account_flow::tests::it_cancels_and_confirms_removal_in_the_expanded_row"
       ],
       "checks": [
         "tests",

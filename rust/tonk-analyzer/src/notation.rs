@@ -1,18 +1,26 @@
-//! A back end for `dialog-notation`: a library written in the notation,
-//! lowered to the claims tonk stores when it installs one, what
-//! `library_claims_after` in the worker gives for a YAML component.
+//! The one module of tonk that names `dialog-notation`.
 //!
-//! Three calls here are the managing session's opinion, each a small
-//! function so it is easy to change: an event's name ([`event_name`]),
-//! a variable's slot name ([`slots`]), and that no event flag is read
-//! ([`view_claims`]).
+//! Two halves:
+//! - install: a library written in the notation, lowered to the claims
+//!   tonk stores when it installs one, what `library_claims_after` in the
+//!   worker gives for a YAML component ([`notation_library_claims`]);
+//! - render: a view written in the notation, kept current on a space's
+//!   branch by the notation's driver and handed back as patches of
+//!   tonk's own ([`live`]).
+//!
+//! A later revision of the notation is meant to be a change here and
+//! nowhere else.
+
+pub mod live;
+/// Demo (notation tour): one notebook cell in the notation, evaluated.
+pub mod tour;
+
+pub use dialog_notation::{Declaration, parse_written};
 
 use std::collections::BTreeMap;
 
 use dialog_corpus::{Changes, Instruction, Statement as _, Value};
-use dialog_notation::{
-    Analyzer, Concept, Declaration, Segment, Step, Syntax, View, check_forms, parse_written,
-};
+use dialog_notation::{Analyzer, Concept, Segment, Step, Syntax, check_forms};
 use dialog_query::ConceptConclusion;
 use dialog_query::query::Output as _;
 use dialog_repository::{QueryLayer, Transient};
@@ -139,14 +147,14 @@ pub struct NotationForm {
 /// - an assert writes its facts, a command issued is dispatched, and
 ///   a write with a `when` writes once for each match of its `when`,
 ///   read over nothing but the write's own rule, through `env`;
-/// - a view writes what tonk stores for it and for the events it binds
-///   ([`view_claims`]), when `views` is set.
+/// - a query, a view among them, writes nothing: it is not stored on
+///   the branch at this revision of the notation, and a view is kept
+///   current through [`live`] from the library's text instead.
 ///
 /// Nothing of `core` is written: it is read for its names only.
 pub async fn notation_library_claims<Env: QueryEnv>(
     core: &str,
     library: &str,
-    views: bool,
     env: &Env,
 ) -> Result<NotationLibrary, String> {
     let core = split(core);
@@ -179,21 +187,15 @@ pub async fn notation_library_claims<Env: QueryEnv>(
             .or_insert_with(|| diagnostic.message.clone());
     }
     let mut steps: BTreeMap<usize, Vec<Step>> = BTreeMap::new();
-    for (step, at) in checked.steps.iter().zip(&checked.step_forms) {
+    for (step, at) in checked.steps().iter().zip(checked.step_forms()) {
         steps.entry(*at).or_default().push(step.clone());
     }
     let declared: BTreeMap<usize, &Declaration> = checked
-        .declaration_forms
+        .declaration_forms()
         .iter()
         .copied()
-        .zip(&checked.declarations)
+        .zip(checked.declarations())
         .collect();
-    let mut concepts: BTreeMap<String, &Concept> = BTreeMap::new();
-    for declaration in &checked.declarations {
-        if let Declaration::Concept(concept) = declaration {
-            concepts.insert(concept.name.clone(), concept);
-        }
-    }
 
     let mut all = Changes::new();
     let mut all_transient = Changes::new();
@@ -223,6 +225,11 @@ pub async fn notation_library_claims<Env: QueryEnv>(
         };
         let mut changes = Changes::new();
         let mut transients = Changes::new();
+        // A library is lowered with no branch, so a write that reads what
+        // is stored (a `when` over stored facts, a retract by entity
+        // alone) finds nothing and would be installed as nothing: it is
+        // refused instead, naming itself.
+        let mut reads_nothing: Option<String> = None;
         if !refused.contains_key(&at) {
             if let Some(Declaration::Concept(concept)) = declared.get(&at)
                 && matches!(kind, "concept" | "command")
@@ -237,7 +244,7 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                     Step::Deduce(rule) => rule.assert(&mut changes),
                     Step::Induce(rule) => rule.assert(&mut changes),
                     Step::Transient(concept) => Transient(concept).assert(&mut changes),
-                    Step::Query(_) => {}
+                    Step::Query(_) | Step::View(_) | Step::Select(_) => {}
                     Step::Write(write) => {
                         let mut layer = QueryLayer::new();
                         if let Some(rule) = &write.query.rule {
@@ -249,6 +256,13 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                             .try_vec()
                             .await
                             .map_err(|error| format!("a write's `when`: {error}"))?;
+                        if rows.is_empty() {
+                            reads_nothing = Some(format!(
+                                "{} reads what is stored, and a library is installed with \
+                                 nothing stored to read: it would write nothing",
+                                part.trim()
+                            ));
+                        }
                         for row in &rows {
                             let statement =
                                 write.statement(row).map_err(|error| error.to_string())?;
@@ -262,41 +276,9 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                 }
             }
         }
-        // A view is a description the Dialog-DB back end refuses; tonk's
-        // back end lowers it from the description, whichever way the
-        // compile went.
-        let mut events: Vec<NotationForm> = Vec::new();
-        if views
-            && kind == "view"
-            && let Some(Declaration::View { view, .. }) = declared.get(&at)
-        {
-            let written = view_claims(view, &concepts)
-                .map_err(|error| format!("view {}: {error}", view.concept))?;
-            for statement in written.view {
-                statement.assert(&mut changes);
-            }
-            for (name, statements) in written.events {
-                let mut rows = Changes::new();
-                for statement in statements {
-                    statement.assert(&mut rows);
-                }
-                all.merge(rows.clone());
-                events.push(NotationForm {
-                    kind: "event",
-                    key: name,
-                    durable: rows,
-                    transient: Changes::new(),
-                    refused: None,
-                });
-            }
-        }
-        for event in events {
-            if !forms
-                .iter()
-                .any(|known: &NotationForm| known.key == event.key)
-            {
-                forms.push(event);
-            }
+        if reads_nothing.is_some() {
+            changes = Changes::new();
+            transients = Changes::new();
         }
         all.merge(changes.clone());
         all_transient.merge(transients.clone());
@@ -305,7 +287,7 @@ pub async fn notation_library_claims<Env: QueryEnv>(
             key,
             durable: changes,
             transient: transients,
-            refused: refused.get(&at).cloned(),
+            refused: refused.get(&at).cloned().or(reads_nothing),
         };
         // An element is many asserts in the notation and one form in
         // the YAML: its asserts are one form here.
@@ -327,7 +309,7 @@ pub async fn notation_library_claims<Env: QueryEnv>(
         durable: all.into_instructions(),
         transient: all_transient.into_instructions(),
         forms,
-        declarations: checked.declarations,
+        declarations: checked.declarations().to_vec(),
     })
 }
 
@@ -370,7 +352,9 @@ pub fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<()
         }
         let attribute: dialog_query::AttributeDescriptor =
             serde_json::from_value(attribute).map_err(|error| error.to_string())?;
-        for statement in attribute_statements(&attribute)? {
+        for statement in
+            attribute_statements(&attribute, tonk_schema::pick::Reading::of_field(field))?
+        {
             statement.assert(changes);
         }
         relabelled.insert(
@@ -399,309 +383,8 @@ pub fn declaration_claims(concept: &Concept, changes: &mut Changes) -> Result<()
             .map_err(|error| format!("{error}"))?,
         is: Value::Entity(this),
         cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
+        cardinality: Some(dialog_query::Cardinality::One),
     }
     .assert(changes);
     Ok(())
-}
-
-/// What a view lowers to: its own facts, and each event it binds, by
-/// the event's name, with its rows.
-pub struct ViewClaims {
-    /// The view's own facts.
-    pub view: Vec<dialog_query::AttributeStatement>,
-    /// Each event it binds, by name, with its rows.
-    pub events: Vec<(String, Vec<dialog_query::AttributeStatement>)>,
-}
-
-fn fact(
-    the: &str,
-    of: dialog_corpus::Entity,
-    is: Value,
-) -> Result<dialog_query::AttributeStatement, String> {
-    Ok(dialog_query::AttributeStatement {
-        the: the.parse().map_err(|error| format!("{the}: {error:?}"))?,
-        of,
-        is,
-        cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
-    })
-}
-
-/// The managing session's opinion: an event's name is `on/` and its
-/// command's name with `/` turned into `-` (`block/edit` names
-/// `on/block-edit`).
-pub fn event_name(command: &str) -> String {
-    format!("on/{}", command.replace('/', "-"))
-}
-
-/// The slot each variable of a view fills, named as tonk's templates
-/// name them (`tonk-template/src/fields.rs:26` to `:33`, checked at
-/// `tonk-analyzer/src/analyzer/view.rs:442`): `this` for the entity
-/// rendered, the model's field label for a field's value, and
-/// `<field>/key` for the key of a keyed collection's entry.
-///
-/// The view's conditions come expanded to reads of attributes
-/// (`(xyz.tonk.notebook ?n title: (last (text ?title)) entry: …)`), not
-/// as the concept read they were written as, so each read's attribute
-/// is found among the concept's lines, and its label is the head label
-/// the line's variable has.
-pub fn slots(view: &View, concept: &Concept) -> Result<BTreeMap<String, String>, String> {
-    fn innermost(term: &Syntax) -> Option<&str> {
-        match term {
-            Syntax::Variable(variable) => Some(variable),
-            Syntax::Application(_, operand) => operand.items.first().and_then(innermost),
-            _ => None,
-        }
-    }
-    let domain = |attribute: &str| attribute.split('/').next().unwrap_or_default().to_string();
-    let label = |line: &dialog_notation::Line| line.label.clone();
-    let mut slots = BTreeMap::new();
-    slots.insert(view.entity.clone(), "this".to_string());
-    for condition in &view.conditions {
-        let Syntax::Application(operator, operand) = condition else {
-            continue;
-        };
-        let Syntax::Reference(read) = operator.as_ref() else {
-            continue;
-        };
-        for (term_label, term) in &operand.terms {
-            if term_label == "entry" {
-                let line = concept
-                    .lines
-                    .iter()
-                    .find(|line| line.key.is_some() && domain(&line.attribute) == *read)
-                    .ok_or_else(|| format!("{} declares no collection in {read}", concept.name))?;
-                let field =
-                    label(line).ok_or_else(|| format!("no head label holds {}", line.attribute))?;
-                if let Some(value) = innermost(term) {
-                    slots.insert(value.to_string(), field.clone());
-                }
-                if let Syntax::Application(_, entry) = term
-                    && let Some(Syntax::Variable(key)) = entry.terms.get("key")
-                {
-                    slots.insert(
-                        key.clone(),
-                        format!("{field}{}", tonk_template::fields::KEY_SUFFIX),
-                    );
-                }
-                continue;
-            }
-            let attribute = format!("{read}/{term_label}");
-            let Some(variable) = innermost(term) else {
-                continue;
-            };
-            let line = concept
-                .lines
-                .iter()
-                .find(|line| line.attribute == attribute)
-                .ok_or_else(|| format!("{} has no line {attribute}", concept.name))?;
-            let field = label(line).ok_or_else(|| format!("no head label holds {attribute}"))?;
-            slots.insert(variable.to_string(), field);
-        }
-    }
-    Ok(slots)
-}
-
-fn slot(slots: &BTreeMap<String, String>, variable: &str) -> Result<String, String> {
-    slots
-        .get(variable)
-        .map(|slot| format!("{{{slot}}}"))
-        .ok_or_else(|| format!("?{variable} fills no slot"))
-}
-
-fn piece(
-    slots: &BTreeMap<String, String>,
-    piece: &dialog_notation::view::Piece,
-) -> Result<String, String> {
-    use dialog_notation::view::Piece;
-    match piece {
-        Piece::Text(text) => Ok(text.clone()),
-        Piece::Variable(variable) => slot(slots, variable),
-        Piece::Value(value) => Ok(spelled(value)),
-    }
-}
-
-fn spelled(value: &Syntax) -> String {
-    match value {
-        Syntax::Constant(Value::String(text)) => text.clone(),
-        other => other.spelled(false),
-    }
-}
-
-/// A template as tonk's renderer holds one (`tonk_render::Node`), so
-/// its serializer writes the text tonk stores.
-fn markup(
-    node: &dialog_notation::Node,
-    slots: &BTreeMap<String, String>,
-) -> Result<tonk_render::Node, String> {
-    use dialog_notation::{Attribute, Node};
-    Ok(match node {
-        Node::Text(text) => tonk_render::Node::Text(text.clone()),
-        Node::Value(value) => tonk_render::Node::Text(spelled(value)),
-        Node::Variable(variable) => tonk_render::Node::Text(slot(slots, variable)?),
-        Node::View(nested) => {
-            let mut attrs = Vec::new();
-            for (key, pieces) in &nested.entries {
-                let value: Result<String, String> =
-                    pieces.iter().map(|part| piece(slots, part)).collect();
-                attrs.push((key.clone(), value?));
-            }
-            if let Some(of) = &nested.of {
-                attrs.push(("entity".into(), slot(slots, of)?));
-            }
-            if let Some(model) = &nested.model {
-                attrs.push(("model".into(), model.clone()));
-            }
-            tonk_render::Node::Element(tonk_render::Element {
-                tag: "tonk-display".into(),
-                attrs,
-                children: Vec::new(),
-                void: false,
-            })
-        }
-        Node::Element(element) => {
-            let mut attrs = Vec::new();
-            for (name, value) in &element.attributes {
-                let value = match value {
-                    Attribute::Text(text) => text.clone(),
-                    Attribute::Value(value) => spelled(value),
-                    Attribute::Variable(variable) => slot(slots, variable)?,
-                    Attribute::Parts(pieces) => pieces
-                        .iter()
-                        .map(|part| piece(slots, part))
-                        .collect::<Result<String, String>>()?,
-                    Attribute::Present => String::new(),
-                };
-                attrs.push((name.clone(), value));
-            }
-            for event in &element.events {
-                let name = event_name(&event.command);
-                attrs.push((
-                    format!("on:{}", name.trim_start_matches("on/")),
-                    event.command.clone(),
-                ));
-            }
-            let children = element
-                .children
-                .iter()
-                .map(|child| markup(child, slots))
-                .collect::<Result<Vec<_>, String>>()?;
-            tonk_render::Node::Element(tonk_render::Element {
-                void: tonk_render::tree::is_void_tag(&element.tag),
-                tag: element.tag.clone(),
-                attrs,
-                children,
-            })
-        }
-    })
-}
-
-/// What tonk stores for a view, from the notation's description:
-/// - the facet text, `xyz.tonk.view/<name>`, on the model concept's
-///   entity, printed by tonk's renderer (`tonk_render::serialize_nodes`);
-/// - the `bindings` record of the events it binds
-///   (`tonk_template::bindings::Bindings`), when it binds any;
-/// - each event's rows, as an `event!:` stores them: `type`, one
-///   `where` per field, and the name `id:on/<name>`, on the entity
-///   tonk derives from that payload (`derive_this`).
-///
-/// No event flags are read: the notation has no spelling for
-/// `prevent-default` or `stop-propagation` (the managing session's
-/// opinion is to write both false).
-pub fn view_claims(
-    view: &View,
-    concepts: &BTreeMap<String, &Concept>,
-) -> Result<ViewClaims, String> {
-    use tonk_template::event::{EventDescriptor, Source};
-
-    let concept = concepts
-        .get(&view.concept)
-        .ok_or_else(|| format!("{} is not declared", view.concept))?;
-    let [descriptor] = concept.descriptors.as_slice() else {
-        return Err(format!("{} reads more than one descriptor", view.concept));
-    };
-    let model = descriptor.this();
-    let slots = slots(view, concept)?;
-    let text = tonk_render::serialize_nodes(&[markup(&view.template, &slots)?]);
-    let mut statements = vec![fact(
-        &format!("xyz.tonk.view/{}", view.name),
-        model.clone(),
-        Value::String(text),
-    )?];
-
-    let mut descriptors = BTreeMap::new();
-    let mut events = Vec::new();
-    let event_concept = tonk_schema::builtin::lookup_concept("event")
-        .ok_or("tonk has no built-in `event`")?
-        .entity;
-    for event in view.events() {
-        let name = event_name(&event.command);
-        let mut sources = BTreeMap::new();
-        let mut payload = tonk_core::claim::ValueMap::new();
-        payload.insert("type".into(), Value::String(event.kind.clone()));
-        let mut rows = Vec::new();
-        for (field, input) in &event.fields {
-            let (source, written) = match input {
-                dialog_notation::Input::Path(steps) => (
-                    Source::Property(steps.clone()),
-                    format!(".{}", steps.join(".")),
-                ),
-                dialog_notation::Input::Variable(variable) => {
-                    let slot = slot(&slots, variable)?;
-                    (
-                        Source::Field(slot.trim_matches(['{', '}']).to_string()),
-                        slot,
-                    )
-                }
-                dialog_notation::Input::Value(value) => {
-                    let text = spelled(value);
-                    (Source::Literal(text.clone()), format!("{text:?}"))
-                }
-            };
-            sources.insert(field.clone(), source);
-            payload.insert(format!("where.{field}"), Value::String(written.clone()));
-            rows.push((format!("xyz.tonk.event.where/{field}"), written));
-        }
-        let entity = tonk_schema::transact::derive_this(&event_concept, &payload);
-        let mut written = vec![fact(
-            "xyz.tonk.event/type",
-            entity.clone(),
-            Value::String(event.kind.clone()),
-        )?];
-        for (the, value) in rows {
-            written.push(fact(&the, entity.clone(), Value::String(value))?);
-        }
-        written.push(fact(
-            "db.name/referent",
-            format!("id:{name}")
-                .parse()
-                .map_err(|error| format!("{error}"))?,
-            Value::Entity(entity),
-        )?);
-        events.push((name.clone(), written));
-        descriptors.insert(
-            name,
-            EventDescriptor {
-                event_type: event.kind.clone(),
-                prevent_default: false,
-                stop_propagation: false,
-                sources,
-            },
-        );
-    }
-    if !descriptors.is_empty() {
-        let record = tonk_template::bindings::Bindings::new(descriptors).encode()?;
-        statements.push(fact(
-            "xyz.tonk.view/bindings",
-            model,
-            Value::Record(record),
-        )?);
-    }
-    Ok(ViewClaims {
-        view: statements,
-        events,
-    })
 }

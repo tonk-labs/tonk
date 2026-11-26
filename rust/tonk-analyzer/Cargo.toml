@@ -8,6 +8,9 @@ edition.workspace = true
 
 [features]
 integration-tests = []
+# What a watched view counts (`Watched::recomputes`, `Watched::delivered`),
+# for tests that measure the driver.
+inspect = ["dialog-notation/inspect"]
 web-integration-tests = []
 
 [lints.rust]
@@ -34,7 +37,6 @@ thiserror = { workspace = true }
 tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
-tonk-render = { workspace = true }
 tonk-template = { workspace = true }
 
 [dev-dependencies]

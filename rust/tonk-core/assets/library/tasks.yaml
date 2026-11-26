@@ -1,0 +1,49 @@
+# tasks — follow the commands run in this space: what is running, what
+# finished, and what failed and why.
+#
+# A command run from the command palette is stamped to be followed, and
+# the space's stack keeps its invocation (`invocation`, declared in
+# `core.yaml`) in its `session:` layer: when it ran, which command it was,
+# whether it was answered, failed or went unhandled, what it is doing, and
+# what it produced. Never committed or replicated; it goes with the
+# session. This component lists them.
+#
+# The page lives at `/console/tasks`. `<task-console>` subscribes to the
+# space's invocations and draws one row each, newest first. Opening a row
+# renders what the command produced, when it produced something.
+#
+# Only this space's commands: a space's pages cannot read the profile, so a
+# command run on the profile (from the hub, or a profile command from the
+# palette) is not listed here.
+
+concept!: &tasks/console
+  this: tonk:tasks/console
+  description: The tasks console (`/console/tasks`).
+  with:
+    repo:
+      description: The space repository, picked off the site entity.
+      the: xyz.tonk.site/repo
+      as: text
+    branch:
+      description: The space branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      as: text
+
+view!:
+  this: tonk:tasks/console
+  show:
+    ui: |
+      <task-console with="{branch}@{repo}"></task-console>
+
+route!:
+  this: tonk:tasks/route/console
+  path: "/console/tasks"
+  concept: tonk:tasks/console
+
+element!: &task-console
+  description: Lists the space's invocations, newest first, with where each got to and why a failed one failed.
+  method:
+    connected: !include/text ./tasks/connected.js
+    disconnected: !include/text ./tasks/disconnected.js
+    detail: !include/text ./tasks/detail.js
+    render: !include/text ./tasks/render.js

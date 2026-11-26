@@ -78,7 +78,7 @@ pub fn unavailable_invite_html() -> String {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>Share link unavailable · Tonk</title>
+  <title>Passlink unavailable · Tonk</title>
   <style>
     @font-face {{
       font-family: "GestalteName";
@@ -237,8 +237,8 @@ pub fn unavailable_invite_html() -> String {
         <span class="badge">invite</span>
       </a>
     </header>
-    <h1>This share link is no longer available</h1>
-    <p class="lede">Short share links normally expire after {DEFAULT_TTL_DAYS} days. Ask the person who shared it with you to create a new one.</p>
+    <h1>This passlink is no longer available</h1>
+    <p class="lede">Short passlinks normally expire after {DEFAULT_TTL_DAYS} days. Ask the person who shared it with you to create a new one.</p>
     <div class="actions">
       <a class="button" href="/">Back to Tonk</a>
     </div>

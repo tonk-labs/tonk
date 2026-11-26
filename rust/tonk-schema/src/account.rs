@@ -622,6 +622,8 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// `tonk:add-recovery-phrase`.
+    pub const ADD_RECOVERY_PHRASE: &str = "add-recovery-phrase";
     /// Making an agent for an app signing in over OAuth.
     pub const AUTHORIZE_AGENT: &str = "authorize-agent";
     /// Withdrawing what a share link gave one of the account's agents.

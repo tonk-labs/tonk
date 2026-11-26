@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dialog_corpus::{Entity, Fact, Pick, Relation, Selector, Value};
+use dialog_corpus::{Cardinality, Entity, Fact, Relation, Selector, Value};
 use dialog_query::migration::{attribute_uri_v0, concept_identity_v0};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor};
 use futures_util::StreamExt as _;
@@ -183,8 +183,13 @@ pub(super) async fn rekey(
                 // Moved with the entity it is about, below.
                 continue;
             }
-            retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
-            assert.push(raw(&claim.the, &claim.of, &follow(&claim.is), Pick::All));
+            retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
+            assert.push(raw(
+                &claim.the,
+                &claim.of,
+                &follow(&claim.is),
+                Cardinality::Many,
+            ));
         }
 
         let about = select(tonk, batch, Selector::new().of(earlier.clone())).await?;
@@ -200,13 +205,13 @@ pub(super) async fn rekey(
         }
         for claims in by_relation.into_values() {
             let policy = if claims.len() == 1 {
-                Pick::Last
+                Cardinality::One
             } else {
-                Pick::All
+                Cardinality::Many
             };
             for claim in claims {
-                retract.push(raw(&claim.the, &claim.of, &claim.is, Pick::All));
-                assert.push(raw(&claim.the, now, &follow(&claim.is), policy.clone()));
+                retract.push(raw(&claim.the, &claim.of, &claim.is, Cardinality::Many));
+                assert.push(raw(&claim.the, now, &follow(&claim.is), policy));
             }
         }
     }
@@ -244,10 +249,12 @@ fn attribute_descriptor(claims: &[(Relation, Value)]) -> Option<AttributeDescrip
     if let Some(Value::Entity(kind)) = fact("db.attribute/as") {
         shape.insert("as".to_owned(), serde_json::Value::String(kind.to_string()));
     }
-    if let Some(Value::Entity(pick)) = fact("db.attribute/pick") {
+    if let Some(Value::Entity(pick)) = fact("db.attribute/pick")
+        && let Some(reading) = tonk_schema::pick::Reading::of_pick(&pick.to_string())
+    {
         shape.insert(
-            "pick".to_owned(),
-            serde_json::Value::String(pick.to_string()),
+            "cardinality".to_owned(),
+            serde_json::Value::String(reading.cardinality.name().to_owned()),
         );
     }
     serde_json::from_value(serde_json::Value::Object(shape)).ok()
@@ -261,7 +268,7 @@ fn push_move(moves: &mut Vec<(Entity, Entity)>, earlier: String, now: &Entity) {
     }
 }
 
-fn raw(the: &Relation, of: &Entity, is: &Value, policy: Pick) -> RawClaim {
+fn raw(the: &Relation, of: &Entity, is: &Value, policy: Cardinality) -> RawClaim {
     RawClaim {
         the: the.clone(),
         of: of.clone(),

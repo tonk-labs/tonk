@@ -50,6 +50,8 @@ pub use tonk_core::{claim, conclusion, meta};
 pub mod transact;
 
 pub mod concept;
+/// How tonk spells the way an attribute is read, and dialog's cardinality and field pick.
+pub mod pick;
 
 pub mod resolution;
 /// Moving definitions an earlier release wrote to their current shape.
@@ -74,6 +76,8 @@ pub use account::{
     AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state,
     email_state,
 };
+
+pub mod invocation;
 
 pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
@@ -133,7 +137,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 
 mod recovery;
 mod roster;
-pub use recovery::RecoveryPasskey;
+pub use recovery::{RecoveryPasskey, RecoveryPhrase};
 pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;

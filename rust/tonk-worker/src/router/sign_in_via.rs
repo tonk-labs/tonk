@@ -350,10 +350,17 @@ async fn finish(
 /// deployment holding the account. A refusal is reported, not sent.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
-    async fn execute(&self, command: SignInVia) {
+    async fn execute(&self, command: SignInVia) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+
         let tonk = self.state().read().await;
         match start(&tonk, &command.via.0).await {
-            Ok(approval) => super::navigate::notify_navigate(self.client(), &approval),
+            Ok(approval) => {
+                super::navigate::notify_navigate(self.client(), &approval);
+                // The approval comes back through `FinishSignInVia`, which
+                // reports through `CeremonyStatus`, not this outcome.
+                Done::nothing()
+            }
             Err(error) => {
                 super::ceremony::report(
                     &tonk,
@@ -361,7 +368,8 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
                     ceremony_state::REFUSED,
                     &error,
                 )
-                .await
+                .await;
+                Err(Failure::new(error))
             }
         }
     }
@@ -370,7 +378,9 @@ impl dialog_capability::Provider<SignInVia> for super::CommandEnv {
 /// Run `tonk:finish-sign-in-via`: install what came back and go home.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
-    async fn execute(&self, command: FinishSignInVia) {
+    async fn execute(&self, command: FinishSignInVia) -> tonk_schema::invocation::Outcome {
+        use tonk_schema::invocation::{Done, Failure};
+
         let tonk = self.state().read().await;
         super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::WORKING, "").await;
         drop(tonk);
@@ -388,6 +398,7 @@ impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
                 // callback, with the grant in its fragment, leaves the
                 // history too.
                 super::navigate::notify_replace(self.client(), "/");
+                Done::nothing()
             }
             Err(error) => {
                 super::ceremony::report(
@@ -396,7 +407,10 @@ impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
                     ceremony_state::FAILED,
                     &error,
                 )
-                .await
+                .await;
+                // `finish` names what went wrong and never quotes the
+                // answer address, whose fragment carries the grant.
+                Err(Failure::new(error))
             }
         }
     }
@@ -411,6 +425,58 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     const DEVICE: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    /// A native host serves no origin to be called back at, so no other
+    /// deployment can be asked. The outcome fails, and no request is left
+    /// waiting for an answer that cannot come.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_ask_another_deployment_with_no_address_to_return_to() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state.clone(), Default::default());
+        let command = SignInVia {
+            this: "id:sign-in-via".parse().unwrap(),
+            via: tonk_schema::domain::command::current::sign_in_via::Via(
+                "https://tonk.network".into(),
+            ),
+        };
+        let outcome = dialog_capability::Provider::<SignInVia>::execute(&env, command).await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("service-worker scope")),
+            "{outcome:?}"
+        );
+        let tonk = state.read().await;
+        assert_eq!(
+            load_pending(&tonk).await,
+            Ok(None),
+            "no request is recorded"
+        );
+    }
+
+    /// An answer that is not even an address fails the finish, and
+    /// installs no account root.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_finish_on_an_answer_that_is_not_an_address() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(state.clone(), Default::default());
+        let command = FinishSignInVia {
+            this: "id:finish-sign-in-via".parse().unwrap(),
+            url: tonk_schema::domain::command::current::finish_sign_in_via::Url(
+                "not an address".into(),
+            ),
+        };
+        let outcome = dialog_capability::Provider::<FinishSignInVia>::execute(&env, command).await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("not a URL")),
+            "{outcome:?}"
+        );
+        let tonk = state.read().await;
+        assert!(
+            super::super::identity::local_root(&tonk).await.is_err(),
+            "no root is installed"
+        );
+    }
 
     fn here() -> Url {
         "https://tonk.host/".parse().unwrap()

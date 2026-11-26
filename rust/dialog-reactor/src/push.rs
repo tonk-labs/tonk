@@ -7,11 +7,10 @@
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider, PushProvider};
 use super::error::ReactorError;
-use dialog_capability::Provider;
+use dialog_capability::{Provider, Subject};
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_common::ConditionalSync;
 use dialog_corpus::Index;
-use dialog_effects::archive::prelude::CatalogScope;
 use dialog_repository::{PushError, Revision, Upstream};
 use dialog_search_tree::{DialogSearchTreeError, TreeDifference};
 
@@ -39,7 +38,7 @@ fn is_missing_local_tree_node(error: &PushError) -> bool {
 /// re-replicated the entire space one authorized round trip per block to
 /// satisfy a diff that needed a handful of nodes.
 async fn hydrate_divergence<S>(
-    catalog: &CatalogScope,
+    subject: &Subject,
     base: &NodeHash,
     current: &NodeHash,
     store: &S,
@@ -49,8 +48,8 @@ where
         + Provider<dialog_search_tree::nodes::Preload<dialog_corpus::tree::CorpusNode>>
         + ConditionalSync,
 {
-    let base_tree = Index::at(catalog.clone(), base.clone());
-    let current_tree = Index::at(catalog.clone(), current.clone());
+    let base_tree = Index::at(subject.clone(), base.clone());
+    let current_tree = Index::at(subject.clone(), current.clone());
     // The compute itself performs every read: each node it expands passes
     // through the caching store, so by the time it returns, the local
     // store holds the divergent paths and the retry's local-only diff
@@ -145,7 +144,7 @@ impl<'a> Push<'a> {
         // are cached — referenced blob payloads are still transferred by
         // push's normal shipment phase.
         hydrate_divergence(
-            &cached.handle().archive().index(),
+            &cached.handle().subject(),
             &NodeHash::from(*base.hash()),
             &NodeHash::from(*revision.tree.hash()),
             env,
@@ -239,7 +238,7 @@ mod tests {
                     is: Value::String(format!("Item {index}")),
                     cause: None,
                 },
-                dialog_corpus::Pick::All,
+                dialog_corpus::Cardinality::Many,
             )
         });
         tree.apply(remote, &mut delta, stream::iter(instructions))
@@ -259,7 +258,8 @@ mod tests {
     async fn it_hydrates_only_the_divergent_paths_before_push() -> anyhow::Result<()> {
         let remote = Blocks::new();
         let catalog = remote.catalog().clone();
-        let mut tree = Index::empty_in(catalog.clone());
+        let subject = remote.subject();
+        let mut tree = Index::empty_in(subject.clone());
 
         // A wide base the two heads share, then a single-item divergence:
         // the shape of a lazily adopted branch pushing one commit.
@@ -271,7 +271,7 @@ mod tests {
         let remote_reads = Arc::new(AtomicUsize::new(0));
         let local = Blocks::in_catalog(catalog.clone());
         hydrate_divergence(
-            &catalog,
+            &subject,
             &base_root,
             &current_root,
             &CachingStore {
@@ -282,8 +282,8 @@ mod tests {
         )
         .await?;
 
-        let base = Index::at(catalog.clone(), base_root);
-        let current = Index::at(catalog, current_root);
+        let base = Index::at(subject.clone(), base_root);
+        let current = Index::at(subject, current_root);
         if let Err(error) = TreeDifference::compute(&base, &current, &local, &local).await {
             panic!("push's local-only tree differential must succeed after hydration: {error:?}");
         }

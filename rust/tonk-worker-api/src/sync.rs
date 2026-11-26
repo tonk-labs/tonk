@@ -208,7 +208,7 @@ where
     let context = match head.inline_context() {
         Some(context) => Arc::new(context.clone()),
         None if head.region => {
-            let tree = Index::at(branch.archive().index(), (*head.tree.hash()).into());
+            let tree = Index::at(branch.subject(), (*head.tree.hash()).into());
             let region = context_in(&tree, &env).await?;
             Arc::new(head.context_from_region(region)?)
         }

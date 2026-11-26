@@ -275,13 +275,18 @@ async fn track_remote(
 /// make branches in another space.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::CreateBranch> for crate::router::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::CreateBranch) {
+    async fn execute(
+        &self,
+        command: tonk_schema::command::CreateBranch,
+    ) -> tonk_schema::invocation::Outcome {
         if !self.origin().repo.is_empty() {
             log!(
                 "CreateBranch ignored: origin '{}' is not the profile branch",
                 self.origin().repo
             );
-            return;
+            return Err(tonk_schema::invocation::Failure::new(
+                "A branch can only be made from the profile.",
+            ));
         }
         let repo = command.space.0.to_string();
         let name = command.name.0.trim().to_owned();
@@ -295,8 +300,14 @@ impl dialog_capability::Provider<tonk_schema::command::CreateBranch> for crate::
                 let tonk = self.state().read().await;
                 super::session::clear_missing_branch(&tonk, &self.origin().branch, &site).await;
                 super::session::stamp_waiting_sites(&tonk, &repo).await;
+                tonk_schema::invocation::Done::nothing()
             }
-            Err(refusal) => log!("CreateBranch '{repo}' '{name}' refused: {refusal}"),
+            Err(refusal) => {
+                log!("CreateBranch '{repo}' '{name}' refused: {refusal}");
+                Err(tonk_schema::invocation::Failure::new(format!(
+                    "Couldn't make the branch: {refusal}"
+                )))
+            }
         }
     }
 }
@@ -538,7 +549,11 @@ mod tests {
 
     /// Fire `space/create-branch` for branch `test` of `repo`, as if it were
     /// committed on `origin_repo` (empty for the profile branch).
-    async fn fire_create_branch(state: &AppState, repo: &str, origin_repo: &str) {
+    async fn fire_create_branch(
+        state: &AppState,
+        repo: &str,
+        origin_repo: &str,
+    ) -> tonk_schema::invocation::Outcome {
         use tonk_schema::domain::command::current::create_branch as field;
 
         <CommandEnv as dialog_capability::Provider<tonk_schema::command::CreateBranch>>::execute(
@@ -558,7 +573,7 @@ mod tests {
                 site: field::Site("site:create-branch".parse().unwrap()),
             },
         )
-        .await;
+        .await
     }
 
     /// The command is the profile's: fired from a content branch, which
@@ -567,14 +582,21 @@ mod tests {
     async fn it_ignores_a_create_branch_fired_from_a_content_branch() {
         let (_app, state, repo) = space("content-fired-branch").await;
 
-        fire_create_branch(&state, &repo, &repo).await;
+        let refused = fire_create_branch(&state, &repo, &repo).await;
+        assert!(
+            refused.is_err_and(|failure| failure.0.contains("profile")),
+            "a content branch is told why"
+        );
         assert!(
             missing(&state, &repo, "test").await,
             "a content branch makes nothing"
         );
         assert_eq!(head(&state, &repo, "test").await, None);
 
-        fire_create_branch(&state, &repo, "").await;
+        assert_eq!(
+            fire_create_branch(&state, &repo, "").await,
+            tonk_schema::invocation::Done::nothing()
+        );
         assert!(
             !missing(&state, &repo, "test").await,
             "the profile branch makes it"
@@ -653,7 +675,8 @@ mod tests {
                 path: tonk_schema::domain::command::load::Path(format!("/space/test@{repo}")),
             },
         )
-        .await;
+        .await
+        .expect("the page loads");
 
         let read = |name: &'static str| profile_site_field(&app, &profile_branch, site, name);
         assert_eq!(read("space-repo").await.as_deref(), Some(repo.as_str()));
@@ -670,7 +693,8 @@ mod tests {
                 site: field::Site(site.parse().unwrap()),
             },
         )
-        .await;
+        .await
+        .expect("the profile makes the branch");
 
         assert_eq!(
             read("space-branch-state").await,

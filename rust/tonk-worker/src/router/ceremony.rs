@@ -9,6 +9,7 @@
 //! request-specific entity so another handoff cannot supply their status.
 
 use tonk_common::log;
+use tonk_schema::invocation::{Done, Failure, Outcome};
 use tonk_schema::{CeremonyStatus, ceremony, ceremony_state};
 
 use crate::worker::TonkState;
@@ -102,11 +103,15 @@ async fn report_working(
 /// Ask the page for the passkey, reporting the ask and its failure. On
 /// a host with no page the ask fails and the failure is reported — the
 /// ceremony refuses visibly rather than silently not existing.
+///
+/// The outcome is only whether the page was asked. The ceremony itself
+/// finishes later, in the custody reply, and reports through
+/// [`CeremonyStatus`].
 pub(crate) async fn ask_for_passkey(
     env: &crate::router::CommandEnv,
     ceremony: &str,
     intent: tonk_worker_api::CustodyIntent,
-) {
+) -> Outcome {
     let entity = match &intent {
         tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization) => {
             authorization_entity(authorization)
@@ -123,9 +128,11 @@ pub(crate) async fn ask_for_passkey(
             "no page asked for this, so no passkey can be asked for",
         )
         .await;
-        return;
+        return Err(Failure::new(
+            "no page asked for this, so no passkey can be asked for",
+        ));
     };
-    let credential_id = {
+    let (credential_id, phrase_only) = {
         let tonk = env.state().read().await;
         report_to(
             &tonk,
@@ -140,7 +147,8 @@ pub(crate) async fn ask_for_passkey(
         // another enrolled provider (for example 1Password) from offering its
         // passkey. The authorization handler verifies the recovered root DID
         // against this profile before minting the device grant.
-        if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_)) {
+        let credential_id = if matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_))
+        {
             None
         } else {
             super::identity::local_root(&tonk)
@@ -148,13 +156,18 @@ pub(crate) async fn ask_for_passkey(
                 .ok()
                 .map(|root| root.credential_id)
                 .filter(|id| !id.is_empty())
-        }
+        };
+        (
+            credential_id,
+            super::identity::signed_in_with_phrase(&tonk).await,
+        )
     };
-    if let Err(error) = super::navigate::request_webauthn_with(
+    if let Err(error) = super::navigate::request_webauthn_for(
         client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(intent),
         credential_id,
+        phrase_only,
     )
     .await
     {
@@ -167,13 +180,22 @@ pub(crate) async fn ask_for_passkey(
             &format!("the page could not be asked for the passkey: {error}"),
         )
         .await;
+        return Err(Failure::new(format!(
+            "the page could not be asked for the passkey: {error}"
+        )));
     }
+    Done::nothing()
 }
+
+/// What a ceremony that adds a way into the account says when the
+/// account is not activated yet.
+pub(crate) const ACTIVATE_FIRST: &str =
+    "Activate your account first: open the link in the email we sent you.";
 
 /// Run `tonk:add-passkey`: seal the account under a second passkey.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::AddPasskey) {
+    async fn execute(&self, _command: tonk_schema::command::AddPasskey) -> Outcome {
         let addition = {
             let tonk = self.state().read().await;
             let Ok(root) = super::identity::local_root(&tonk).await else {
@@ -184,7 +206,7 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
                     "no account is signed in on this profile",
                 )
                 .await;
-                return;
+                return Err(Failure::new("no account is signed in on this profile"));
             };
             let Ok(origin) = super::customer::service_origin() else {
                 report(
@@ -194,19 +216,106 @@ impl dialog_capability::Provider<tonk_schema::command::AddPasskey> for crate::ro
                     "the sync service is unknown",
                 )
                 .await;
-                return;
+                return Err(Failure::new("the sync service is unknown"));
             };
+            // A passkey added before the account is activated could not
+            // be provisioned, so it would open the account only on this
+            // device. Refused before the passkey is asked for.
+            if !super::customer::is_active(&tonk).await {
+                report(
+                    &tonk,
+                    ceremony::ADD_PASSKEY,
+                    ceremony_state::REFUSED,
+                    ACTIVATE_FIRST,
+                )
+                .await;
+                return Err(Failure::new(ACTIVATE_FIRST));
+            }
             tonk_worker_api::PasskeyAddition {
                 account_did: root.root_did.to_string(),
                 endpoint: format!("{}ucan/", origin),
+                created_on: None,
             }
         };
+        // The new passkey is sealed in the custody reply, which reports
+        // through `CeremonyStatus`, not this outcome.
         ask_for_passkey(
             self,
             ceremony::ADD_PASSKEY,
             tonk_worker_api::CustodyIntent::AddPasskey(addition),
         )
-        .await;
+        .await
+    }
+}
+
+/// Why this account may not set up a recovery phrase, or `None` when it
+/// may: it must be active, and must not have one already. Checked before
+/// anything else, so the person is told what to do about their account
+/// rather than about the environment.
+pub(crate) async fn recovery_phrase_refusal(
+    tonk: &crate::worker::TonkState,
+) -> Option<&'static str> {
+    if !super::customer::is_active(tonk).await {
+        return Some(ACTIVATE_FIRST);
+    }
+    match super::account_state::recovery_phrase(tonk).await {
+        Ok(None) => None,
+        Ok(Some(_)) => {
+            Some("This account already has a recovery phrase, and it cannot be replaced.")
+        }
+        Err(_) => Some("the account's recovery phrase could not be checked"),
+    }
+}
+
+/// What setting up a recovery phrase needs, or why it is refused.
+async fn recovery_phrase_addition(
+    tonk: &crate::worker::TonkState,
+) -> Result<tonk_worker_api::RecoveryPhraseAddition, &'static str> {
+    let root = super::identity::local_root(tonk)
+        .await
+        .map_err(|_| "no account is signed in on this profile")?;
+    if let Some(refusal) = recovery_phrase_refusal(tonk).await {
+        return Err(refusal);
+    }
+    let origin = super::customer::service_origin().map_err(|_| "the sync service is unknown")?;
+    Ok(tonk_worker_api::RecoveryPhraseAddition {
+        account_did: root.root_did.to_string(),
+        endpoint: format!("{}ucan/", origin),
+    })
+}
+
+/// Run `tonk:add-recovery-phrase`: seal the account under the phrase the
+/// page staged. Refused, before the passkey is asked for, for an account
+/// that is not active or already has a phrase.
+#[dialog_capability::provider]
+impl dialog_capability::Provider<tonk_schema::command::AddRecoveryPhrase>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::AddRecoveryPhrase) -> Outcome {
+        let addition = {
+            let tonk = self.state().read().await;
+            match recovery_phrase_addition(&tonk).await {
+                Ok(addition) => addition,
+                Err(reason) => {
+                    report(
+                        &tonk,
+                        ceremony::ADD_RECOVERY_PHRASE,
+                        ceremony_state::REFUSED,
+                        reason,
+                    )
+                    .await;
+                    return Err(Failure::new(reason));
+                }
+            }
+        };
+        // Sealing runs in the custody reply, which reports through
+        // `CeremonyStatus`, not this outcome.
+        ask_for_passkey(
+            self,
+            ceremony::ADD_RECOVERY_PHRASE,
+            tonk_worker_api::CustodyIntent::AddRecoveryPhrase(addition),
+        )
+        .await
     }
 }
 
@@ -222,7 +331,7 @@ impl crate::reactor::Decode for AuthorizeDeviceRequest {
 }
 impl dialog_capability::Command for AuthorizeDeviceRequest {
     type Input = Self;
-    type Output = ();
+    type Output = tonk_schema::invocation::Outcome;
 }
 
 fn decode_authorization(
@@ -264,21 +373,24 @@ fn decode_authorization(
 /// undeliverable callback is refused before anyone touches a passkey.
 #[dialog_capability::provider]
 impl dialog_capability::Provider<AuthorizeDeviceRequest> for crate::router::CommandEnv {
-    async fn execute(&self, command: AuthorizeDeviceRequest) {
+    async fn execute(&self, command: AuthorizeDeviceRequest) -> Outcome {
         let authorization = command.0;
         // Refuse a callback the grant could never be delivered to
         // before asking anyone to touch a passkey.
         if let Err(error) = tonk_worker_api::callback::delivery_url(&authorization.callback, &[]) {
             let tonk = self.state().read().await;
             report_authorization(&tonk, &authorization, ceremony_state::REFUSED, &error).await;
-            return;
+            // The refusal is a fixed sentence; it never quotes the callback.
+            return Err(Failure::new(error));
         }
+        // The grant is minted in the custody reply, which reports through
+        // `CeremonyStatus`, not this outcome.
         ask_for_passkey(
             self,
             ceremony::AUTHORIZE_DEVICE,
             tonk_worker_api::CustodyIntent::AuthorizeDevice(authorization),
         )
-        .await;
+        .await
     }
 }
 
@@ -417,11 +529,44 @@ async fn authorize_device_inner(
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(payload)
     };
-    let redirect = format!("{origin}settings");
+    // Back to the task page, which says the device is connected.
+    let redirect = connected_return(&origin, &authorization.name);
     tonk_worker_api::callback::delivery_url(
         &authorization.callback,
         &[("authorize", &encoded), ("redirect", &redirect)],
     )
+}
+
+/// Where a device's callback sends the browser once it has the grant: the
+/// device task page, carrying the device's name so "device connected" can
+/// name it. The callback adds the outcome (`link=ok`) to this address.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
+fn connected_return(origin: &url::Url, name: &str) -> String {
+    let mut page = origin.clone();
+    page.set_path("/settings/link");
+    page.set_query(None);
+    page.set_fragment(None);
+    page.query_pairs_mut().append_pair("name", name);
+    page.to_string()
+}
+
+#[cfg(test)]
+mod connected_return_tests {
+    use super::connected_return;
+
+    #[dialog_common::test]
+    fn it_carries_the_device_name_back_to_the_task_page() {
+        assert_eq!(
+            connected_return(
+                &url::Url::parse("https://tonk.example/").unwrap(),
+                "Jack’s laptop & co"
+            ),
+            "https://tonk.example/settings/link?name=Jack%E2%80%99s+laptop+%26+co"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +658,62 @@ mod authorization_tests {
         assert!(
             frame.contains(&super::authorization_entity(&request)),
             "{frame}"
+        );
+    }
+
+    /// A callback the grant could never reach is refused before anyone
+    /// is asked for a passkey, and the outcome says why.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_an_authorization_whose_callback_cannot_receive_a_grant() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                client: Some(crate::router::ClientId("page".into())),
+                ..Default::default()
+            },
+        );
+        let command = super::AuthorizeDeviceRequest(tonk_worker_api::DeviceAuthorization {
+            audience: "did:key:test".into(),
+            callback: "http://example.test/".into(),
+            name: "test connection".into(),
+            expected_account: None,
+        });
+        let outcome =
+            dialog_capability::Provider::<super::AuthorizeDeviceRequest>::execute(&env, command)
+                .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("neither a Tonk loopback")),
+            "{outcome:?}"
+        );
+    }
+
+    /// Adding a passkey to a profile with no account fails before the
+    /// page is asked for anything.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[dialog_common::test]
+    async fn it_fails_to_add_a_passkey_without_an_account() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                client: Some(crate::router::ClientId("page".into())),
+                ..Default::default()
+            },
+        );
+        let command = tonk_schema::command::AddPasskey {
+            this: "id:add-passkey".parse().unwrap(),
+            account: tonk_schema::domain::command::current::add_passkey::Account(
+                "did:key:test".parse().unwrap(),
+            ),
+        };
+        let outcome =
+            dialog_capability::Provider::<tonk_schema::command::AddPasskey>::execute(&env, command)
+                .await;
+        assert!(
+            matches!(&outcome, Err(failure) if failure.0.contains("no account is signed in")),
+            "{outcome:?}"
         );
     }
 

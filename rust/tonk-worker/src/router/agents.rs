@@ -52,7 +52,7 @@ pub struct AgentSpaceAccess {
     subject: Did,
     key: String,
     name: Option<String>,
-    /// `read`, or `write` for read and write.
+    /// The approved access level: read, write, or full access with sharing.
     access: &'static str,
     /// When the earliest of its grants lapses, unix seconds.
     expires_at: Option<u64>,
@@ -227,6 +227,7 @@ async fn retained(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Issued {
     Here,
+    OwnedSpace,
     Link,
 }
 
@@ -251,6 +252,17 @@ pub(super) async fn grants(
             let chain = delegation.0;
             let issued = if issuers.contains(chain.issuer()) {
                 Issued::Here
+            } else if chain.subject() == Some(chain.issuer())
+                && dialog_repository::secrets::held_principal(
+                    tonk.profile.state(),
+                    chain.issuer(),
+                    &tonk.profile,
+                )
+                .await
+                .map_err(failure)?
+                .is_some_and(|key| issuers.contains(&key.to))
+            {
+                Issued::OwnedSpace
             } else if held == Held::AgentSpace {
                 Issued::Link
             } else {
@@ -282,24 +294,25 @@ pub async fn list(
         }
         marked.push(did.clone());
         let mut by_space =
-            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool)>::new();
+            std::collections::BTreeMap::<String, (Did, bool, Option<u64>, bool, bool)>::new();
         for (chain, _, issued) in grants(&tonk, &did).await? {
             let subject = chain.subject().unwrap().clone();
             let write = chain.ability().starts_with("/use/put");
             let expires = chain.expiration().map(|at| at.to_unix());
             let entry = by_space
                 .entry(subject.to_string())
-                .or_insert((subject, false, expires, false));
+                .or_insert((subject, false, expires, false, false));
             entry.1 |= write;
             entry.2 = match (entry.2, expires) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
             entry.3 |= issued == Issued::Link;
+            entry.4 |= chain.ability() == "/use";
         }
         let key = did.repo_key().to_owned();
         let mut spaces = Vec::new();
-        for (_, (subject, write, expires_at, via_link)) in by_space {
+        for (_, (subject, write, expires_at, via_link, share)) in by_space {
             // A space joined from a link may not be one of the person's:
             // the agent space's directory names it then.
             let name = match name(&tonk, &subject).await {
@@ -311,7 +324,13 @@ pub async fn list(
                 key: subject.repo_key().to_owned(),
                 name,
                 subject,
-                access: if write { "write" } else { "read" },
+                access: if share {
+                    "share"
+                } else if write {
+                    "write"
+                } else {
+                    "read"
+                },
                 expires_at,
                 via_link,
                 removal,
@@ -430,6 +449,7 @@ pub async fn revoke(
     if links.is_empty() {
         return Ok(Json(RevokeAnswer { pending: false }));
     }
+    let phrase_only = super::identity::signed_in_with_phrase(&tonk).await;
     drop(tonk);
     let Some(axum::Extension(client)) = client else {
         return Err(TonkWorkerError::Conflict(
@@ -438,7 +458,7 @@ pub async fn revoke(
     };
     let space = request.space.to_string();
     withdraw::note(&key, &space, Some(withdraw::Removal::Pending));
-    let asked = super::navigate::request_webauthn_with(
+    let asked = super::navigate::request_webauthn_for(
         &client,
         tonk_worker_api::WebAuthnKind::Custody,
         Some(tonk_worker_api::CustodyIntent::RevokeAgent(
@@ -448,6 +468,7 @@ pub async fn revoke(
             },
         )),
         None,
+        phrase_only,
     )
     .await;
     if let Err(error) = asked {
@@ -541,10 +562,14 @@ pub(super) async fn ancestor(
         access::{Access, Prove},
     };
     let ability = leaf.ability();
-    let scope = tonk_invite::connection::candidate_build_scopes(subject)
-        .into_iter()
-        .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
-        .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
+    let scope = super::agent_session::approval_scopes(
+        subject,
+        tonk_invite::connection::AgentAccess::ReadWrite,
+        true,
+    )
+    .into_iter()
+    .find(|scope| format!("/{}", scope.command.0.join("/")) == ability)
+    .ok_or_else(|| failure(format!("no known scope for {ability}")))?;
     let proof = Subject::from(profile.clone())
         .attenuate(Access)
         .invoke(Prove::<dialog_ucan::Ucan>::new(profile.clone(), scope))

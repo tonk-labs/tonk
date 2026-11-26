@@ -4,11 +4,13 @@
 //! source-expression index.
 
 use dialog_corpus::{Entity, Value};
+use dialog_query::selective::Selective;
 use dialog_query::{
-    AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
+    AttributeDescriptor, Cardinality, ConceptDescriptor, ConceptFieldDescriptor, Parameters, Term,
     concept::query::ConceptQuery,
 };
 use std::collections::BTreeMap;
+use tonk_schema::pick::Reading;
 
 use tonk_notation::{Application as SyntaxApplication, Field as SyntaxField, FieldValue, Scalar};
 
@@ -53,6 +55,9 @@ pub(crate) struct AttributeBody {
     /// kept out of the descriptor so it never changes the attribute's
     /// identity. Emitted as its own fact by [`role_application`].
     pub role: Option<String>,
+    /// How tonk reads it: its cardinality and the rank a concept field
+    /// reading it picks.
+    pub reading: Reading,
 }
 
 /// The roles an attribute can play when the palette fills a command:
@@ -94,6 +99,12 @@ pub(crate) fn parse_attribute_fields(
     // then names a domain rather than one attribute.
     let mut keyed: Option<&'static str> = None;
     let mut role: Option<String> = None;
+    // How the attribute is read: a `pick:` names it, the older
+    // `cardinality:` spells `last` or `all`, and a listed `as:` with
+    // neither ranks as `top`. Lowered after the fields are read, by
+    // `tonk_schema::pick`.
+    let mut picked: Option<Reading> = None;
+    let mut counted: Option<Reading> = None;
     for field in fields {
         // `this:` and `..:` are reserved meta-keys handled by the
         // outer assertion-binding flow; they don't contribute to
@@ -197,12 +208,11 @@ pub(crate) fn parse_attribute_fields(
                         ),
                     }
                 })?;
-                if normalized == "many" && !shape.contains_key("pick") {
-                    shape.insert(
-                        "pick".into(),
-                        serde_json::Value::String(tonk_notation::Pick::All.uri().into()),
-                    );
-                }
+                counted = Some(Reading::plain(if normalized == "many" {
+                    Cardinality::Many
+                } else {
+                    Cardinality::One
+                }));
             }
             // `the:` names the relation, or lists relations best first:
             // a ranked choice by relation, read as `top`.
@@ -246,13 +256,30 @@ pub(crate) fn parse_attribute_fields(
                         ),
                     }
                 })?;
-                shape.insert("pick".into(), serde_json::Value::String(pick.uri().into()));
+                picked = Reading::of_pick(pick.anchor());
             }
             "select" => {
                 return Err(AnalyzeErrorKind::InvalidAttributeBody {
                     reason: "`select:` is now spelled `pick:`".into(),
                 }
                 .into());
+            }
+            // The layer a write of the attribute lands in (dialog's
+            // `in`): an entity such as `"session:"`, the stack's own
+            // layer, which is never committed and goes with the session.
+            // Without it a write lands in the branch.
+            "in" => {
+                let value_str = stringify_simple_value(field)?;
+                if value_str.parse::<Entity>().is_err() {
+                    return Err(AnalyzeErrorKind::InvalidAttributeBody {
+                        reason: format!(
+                            "`in:` names a layer by its entity, such as \"session:\"; \
+                             {value_str:?} is not one"
+                        ),
+                    }
+                    .into());
+                }
+                shape.insert("in".into(), serde_json::Value::String(value_str));
             }
             "description" => {
                 let value_str = require_string_description(field)?;
@@ -280,6 +307,17 @@ pub(crate) fn parse_attribute_fields(
             }
         }
     }
+    let reading = picked.or(counted).unwrap_or_else(|| {
+        if matches!(shape.get("as"), Some(serde_json::Value::Array(_))) {
+            Reading::ranked(Selective::Top)
+        } else {
+            Reading::default()
+        }
+    });
+    shape.insert(
+        "cardinality".into(),
+        serde_json::Value::String(reading.cardinality.name().into()),
+    );
     if !shape.contains_key("the") {
         return Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "missing required field `the`".into(),
@@ -337,6 +375,7 @@ pub(crate) fn parse_attribute_fields(
         descriptor,
         entity,
         role,
+        reading,
     })
 }
 
@@ -527,6 +566,13 @@ pub(crate) fn parse_concept_body(
         .map(|(name, attr, optional)| {
             let mut value = serde_json::to_value(&attr.descriptor)
                 .expect("AttributeDescriptor is serializable");
+            // A ranked attribute is read by the field's pick, over the
+            // same list in the same order.
+            if let Some(pick) = attr.reading.field_pick()
+                && let Some(obj) = value.as_object_mut()
+            {
+                obj.insert("pick".into(), serde_json::Value::String(pick.into()));
+            }
             // The optional flag is flattened into each field object
             // on the wire; required fields omit it entirely.
             if *optional && let Some(obj) = value.as_object_mut() {
@@ -716,6 +762,7 @@ fn parse_concept_field_block(
             let resolved = AttributeDefinition {
                 entity: plan.entity.clone(),
                 descriptor: plan.descriptor.clone(),
+                reading: plan.reading,
             };
             fields.push((sub.name.clone(), resolved, optional));
             inline_attributes.push(plan);
@@ -804,6 +851,7 @@ fn resolve_concept_field(
 /// `type` and `description` when the descriptor doesn't specify.
 pub(crate) fn attribute_application(
     descriptor: &AttributeDescriptor,
+    reading: Reading,
     entity: &Entity,
     name: Option<AnchorName>,
 ) -> Application {
@@ -828,10 +876,11 @@ pub(crate) fn attribute_application(
         "description".into(),
         Term::Constant(Value::String(descriptor.description().to_owned())),
     );
-    // The pick the attribute reads under, as the entity dialog names
-    // it (`all:`), and the values its `as:` lists as a JSON list, best
-    // first: a reader reconstructing the descriptor needs both.
-    if let Ok(pick) = descriptor.pick().uri().parse::<Entity>() {
+    // How the attribute is read, as the entity tonk's meta vocabulary
+    // names its pick (`last:`, `all:`, or a rank such as `top:`), and
+    // the values its `as:` lists as a JSON list: a reader
+    // reconstructing the descriptor needs both.
+    if let Ok(pick) = reading.pick_entity().parse::<Entity>() {
         terms.insert("pick".into(), Term::Constant(Value::Entity(pick)));
     }
     if !descriptor.among().is_empty()

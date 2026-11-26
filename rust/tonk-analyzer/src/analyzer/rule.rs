@@ -1183,7 +1183,7 @@ fn lift_resolver_premise(
             )
         })?;
 
-    Ok(Proposition::Resolver(resolver_value))
+    Ok(Proposition::from(resolver_value))
 }
 
 #[cfg(test)]
@@ -1260,8 +1260,8 @@ mod tests {
         async fn declare(&self, name: &str, descriptor: ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }

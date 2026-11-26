@@ -912,9 +912,12 @@ mod when_syncing_with_an_upstream {
         branch
             .transaction()
             .integrate(
-                vec![Instruction::Assert(artifact, dialog_corpus::Pick::All)]
-                    .into_iter()
-                    .collect(),
+                vec![Instruction::Assert(
+                    artifact,
+                    dialog_corpus::Cardinality::Many,
+                )]
+                .into_iter()
+                .collect(),
             )
             .commit()
             .publish()
