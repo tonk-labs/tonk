@@ -15,19 +15,24 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use dialog_effects::Rejection;
 use dialog_repository::{CommitError, PublishError, Revision};
-use tonk_cli::eval::{self, EvalError};
+use tonk_cli::eval::EvalError;
 use tonk_cli::{Coded, ExitCode, held};
 use tonk_schema::RepositoryName;
+use tonk_schema::prelude::DidExt as _;
 
 use crate::common::{ATTRIBUTE_DECL, NOTE_ATTRIBUTE_DECL, TestSite};
 
 /// The file holding the active branch's head: the `revision` cell of the
-/// branch's space, the only one under `root` for a fresh site.
+/// branch's space, the only one under `root` for a fresh site once the
+/// profile's own directory (`_profile`, see `isolated_config`) is left out.
 fn head_cell(root: &Path, branch: &str) -> Result<PathBuf> {
     fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
             if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "_profile") {
+                    continue;
+                }
                 walk(&path, found)?;
             } else if path.file_name().is_some_and(|name| name == "revision") {
                 found.push(path);
