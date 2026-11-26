@@ -904,7 +904,7 @@ impl Graph {
                             &entity,
                             name,
                             transient,
-                        ))
+                        )?)
                     };
                     declared.insert(
                         pending.index,

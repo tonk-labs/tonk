@@ -419,6 +419,23 @@ pub enum AnalyzeErrorKind {
         /// The anchor name written after `&`.
         name: String,
     },
+    /// A `concept!` field label (a key under `with:` / `maybe:`) that
+    /// can't name the relation recording the field on the concept,
+    /// `db.concept.with/<label>` (and `db.concept.optional/<label>`
+    /// for an optional field). Dialog's reason is carried as is.
+    #[error(
+        "field label {label:?} can't name a concept field — `{relation}` is not a \
+         relation dialog accepts: {reason}; a label is lowercase letters, \
+         digits and `-`, starting with a letter and not ending with `-`"
+    )]
+    InvalidFieldLabel {
+        /// The label as written.
+        label: String,
+        /// The relation the label would have named.
+        relation: String,
+        /// Dialog's reason for refusing it.
+        reason: String,
+    },
     /// Assertion body had no fields — nothing to write.
     #[error("assertion `{head}!` has no fields — at least one is required")]
     AssertionWithoutFields {
@@ -783,6 +800,7 @@ impl AnalyzeErrorKind {
             Self::InvalidSubjectUri { .. } => "E_INVALID_SUBJECT_URI",
             Self::InvalidAnchorName { .. } => "E_INVALID_ANCHOR_NAME",
             Self::UnreferenceableAnchorName { .. } => "E_UNREFERENCEABLE_ANCHOR_NAME",
+            Self::InvalidFieldLabel { .. } => "E_INVALID_FIELD_LABEL",
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",

@@ -339,6 +339,7 @@ pub(crate) fn parse_attribute_fields(
         }
         .into());
     }
+    check_relations(&shape["the"])?;
     let descriptor: AttributeDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
         .map_err(|e| AnalyzeErrorKind::InvalidAttributeBody {
             reason: e.to_string(),
@@ -355,6 +356,33 @@ pub(crate) fn parse_attribute_fields(
         entity,
         role,
     })
+}
+
+/// Check an attribute's lowered `the` with dialog's own parsers, so a
+/// relation dialog refuses is reported with dialog's reason. Reading
+/// the descriptor would refuse it too, but `the` is an untagged enum
+/// there, and serde reports only that no variant matched.
+fn check_relations(the: &serde_json::Value) -> Result<(), AnalyzeErrorKind> {
+    let refuse = |reason: String| AnalyzeErrorKind::InvalidAttributeBody {
+        reason: format!("`the:` {reason}"),
+    };
+    match the {
+        serde_json::Value::String(relation) => relation
+            .parse::<dialog_query::The>()
+            .map(drop)
+            .map_err(|e| refuse(e.to_string())),
+        serde_json::Value::Array(relations) => relations.iter().try_for_each(check_relations),
+        // A keyed collection reads every entry of one domain; the key
+        // supplies the name half, so only the domain is checked.
+        serde_json::Value::Object(collection) => match collection.get("domain") {
+            Some(serde_json::Value::String(domain)) => domain
+                .parse::<dialog_corpus::Symbol>()
+                .map(drop)
+                .map_err(|e| refuse(e.to_string())),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// A field the concept body asks to retract via `field: _`,
@@ -704,6 +732,8 @@ fn parse_concept_field_block(
                 sub.name_range,
             ));
         }
+        check_field_label(&sub.name, optional)
+            .map_err(|kind| AnalyzeError::at(kind, sub.name_range))?;
         // Reject a field name declared twice (in one block or across
         // `with:`/`maybe:`) — a field is required or optional, never
         // both. Anchor the diagnostic at the second occurrence.
@@ -739,6 +769,35 @@ fn parse_concept_field_block(
         } else {
             let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
             fields.push((sub.name.clone(), resolved, optional));
+        }
+    }
+    Ok(())
+}
+
+/// The relation recording a required field on its concept entity.
+fn field_relation(label: &str) -> String {
+    format!("db.concept.with/{label}")
+}
+
+/// The relation marking a field of its concept entity optional.
+fn optional_relation(label: &str) -> String {
+    format!("db.concept.optional/{label}")
+}
+
+/// Check that a field label can name the relations [`concept_schema`]
+/// records the field under: `db.concept.with/<label>`, and for an
+/// optional field `db.concept.optional/<label>` too. Dialog decides
+/// what a relation's name half may be; its reason is carried as is.
+fn check_field_label(label: &str, optional: bool) -> Result<(), AnalyzeErrorKind> {
+    let relations =
+        std::iter::once(field_relation(label)).chain(optional.then(|| optional_relation(label)));
+    for relation in relations {
+        if let Err(e) = relation.parse::<dialog_query::Relation>() {
+            return Err(AnalyzeErrorKind::InvalidFieldLabel {
+                label: label.to_owned(),
+                relation,
+                reason: e.reason.to_owned(),
+            });
         }
     }
     Ok(())
@@ -879,7 +938,7 @@ pub(crate) fn concept_application(
     entity: &Entity,
     name: Option<AnchorName>,
     transient: bool,
-) -> Application {
+) -> Result<Application, AnalyzeError> {
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
     terms.insert(
@@ -924,15 +983,15 @@ pub(crate) fn concept_application(
     if transient {
         terms.insert("transient".into(), Term::Constant(Value::Boolean(true)));
     }
-    Application::Concept {
+    Ok(Application::Concept {
         query: ConceptQuery {
             terms,
-            predicate: concept_schema(descriptor),
+            predicate: concept_schema(descriptor)?,
         },
         join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name,
-    }
+    })
 }
 
 /// Lower a `concept!:` body's field retractions (`with: { f: _ }`,
@@ -992,7 +1051,7 @@ pub(crate) fn build_concept_retractions(
         retracted.iter().map(|f| f.name.clone()).collect()
     };
 
-    Ok(concept_field_retraction(stored, entity, &field_names)
+    Ok(concept_field_retraction(stored, entity, &field_names)?
         .into_iter()
         .collect())
 }
@@ -1018,7 +1077,7 @@ fn concept_field_retraction(
     stored: &ConceptDescriptor,
     entity: &Entity,
     fields: &[String],
-) -> Option<Application> {
+) -> Result<Option<Application>, AnalyzeError> {
     // Lift exactly the fields being dropped into a sub-descriptor,
     // carrying each one's stored `ConceptFieldDescriptor` (its `the:`
     // attribute) so `concept_schema` maps it to the right
@@ -1033,7 +1092,7 @@ fn concept_field_retraction(
         })
         .collect();
     if sub_fields.is_empty() {
-        return None;
+        return Ok(None);
     }
     let sub_descriptor =
         ConceptDescriptor::try_from(sub_fields).expect("subset of a valid descriptor is valid");
@@ -1049,15 +1108,15 @@ fn concept_field_retraction(
             Term::<dialog_query::Any>::blank(),
         );
     }
-    Some(Application::Concept {
+    Ok(Some(Application::Concept {
         query: ConceptQuery {
             terms,
-            predicate: concept_schema(&sub_descriptor),
+            predicate: concept_schema(&sub_descriptor)?,
         },
         join: Vec::new(),
         this: ThisIntent::Uri(entity.clone()),
         name: None,
-    })
+    }))
 }
 
 /// Build the `dialog.attribute` built-in schema descriptor. Its
@@ -1136,13 +1195,19 @@ fn attribute_schema() -> ConceptDescriptor {
 /// `db.meta/concept` marker (so branch-wide `concept:` queries
 /// can find every concept entity) and optional name and
 /// description fields.
-fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
+///
+/// Each field label becomes the name half of a relation, so a label
+/// dialog refuses as one is refused here. The labels of a body are
+/// checked where it is parsed ([`check_field_label`]); this check
+/// covers a descriptor from anywhere else.
+fn concept_schema(descriptor: &ConceptDescriptor) -> Result<ConceptDescriptor, AnalyzeError> {
     let mut with = serde_json::Map::new();
     for (name, attr) in descriptor.with().iter() {
+        check_field_label(name, attr.is_optional())?;
         with.insert(
             format!("with.{name}"),
             serde_json::json!({
-                "the": format!("db.concept.with/{name}"),
+                "the": field_relation(name),
                 "as": "Entity",
                 "cardinality": "one",
             }),
@@ -1153,7 +1218,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
             with.insert(
                 format!("optional.{name}"),
                 serde_json::json!({
-                    "the": format!("db.concept.optional/{name}"),
+                    "the": optional_relation(name),
                     "as": "Boolean",
                     "cardinality": "one",
                 }),
@@ -1192,8 +1257,12 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
             "cardinality": "one",
         }),
     );
-    serde_json::from_value(serde_json::json!({ "with": with }))
-        .expect("concept schema is well-formed")
+    serde_json::from_value(serde_json::json!({ "with": with })).map_err(|e| {
+        AnalyzeErrorKind::InvalidConceptBody {
+            reason: e.to_string(),
+        }
+        .into()
+    })
 }
 
 /// The type an attribute's `as:` names, as the entity dialog names it
