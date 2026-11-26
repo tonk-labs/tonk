@@ -60,6 +60,12 @@ pub async fn handle(body: &[u8], req: &Request, env: &Env) -> worker::Result<Res
     match handle_inner(body, req, env).await {
         Ok(receipt) => {
             replicate_verdicts(&receipt, env).await;
+            // Before answering, so a caller that goes on to read the
+            // account finds its devices already told.
+            if let Some(account) = crate::registration::announced_account(body, &receipt) {
+                let (space, cell) = crate::registration::account_head_cell();
+                crate::live::changed(env.clone(), account, space, cell).await;
+            }
             Response::from_json(&receipt)
         }
         Err(err) => {

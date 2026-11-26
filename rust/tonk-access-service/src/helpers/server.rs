@@ -1080,7 +1080,16 @@ async fn handle_request(
                 registration.revocations.clone(),
             ),
         };
-        let response = match env.handle().await {
+        let answered = env.handle().await;
+        // As the worker does: the account a command changed without
+        // writing it is told to its watches before the answer.
+        if let Ok(receipt) = &answered
+            && let Some(account) = crate::registration::announced_account(&body_bytes, receipt)
+        {
+            let (space, cell) = crate::registration::account_head_cell();
+            registration.live.changed(&account, &space, &cell).await;
+        }
+        let response = match answered {
             Ok(receipt) => Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")

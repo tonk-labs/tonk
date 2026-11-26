@@ -1498,6 +1498,183 @@ concept!: &writer-note
         fixture.stop().await;
     }
 
+    /// A space an agent creates for the person reaches the profile of a
+    /// device that follows the account, while nothing commits to the
+    /// account on any device.
+    ///
+    /// Creating the space writes a row at the access service and nothing
+    /// to the person's account branch, and a device recovers created
+    /// spaces only when it sweeps the account. A device that follows the
+    /// account sweeps it only when its watch delivers a head, so the
+    /// creation has to reach the watch, within a bound, by itself.
+    #[dialog_common::test]
+    async fn a_created_space_reaches_a_device_that_follows_the_account() {
+        use crate::router::{account, account_state, hosted::creation, identity, profile};
+        use axum::extract::State;
+        use dialog_repository::Upstream;
+        use futures_util::StreamExt as _;
+        use tonk_identity::created_space;
+
+        let fixture = Fixture::start().await;
+        let owner = Ed25519Signer::generate().await.unwrap();
+        fixture
+            .service
+            .address
+            .activate_customer(&owner, "follower@example.test")
+            .await
+            .unwrap();
+
+        // The person's device, signed in to the account and swept once.
+        let browser = crate::router::command::tests::native::test_state().await;
+        let tonk = browser.read().await.clone();
+        let link =
+            tonk_identity::delegation::mint_device_delegation(owner.clone(), &tonk.profile.did())
+                .await
+                .unwrap();
+        let delegation_hex = hex::encode(link.to_bytes().unwrap());
+        identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "follower".into(),
+                delegation_hex: delegation_hex.clone(),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        account::persist_link(
+            &tonk,
+            &tonk_worker_api::AccountLinkRequest {
+                credential_id: "follower".into(),
+                delegation_hex,
+                root_did: owner.did().to_string(),
+                remote: fixture.remote.to_string(),
+                provider: fixture.remote.to_string(),
+                initialize_name: false,
+            },
+        )
+        .await
+        .unwrap();
+        let (status, swept) = account_state::ensure_account_state_swept(&tonk).await;
+        assert_eq!(status, tonk_account::AccountStateStatus::Ready, "{swept:?}");
+        swept.unwrap();
+        let ready = account_state::require_ready_account_state(&tonk)
+            .await
+            .unwrap();
+
+        // It follows the account as the worker does.
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let Some(Upstream::Remote { remote, branch, .. }) =
+            main.handle().pulls().iter().next().cloned()
+        else {
+            panic!("the account pulls from the service");
+        };
+        let upstream = remote
+            .branch(branch)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let observations = upstream.watch().perform(&tonk.operator).await.unwrap();
+        let mut observations = std::pin::pin!(observations);
+        browser.read().await.sync_queue.watched(&ready.key);
+        // The head the watch begins with is the one the sweep took.
+        let begun = observations.next().await.unwrap().unwrap();
+        crate::router::sync::take_observation(&browser, &ready.key, begun, || async { Ok(()) })
+            .await;
+        browser.read().await.sync_queue.claim(&ready.key);
+
+        // The agent creates a space for the person, who approves it.
+        let hosted = session(&fixture.space, "creation", &fixture.remote).await;
+        let writer = fixture.writer_for(&hosted).await;
+        let permission = created_space::permission(
+            &owner,
+            &fixture.space.did(),
+            &fixture.remote,
+            dialog_ucan_core::time::Timestamp::five_minutes_from_now(),
+        )
+        .await
+        .unwrap();
+        let mut cards = creation::PendingCreations::default();
+        let ask = writer
+            .create_space(
+                &fixture.remote,
+                cards
+                    .decide(
+                        creation::CreateRequest::Propose {
+                            name: "Research".into(),
+                        },
+                        1,
+                    )
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = ask["structuredContent"]["card"]["answers"][1]["arguments"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let created = writer
+            .create_space(
+                &fixture.remote,
+                cards
+                    .decide(
+                        creation::CreateRequest::Answer {
+                            id,
+                            approve: true,
+                            permission: hex::encode(permission.to_bytes().unwrap()),
+                        },
+                        2,
+                    )
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let space = created["structuredContent"]["space"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // The creation reaches the watch by itself, and wakes the loop
+        // that sweeps the account.
+        let delivered =
+            tokio::time::timeout(std::time::Duration::from_secs(10), observations.next())
+                .await
+                .expect("the watch is told of the created space within the bound")
+                .expect("the watch goes on")
+                .expect("the head is recorded");
+        crate::router::sync::take_observation(&browser, &ready.key, delivered, || async { Ok(()) })
+            .await;
+        assert!(
+            browser.read().await.sync_queue.claim(&ready.key),
+            "the account's loop is woken to sweep it"
+        );
+
+        // What that sweep runs once it pulled (`converge_account_state`,
+        // which only the service worker builds), and what the page reads.
+        account_state::recover_created_spaces(&tonk, &ready)
+            .await
+            .unwrap();
+        let axum::Json(profile) = profile::get_profile(State(browser.clone())).await.unwrap();
+        assert!(
+            profile
+                .space
+                .iter()
+                .any(|entry| entry.subject.to_string() == space),
+            "the profile lists the created space"
+        );
+
+        writer.close().await;
+        fixture.stop().await;
+    }
+
     /// The person removes access a share link gave their agent, with the
     /// passkey: the account opens the agent's sealed key and the agent
     /// revokes, as the grants' audience, every leaf the link issued to
