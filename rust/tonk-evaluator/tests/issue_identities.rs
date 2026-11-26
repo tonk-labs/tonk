@@ -31,179 +31,34 @@
 #![allow(deprecated)]
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::collections::{BTreeMap, BTreeSet};
+mod support;
+
+use std::collections::BTreeSet;
 
 use dialog_capability::Subject;
-use dialog_corpus::{Changes, Instruction, Statement as _, Value};
+use dialog_corpus::Value;
 use dialog_effects::storage::Location;
 use dialog_peer::helpers::{open_peer, test_storage, unique_name};
 use dialog_query::query::Output as _;
 use dialog_query::{ConceptQuery, Parameters, Term};
 use dialog_repository::{Branch, RepositoryExt as _};
-use tonk_analyzer::analysis::ExpressionAnalysis;
+use support::{Env, attribute, notation_claims, plain, referent, yaml_claims};
 use tonk_analyzer::notation::tour::{Cell, evaluate_on_branch};
 use tonk_evaluator::evaluate::SyntaxEvaluateExt as _;
 use tonk_notation::parse;
 use tonk_schema::concept::{Concept, QueryPlan};
 use tonk_schema::query_source::Source;
-use tonk_schema::transact::{Planner as _, Statement};
 
-const CORE: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 const ISSUE_YAML: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
-const CORE_CLJ: &str = include_str!("../../tonk-core/assets/library/core.clj");
 const ISSUE_CLJ: &str = include_str!("../../tonk-core/assets/library/issue.clj");
 
 /// The five fields of `issue`, as the YAML names their attributes.
 const FIELDS: [&str; 5] = ["title", "description", "type", "priority", "status"];
 
-/// What the test asks of an environment: everything the evaluator, a
-/// commit and the notation's driver do.
-trait Env:
-    tonk_evaluator::evaluate::EvaluateEnv
-    + dialog_capability::Provider<dialog_effects::blob::Size>
-    + dialog_capability::Provider<dialog_effects::blob::Import>
-    + dialog_capability::Provider<dialog_effects::archive::Import>
-    + dialog_capability::Provider<dialog_effects::authority::Attest>
-    + dialog_capability::Provider<dialog_effects::memory::Publish>
-{
-}
-impl<T> Env for T where
-    T: tonk_evaluator::evaluate::EvaluateEnv
-        + dialog_capability::Provider<dialog_effects::blob::Size>
-        + dialog_capability::Provider<dialog_effects::blob::Import>
-        + dialog_capability::Provider<dialog_effects::archive::Import>
-        + dialog_capability::Provider<dialog_effects::authority::Attest>
-        + dialog_capability::Provider<dialog_effects::memory::Publish>
-{
-}
-
-/// A claim's relation and value, as text, under the entity it is of.
-type Claims = BTreeMap<String, BTreeSet<(String, String)>>;
-
-fn shown(value: &Value) -> String {
-    match value {
-        Value::String(text) => format!("{text:?}"),
-        other => format!("{other:?}"),
-    }
-}
-
-fn by_entity(instructions: Vec<Instruction>) -> Claims {
-    let mut claims = Claims::new();
-    for instruction in instructions {
-        if let Instruction::Assert(artifact, _) = instruction {
-            claims
-                .entry(artifact.of.to_string())
-                .or_default()
-                .insert((artifact.the.to_string(), shown(&artifact.is)));
-        }
-    }
-    claims
-}
-
-/// What the worker stores for `issue.yaml`, after `core.yaml`.
-fn yaml_claims() -> Claims {
-    let parse_at = |file: &str, text: &str| {
-        let parsed = tonk_notation::parse_at(tonk_library::location(file), text);
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "{file}: {:?}",
-            parsed.diagnostics
-        );
-        parsed.syntax.expect("syntax")
-    };
-    let mut joined = parse_at("core.yaml", CORE);
-    let first = joined.expressions.len();
-    joined
-        .expressions
-        .extend(parse_at("issue.yaml", ISSUE_YAML).expressions);
-    let analyzed = tonk_analyzer::analyzer::analyze_local(&joined).expect("analyzes");
-    let analysis = &analyzed.analysis;
-    let mut bindings = Parameters::new();
-    for (name, entity) in &analysis.variables {
-        bindings.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
-    }
-    let mut durable = Changes::new();
-    for analyzed in analysis.expressions.iter().skip(first) {
-        if let ExpressionAnalysis::Assertion(node) = &analyzed.analysis {
-            for statement in &node.analysis.claims {
-                let Statement::Assert(application) = statement else {
-                    panic!("issue.yaml retracts");
-                };
-                application
-                    .clone()
-                    .plan(&bindings)
-                    .expect("plans")
-                    .assert(&mut durable);
-            }
-        }
-    }
-    by_entity(durable.into_instructions())
-}
-
-/// What the worker stores for `issue.clj`, after `core.clj`.
-async fn notation_claims() -> Claims {
-    let (operator, _) = dialog_peer::helpers::test_session_with_peer().await;
-    let library = tonk_analyzer::notation::notation_library_claims(CORE_CLJ, ISSUE_CLJ, &operator)
-        .await
-        .expect("issue.clj lowers");
-    for form in &library.forms {
-        assert!(
-            form.refused.is_none(),
-            "{} is refused: {:?}",
-            form.key,
-            form.refused
-        );
-    }
-    by_entity(library.durable)
-}
-
-/// The entity `name` is bound to (`db.name/referent` of `id:<name>`).
-fn referent(claims: &Claims, name: &str) -> Option<String> {
-    claims
-        .get(&format!("id:{name}"))?
-        .iter()
-        .find_map(|(the, is)| {
-            (the == "db.name/referent").then(|| {
-                is.trim_start_matches("Entity(")
-                    .trim_end_matches(')')
-                    .to_owned()
-            })
-        })
-}
-
-/// The entity of the attribute stored as `relation` (`db.attribute/id`).
-fn attribute(claims: &Claims, relation: &str) -> Option<String> {
-    let id = ("db.attribute/id".to_owned(), format!("{relation:?}"));
-    claims
-        .iter()
-        .find_map(|(entity, claims)| claims.contains(&id).then(|| entity.clone()))
-}
-
-/// A description as the two notations both keep it: each line trimmed,
-/// blank lines and the closing newline left out.
-fn plain(claims: &BTreeSet<(String, String)>) -> BTreeSet<(String, String)> {
-    claims
-        .iter()
-        .map(|(the, is)| {
-            if the == "db.meta/description" {
-                let text: String = serde_json::from_str(is).expect("a quoted text");
-                let lines: Vec<&str> = text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .collect();
-                (the.clone(), lines.join("\n"))
-            } else {
-                (the.clone(), is.clone())
-            }
-        })
-        .collect()
-}
-
 #[dialog_common::test]
 async fn the_issue_library_keeps_its_concept_and_attribute_identities() {
-    let yaml = yaml_claims();
-    let notation = notation_claims().await;
+    let yaml = yaml_claims("issue.yaml", ISSUE_YAML).await;
+    let notation = notation_claims(ISSUE_CLJ).await;
 
     // The concept: one entity, bound to the same name on both sides.
     let concept = referent(&yaml, "issue").expect("the YAML names the concept");
@@ -404,7 +259,8 @@ async fn an_issue_written_through_the_notation_reads_back_through_the_yaml_conce
     .await;
 
     // The concept as the YAML stored it, read as tonk reads a concept.
-    let concept = referent(&yaml_claims(), "issue").expect("the YAML names the concept");
+    let concept = referent(&yaml_claims("issue.yaml", ISSUE_YAML).await, "issue")
+        .expect("the YAML names the concept");
     let stored = Concept::by_entity(concept.parse().expect("an entity"))
         .resolve(&Source::from(&branch), &operator)
         .await
