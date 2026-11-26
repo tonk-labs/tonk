@@ -868,8 +868,9 @@ pub fn command_providers() -> CommandProviders {
         .command::<tonk_schema::command::InstallComponent>(Space)
 }
 
-/// The commands a hosted agent's writes run: only those an MCP tool
-/// exposes (`tonk_rename_space`, `tonk_remove_member`). The agent writes through
+/// The commands a hosted agent's writes run: those an MCP tool exposes
+/// (`tonk_rename_space`, `tonk_remove_member`), and installing a library
+/// component, which only writes into the space. The agent writes through
 /// `tonk_evaluate`, which stores facts and lets rules derive more; a
 /// command with no tool is a fact nothing acts on there, however it was
 /// written or derived, so no effect is reachable that was not reviewed as
@@ -882,6 +883,10 @@ pub fn agent_command_providers() -> CommandProviders {
         // succeeds only for a member the agent's delegation admitted; the
         // access service refuses any other.
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>(Surface::Both)
+        // Installing a shipped library component writes its schema and
+        // views into the space and nothing beyond it: a write like any
+        // other `tonk_evaluate` does.
+        .command::<tonk_schema::command::InstallComponent>(Surface::Space)
 }
 
 /// How many answer dispatches one request's chain may run: a provider's
@@ -1504,9 +1509,19 @@ pub(crate) mod tests {
             .of(entity("cmd:expel"))
             .is(entity("did:key:zMember"))
             .assert(&mut expel);
+        let mut install = Changes::new();
+        the!("xyz.tonk.command.install-component/component")
+            .of(entity("cmd:install"))
+            .is(entity("tonk:library/notebook"))
+            .assert(&mut install);
+        the!("xyz.tonk.command.install-component/time")
+            .of(entity("cmd:install"))
+            .is(1.0f64)
+            .assert(&mut install);
         for (tool, changes) in [
             ("tonk_rename_space", &rename),
             ("tonk_remove_member", &expel),
+            ("library/install", &install),
         ] {
             assert!(
                 !claiming(&agent, &space, changes).is_empty(),
