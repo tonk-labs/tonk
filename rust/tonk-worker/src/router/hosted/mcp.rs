@@ -700,8 +700,8 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 self.leave_space(arguments, verified, bearer, session, call)
                     .await
             }
-            super::propose::RENAME => {
-                self.rename_space(arguments, verified, bearer, session, call)
+            super::propose::RENAME | super::propose::REMOVE_MEMBER => {
+                self.key_command(name, arguments, verified, bearer, session, call)
                     .await
             }
             super::propose::APPLY | super::propose::DISMISS => {
@@ -941,12 +941,13 @@ impl<W: Writers> McpEndpoint<'_, W> {
         json!({"content":[{"type":"text","text":format!("{say} Waiting for approval in the card.")}],"structuredContent":{"card":card.to_value()},"isError":false})
     }
 
-    /// `tonk_rename_space`: the space's own `tonk/rename-repository`, held
-    /// for the person to confirm as `tonk_evaluate` holds it (see
-    /// [`super::propose::KEY_COMMANDS`]). Nothing changes until they apply
-    /// it in the card.
-    async fn rename_space(
+    /// `tonk_rename_space` and `tonk_remove_member`: the space's own key
+    /// command, held for the person to confirm as `tonk_evaluate` holds it
+    /// (see [`super::propose::KEY_COMMANDS`]). Nothing changes until they
+    /// apply it in the card.
+    async fn key_command(
         &self,
+        name: &str,
         arguments: &Value,
         verified: &Verified,
         bearer: &str,
@@ -964,25 +965,39 @@ impl<W: Writers> McpEndpoint<'_, W> {
             );
         };
         call.space = Some(space.clone());
-        let Some(name) = arguments["name"]
-            .as_str()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        else {
-            call.end(Outcome::Invalid, "no_name");
-            return tool_result(json!("`name` is required: the space's new name."), true);
+        let document = if name == super::propose::RENAME {
+            let Some(new) = arguments["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|new| !new.is_empty())
+            else {
+                call.end(Outcome::Invalid, "no_name");
+                return tool_result(json!("`name` is required: the space's new name."), true);
+            };
+            if new.chars().count() > super::propose::NAME_LIMIT {
+                call.end(Outcome::Invalid, "long_name");
+                return tool_result(
+                    json!(format!(
+                        "`name` is at most {} characters.",
+                        super::propose::NAME_LIMIT
+                    )),
+                    true,
+                );
+            }
+            super::propose::rename_document(space.as_ref(), new)
+        } else {
+            let Some(member) = arguments["member"]
+                .as_str()
+                .and_then(|member| member.parse::<Did>().ok())
+            else {
+                call.end(Outcome::Invalid, "bad_member");
+                return tool_result(
+                    json!("`member` is required: the member account's DID."),
+                    true,
+                );
+            };
+            super::propose::remove_member_document(member.as_ref())
         };
-        if name.chars().count() > super::propose::NAME_LIMIT {
-            call.end(Outcome::Invalid, "long_name");
-            return tool_result(
-                json!(format!(
-                    "`name` is at most {} characters.",
-                    super::propose::NAME_LIMIT
-                )),
-                true,
-            );
-        }
-        let document = super::propose::rename_document(space.as_ref(), name);
         self.evaluate(verified, bearer, session, &space, &document, true, call)
             .await
     }
