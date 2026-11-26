@@ -95,6 +95,13 @@ jobs:
           nix --accept-flake-config develop .#ci -c cargo fmt --all -- --check
           nix --accept-flake-config develop .#ci -c npm --prefix mcp run check:format
           nix --accept-flake-config develop .#ci -c npm --prefix mcp test
+      # A second MCP client implementation, independent of the Node SDK that
+      # the hosted service is built on. Built with the nix toolchain, so it
+      # lives under /nix and nothing-but-nix's purge leaves it alone.
+      - name: Build independent Rust MCP client
+        run: |
+          nix --accept-flake-config develop .#ci -c cargo build --locked --manifest-path mcp/integration/rust-client/Cargo.toml
+          echo "TONK_MCP_RUST_CLIENT=$CARGO_TARGET_DIR/debug/tonk-mcp-rust-client" >> "$GITHUB_ENV"
       - name: Build ordinary worker and test through MCP
         run: |
           nix --accept-flake-config develop .#ci -c cargo build --locked --profile ci-test --timings -p tonk-worker --features native-host --bin tonk-worker-host
