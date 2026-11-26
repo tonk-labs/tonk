@@ -207,6 +207,7 @@ var TonkAgent = (() => {
         title: "Query a Tonk space",
         annotations: {
           readOnlyHint: true,
+          destructiveHint: false,
           openWorldHint: false
         },
         description: "Query inline Tonk notation (https://tonk-labs.github.io/docs/notation.html) in the authorized space through the ordinary worker, read-only (transact=false). Returns the unchanged worker evaluation response. Inspect concept: for schema and read tonk_guide for notation. Select needed fields with domain heads and use exact saved Entity URIs. No host filtering, synchronization or rendered-preview guarantee.",
@@ -257,6 +258,7 @@ var TonkAgent = (() => {
         },
         annotations: {
           readOnlyHint: true,
+          destructiveHint: false,
           openWorldHint: false
         }
       },
@@ -275,6 +277,7 @@ var TonkAgent = (() => {
         },
         annotations: {
           readOnlyHint: true,
+          destructiveHint: false,
           openWorldHint: false
         }
       },

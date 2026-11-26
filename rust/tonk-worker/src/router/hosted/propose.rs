@@ -55,6 +55,30 @@ pub const LEAVE_ROUTE: &str = "/api/proposals/leave";
 /// The model's tool that asks the person to let the agent leave a space.
 pub const LEAVE: &str = "tonk_leave_space";
 
+/// The model's tool that asks the person to rename a space: the space's
+/// own `tonk/rename-repository`, held as a key command.
+pub const RENAME: &str = "tonk_rename_space";
+
+/// The model's tool that asks the person to remove a member from a space:
+/// the space's own `member/expel`, held as a key command.
+pub const REMOVE_MEMBER: &str = "tonk_remove_member";
+
+/// The longest name [`RENAME`] takes, as `tonk_create_space` caps it.
+pub const NAME_LIMIT: usize = 100;
+
+/// The `tonk/rename-repository` document that renames `space` to `name`.
+/// The name is a JSON string, which notation reads as a quoted scalar, so
+/// no name can add a field or a block beside it.
+pub fn rename_document(space: &str, name: &str) -> String {
+    let name = serde_json::to_string(name).expect("a string serializes");
+    format!("tonk/rename-repository!:\n  subject: {space}\n  name: {name}\n")
+}
+
+/// The `member/expel` document that removes `member`.
+pub fn remove_member_document(member: &str) -> String {
+    format!("member/expel!:\n  member: {member}\n")
+}
+
 /// How long a change is held, in seconds.
 pub const LIFETIME: u64 = 30 * 60;
 
@@ -318,15 +342,15 @@ pub fn tools() -> Vec<Value> {
     });
     vec![
         json!({
-            "name": SHARE, "title": "Create a Tonk share link",
+            "name": SHARE, "title": "Ask to create a Tonk share link",
             "description": "Ask the person to make a passlink for a space with sharing enabled. Anyone with the approved link can join and write. The card provides the link after approval.",
             "inputSchema":{"type":"object","properties":{"space":{"type":"string","pattern":"^did:key:[A-Za-z0-9]+$"}},"required":["space"],"additionalProperties":false},
-            "annotations":{"readOnlyHint":true,"openWorldHint":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
             "_meta":super::card::tool_meta()
         }),
         json!({
             "name": LEAVE,
-            "title": "Leave a Tonk space",
+            "title": "Ask to leave a Tonk space",
             "description": "Ask the person to let you leave one of the spaces granted to you. \
                 Shows a card in the chat; nothing changes until they confirm there, and the \
                 card tells you when they do. Leaving drops your access to the space; what you \
@@ -344,7 +368,76 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
             // It holds the request and shows the card; it changes nothing.
-            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
+            "_meta": {
+                "ui": { "resourceUri": super::card::CARD_URI },
+                "openai/outputTemplate": super::card::CARD_URI,
+                "openai/widgetAccessible": true,
+            },
+        }),
+        json!({
+            "name": RENAME,
+            "title": "Ask to rename a Tonk space",
+            "description": "Ask the person to rename a space. Shows a card in the chat; \
+                nothing changes until they confirm there, and the card tells you when they \
+                do. The new name replaces the old one for everyone in the space. Needs write \
+                access to the space (see tonk_list_spaces).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "space": {
+                        "type": "string",
+                        "pattern": "^did:key:[A-Za-z0-9]+$",
+                        "description": "The space's exact subject, from tonk_list_spaces.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": NAME_LIMIT,
+                        "description": "The space's new name.",
+                    },
+                },
+                "required": ["space", "name"],
+                "additionalProperties": false,
+            },
+            // It holds the rename and shows the card; it changes nothing.
+            // The card's tonk_proposal_apply does the rename.
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
+            "_meta": {
+                "ui": { "resourceUri": super::card::CARD_URI },
+                "openai/outputTemplate": super::card::CARD_URI,
+                "openai/widgetAccessible": true,
+            },
+        }),
+        json!({
+            "name": REMOVE_MEMBER,
+            "title": "Ask to remove a member from a Tonk space",
+            "description": "Ask the person to remove a member from a space. Shows a card in \
+                the chat; nothing changes until they confirm there, and the card tells you \
+                when they do. The member loses their access to the space; what they added \
+                stays in it. Find the member's DID as the `member` field of the space's \
+                `member` concept (tonk_query). Needs write access to the space (see \
+                tonk_list_spaces).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "space": {
+                        "type": "string",
+                        "pattern": "^did:key:[A-Za-z0-9]+$",
+                        "description": "The space's exact subject, from tonk_list_spaces.",
+                    },
+                    "member": {
+                        "type": "string",
+                        "pattern": "^did:key:[A-Za-z0-9]+$",
+                        "description": "The member account's DID: the `member` field of their roster row.",
+                    },
+                },
+                "required": ["space", "member"],
+                "additionalProperties": false,
+            },
+            // It holds the removal and shows the card; it changes nothing.
+            // The card's tonk_proposal_apply revokes the access.
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
             "_meta": {
                 "ui": { "resourceUri": super::card::CARD_URI },
                 "openai/outputTemplate": super::card::CARD_URI,
@@ -374,6 +467,7 @@ pub fn tools() -> Vec<Value> {
             // It forgets the held change and writes nothing to the space.
             "annotations": {
                 "readOnlyHint": true,
+                "destructiveHint": false,
                 "openWorldHint": false,
             },
             "_meta": app_only,

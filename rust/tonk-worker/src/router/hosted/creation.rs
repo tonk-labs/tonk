@@ -16,14 +16,14 @@ pub(super) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": CREATE,
-            "title": "Create a Tonk space",
+            "title": "Ask to create a Tonk space",
             "description": "Ask the person to create a space they own and grant this agent read and write access. They approve in the chat card.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "name": {"type":"string","minLength":1,"maxLength":100} },
                 "required": ["name"], "additionalProperties": false
             },
-            "annotations": {"readOnlyHint":true,"openWorldHint":false},
+            "annotations": {"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
             "_meta": super::card::tool_meta()
         }),
         json!({
@@ -34,7 +34,9 @@ pub(super) fn tools() -> Vec<Value> {
                 "properties": {"id":{"type":"string"},"approve":{"type":"boolean"}},
                 "required":["id","approve"], "additionalProperties":false
             },
-            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":true},
+            // It adds a space to the person's own account: an additive write
+            // confined to Tonk, so not open-world.
+            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false},
             "_meta": {"ui":{"visibility":["app"]},"openai/visibility":"private"}
         }),
     ]

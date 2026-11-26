@@ -868,6 +868,27 @@ pub fn command_providers() -> CommandProviders {
         .command::<tonk_schema::command::InstallComponent>(Space)
 }
 
+/// The commands a hosted agent's writes run: those an MCP tool exposes
+/// (`tonk_rename_space`, `tonk_remove_member`), and installing a library
+/// component, which only writes into the space. The agent writes through
+/// `tonk_evaluate`, which stores facts and lets rules derive more; a
+/// command with no tool is a fact nothing acts on there, however it was
+/// written or derived, so no effect is reachable that was not reviewed as
+/// its own tool. Sharing, joining, leaving and creating a space are the
+/// hosted writer's own paths, not commands.
+pub fn agent_command_providers() -> CommandProviders {
+    CommandProviders::new()
+        .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>(Surface::Both)
+        // The revocation is minted under the agent's own chain, so it
+        // succeeds only for a member the agent's delegation admitted; the
+        // access service refuses any other.
+        .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>(Surface::Both)
+        // Installing a shipped library component writes its schema and
+        // views into the space and nothing beyond it: a write like any
+        // other `tonk_evaluate` does.
+        .command::<tonk_schema::command::InstallComponent>(Surface::Space)
+}
+
 /// How many answer dispatches one request's chain may run: a provider's
 /// answer that lands commands of its own continues it, and nothing in
 /// the worker's providers does, so the bound only catches a rule that
@@ -1456,6 +1477,71 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// An agent's writes over MCP run the commands an MCP tool exposes and
+    /// nothing else: a command with no tool is claimed by no provider,
+    /// from a space or the profile, so writing or deriving it does
+    /// nothing. Each probe is claimed by the full vocabulary, so a zero
+    /// here is the agent's set refusing it, not a malformed probe.
+    #[dialog_common::test]
+    fn an_agent_runs_only_the_commands_its_tools_expose() {
+        let full = command_providers();
+        let agent = agent_command_providers();
+        let space = CommandOrigin {
+            repo: "did:key:zSomeSpace".to_string(),
+            branch: "main".to_string(),
+            client: None,
+        };
+        let entity = |uri: &str| uri.parse::<Entity>().expect("entity URI");
+
+        let mut rename = Changes::new();
+        the!("xyz.tonk.command.rename-repository/name")
+            .of(entity("cmd:rename"))
+            .is("Renamed".to_string())
+            .assert(&mut rename);
+        the!("xyz.tonk.rename-repository/space")
+            .of(entity("cmd:rename"))
+            .is(entity("did:key:zSomeSpace"))
+            .assert(&mut rename);
+        let mut expel = Changes::new();
+        the!("xyz.tonk.command.expel-member/member")
+            .of(entity("cmd:expel"))
+            .is(entity("did:key:zMember"))
+            .assert(&mut expel);
+        let mut install = Changes::new();
+        the!("xyz.tonk.command.install-component/component")
+            .of(entity("cmd:install"))
+            .is(entity("tonk:library/notebook"))
+            .assert(&mut install);
+        the!("xyz.tonk.command.install-component/time")
+            .of(entity("cmd:install"))
+            .is(1.0f64)
+            .assert(&mut install);
+        for (tool, changes) in [
+            ("tonk_rename_space", &rename),
+            ("tonk_remove_member", &expel),
+            ("library/install", &install),
+        ] {
+            assert!(
+                !claiming(&agent, &space, changes).is_empty(),
+                "{tool}'s command must run"
+            );
+        }
+
+        let mut load = Changes::new();
+        the!("xyz.tonk.site/path")
+            .of(entity("site:probe"))
+            .is("/".to_string())
+            .assert(&mut load);
+        assert!(
+            !claiming(&full, &space, &load).is_empty(),
+            "`tonk/load` must be claimed by the full vocabulary, or this proves nothing"
+        );
+        assert!(
+            claiming(&agent, &space, &load).is_empty(),
+            "`tonk/load` has no MCP tool, so an agent's write must not run it"
+        );
     }
 
     /// The providers' run itself, natively over real state: a command
