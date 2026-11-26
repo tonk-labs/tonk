@@ -9,6 +9,11 @@
 //                 LSP `languageId` reported in `didOpen`. When
 //                 omitted the editor renders without highlighting
 //                 and reports `plaintext` to the LSP server.
+//   lsp-language— the LSP `languageId` reported in `didOpen`, when
+//                 it is not the highlighting language: a notation
+//                 cell highlights as `clojure` and is
+//                 `dialog-notation` to the server. Omitted, the
+//                 `language` attribute is reported.
 //   source      — document URI for LSP. Required to attach a
 //                 language server; the editor announces this URI
 //                 via the `tonk-code-connect` event and an
@@ -145,8 +150,8 @@ export type TonkCodeConnectDetail = {
   /** Document URI — what the LSP server sees as the document
    *  identity. Sourced from the editor's `source` attribute. */
   source: string;
-  /** LSP `languageId` reported in `didOpen`. Derived from the
-   *  `language` attribute. */
+  /** LSP `languageId` reported in `didOpen`: the `lsp-language`
+   *  attribute, else the `language` attribute. */
   language: string;
 };
 
@@ -162,6 +167,7 @@ export type TonkCodeDisconnectDetail = {
 const OBSERVED = [
   "value",
   "language",
+  "lsp-language",
   "readonly",
   "placeholder",
   "line-numbers",
@@ -649,6 +655,14 @@ class TonkCodeElement extends HTMLElement {
           this.#announceConnect();
         }
         break;
+      case "lsp-language":
+        // Only what the server is told the document is: re-announce
+        // so the provider opens the same source under it.
+        if (this.#lspClient) {
+          this.#announceDisconnect();
+          this.#announceConnect();
+        }
+        break;
       case "readonly":
         editor.setReadOnly(next !== null);
         break;
@@ -682,10 +696,15 @@ class TonkCodeElement extends HTMLElement {
     }
   }
 
-  /** LSP languageId reported to the server in `didOpen`. Derived
-   *  from the `language` attribute; falls back to `plaintext`. */
+  /** LSP languageId reported to the server in `didOpen`: the
+   *  `lsp-language` attribute, else the `language` attribute; falls
+   *  back to `plaintext`. */
   #lspLanguageId(): string {
-    return this.getAttribute("language") ?? DEFAULT_LANGUAGE_ID;
+    return (
+      this.getAttribute("lsp-language") ??
+      this.getAttribute("language") ??
+      DEFAULT_LANGUAGE_ID
+    );
   }
 
   /** Bubbling, composed event the editor fires on connect (and

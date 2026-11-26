@@ -33,6 +33,18 @@ pub(crate) const LANGUAGES: [&str; 2] = ["notation", "dialog-notation"];
 /// notation is written in s-expressions, and the editor ships Clojure's.
 pub(crate) const HIGHLIGHT: &str = "clojure";
 
+/// The LSP `languageId` a notation cell reports (`<tonk-code>`'s
+/// `lsp-language`), so it registers with the notebook's language server
+/// as what it is, not as the `clojure` it is highlighted as. The server
+/// answers no diagnostics and no completions for it yet: those wait for
+/// a dialog query that checks the notation.
+pub(crate) const LSP_LANGUAGE: &str = "dialog-notation";
+
+/// The next notation cell's LSP buffer number, global like the YAML
+/// cells' (`NEXT_CELL` in `notebook.rs`): it names the buffer and nothing
+/// else.
+static NEXT_BUFFER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// What a notation cell posts to `/evaluate`.
 pub(crate) const CONTENT_TYPE: &str = "application/x-dialog-notation+json";
 
@@ -129,6 +141,7 @@ pub(crate) fn bind(
     }
     let _ = wrapper.dataset().set(MARKER, "");
     let _ = wrapper.set_attribute("data-cell-language", "notation");
+    register(editor, with);
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -742,4 +755,27 @@ fn command_text(bound: &serde_json::Value, event: &Event, element: &Element) -> 
     }
     out.push_str("))");
     Some(out)
+}
+
+/// Register a notation cell's editor with the notebook's language server:
+/// a buffer of its own under `with` (`branch@repo`), reported as
+/// [`LSP_LANGUAGE`], and announced to the provider the way the YAML cells
+/// are, since the editor can be mounted before it is inside the provider.
+fn register(editor: &Element, with: &str) {
+    let (branch, repo) = with.split_once('@').unwrap_or((with, ""));
+    let id = NEXT_BUFFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let source = format!("tonk-buffer:///{repo}/{branch}/notation-{id}");
+    // The language first: setting `source` is what announces the editor.
+    let _ = editor.set_attribute("lsp-language", LSP_LANGUAGE);
+    let _ = editor.set_attribute("source", &source);
+    let detail = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.as_str().into());
+    let _ = js_sys::Reflect::set(&detail, &"language".into(), &LSP_LANGUAGE.into());
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(&detail);
+    init.set_bubbles(true);
+    init.set_composed(true);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("tonk-code-connect", &init) {
+        let _ = editor.dispatch_event(&event);
+    }
 }
