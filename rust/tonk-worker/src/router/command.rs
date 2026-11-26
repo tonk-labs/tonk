@@ -1519,16 +1519,14 @@ pub(crate) mod tests {
             .of(entity("site:probe"))
             .is("/".to_string())
             .assert(&mut load);
-        for (name, changes) in [("tonk/load", &load)] {
-            assert!(
-                !claiming(&full, &space, changes).is_empty(),
-                "`{name}` must be claimed by the full vocabulary, or this proves nothing"
-            );
-            assert!(
-                claiming(&agent, &space, changes).is_empty(),
-                "`{name}` has no MCP tool, so an agent's write must not run it"
-            );
-        }
+        assert!(
+            !claiming(&full, &space, &load).is_empty(),
+            "`tonk/load` must be claimed by the full vocabulary, or this proves nothing"
+        );
+        assert!(
+            claiming(&agent, &space, &load).is_empty(),
+            "`tonk/load` has no MCP tool, so an agent's write must not run it"
+        );
     }
 
     /// The providers' run itself, natively over real state: a command
