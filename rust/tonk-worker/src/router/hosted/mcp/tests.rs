@@ -299,6 +299,11 @@ async fn the_manuals_it_names_are_resources_it_serves() {
     assert!(said.contains("Tonk at https://tonk.example."));
     assert!(said.contains("`tonk_open_space` shows a route"));
     assert!(!said.contains("{origin}"));
+    // Each operation the instructions describe is its own tool: they
+    // never send the agent to a key command through tonk_evaluate.
+    for command in crate::router::hosted::propose::KEY_COMMANDS {
+        assert!(!said.contains(command), "the instructions name {command}");
+    }
     let agent = read_guide("tonk://guide/agent").unwrap();
     assert_eq!(agent["contents"][0]["text"], HOSTED);
     let answer = json!({ "revision_before": [1, 2], "revision_after": [3], "matches": [] });
@@ -676,6 +681,8 @@ async fn a_session_id_of_another_token_is_refused() {
             "tonk_proposal_apply",
             "tonk_proposal_dismiss",
             "tonk_query",
+            "tonk_remove_member",
+            "tonk_rename_space",
             "tonk_view_access"
         ]
     );
@@ -767,10 +774,16 @@ async fn evaluate_offers_to_confirm_first_and_draws_its_result_in_the_card() {
         super::super::card::CARD_URI
     );
     assert_eq!(evaluate["_meta"]["openai/widgetAccessible"], true);
-    // The model can ask to leave or share. Only the card can answer.
+    // The model can ask to leave, share, rename or remove a member. Only
+    // the card can answer.
     for tool in super::super::propose::tools() {
-        if tool["name"] == super::super::propose::LEAVE
-            || tool["name"] == super::super::propose::SHARE
+        if [
+            super::super::propose::LEAVE,
+            super::super::propose::SHARE,
+            super::super::propose::RENAME,
+            super::super::propose::REMOVE_MEMBER,
+        ]
+        .contains(&tool["name"].as_str().unwrap_or_default())
         {
             assert_eq!(
                 tool["_meta"]["ui"]["resourceUri"],
@@ -2008,6 +2021,180 @@ concept!: &mcp-note
             .await;
         assert!(error, "{refused}");
         assert!(refused.to_string().contains("on its own"), "{refused}");
+
+        service.stop().await.unwrap();
+    }
+
+    /// What `core.yaml` declares for `member/expel`.
+    const EXPEL_SCHEMA: &str = "attribute!: &expel-member/member
+  description: The DID of the member to remove.
+  the: xyz.tonk.command.expel-member/member
+  as: entity
+  role: :object
+command!: &member/expel
+  description: Remove a member from this space.
+  with:
+    member: expel-member/member
+";
+
+    /// `tonk_rename_space` holds the space's own rename for the person:
+    /// nothing is renamed until they apply it, and then it runs once. A
+    /// name that looks like more notation stays one name.
+    #[dialog_common::test]
+    async fn rename_space_asks_first_and_renames_once_applied() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        let seeded = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": RENAME_SCHEMA }),
+            )
+            .await;
+        assert_eq!(seeded["isError"], false, "{seeded}");
+        let run: u64 = rand::random();
+        let name = format!("Plans \"{run}\"\n  name: other");
+        let find = format!("tonk/repository:\n  this: {space}\n  name: ?name\n");
+        let current = || {
+            let client = &client;
+            let space = space.clone();
+            let find = find.clone();
+            async move {
+                let (found, error) = client
+                    .call("tonk_query", json!({ "space": space, "document": find }))
+                    .await;
+                assert!(!error, "{found}");
+                found
+            }
+        };
+
+        let asked = client
+            .result("tonk_rename_space", json!({ "space": space, "name": name }))
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        assert!(ask["say"].as_str().unwrap().starts_with("rename "), "{ask}");
+        assert!(
+            !current().await.to_string().contains(&run.to_string()),
+            "the rename ran before the person answered"
+        );
+
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[1]["tool"], "tonk_proposal_apply", "{ask}");
+        let applied = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(applied["isError"], false, "{applied}");
+        let found = current().await;
+        assert!(
+            found.to_string().contains(&run.to_string()),
+            "the confirmed rename did not run: {found}"
+        );
+
+        // Blank and oversized names are refused before anything is held.
+        for bad in [
+            String::from("  "),
+            "x".repeat(crate::router::hosted::propose::NAME_LIMIT + 1),
+        ] {
+            let (refused, error) = client
+                .call("tonk_rename_space", json!({ "space": space, "name": bad }))
+                .await;
+            assert!(error, "{refused}");
+        }
+
+        service.stop().await.unwrap();
+    }
+
+    /// `tonk_remove_member` holds the space's own `member/expel` for the
+    /// person: the card asks to remove that member, and a declined
+    /// removal is dropped without running.
+    #[dialog_common::test]
+    async fn remove_member_asks_first_and_runs_nothing_when_declined() {
+        let service = AccessServiceAddress::start(Default::default())
+            .await
+            .unwrap();
+        let agent = Ed25519Signer::import(&rand::random::<[u8; 32]>())
+            .await
+            .unwrap();
+        service
+            .address
+            .provision_subject(agent.did().as_ref())
+            .await
+            .unwrap();
+        let remote = url::Url::parse(&service.address.ucan_endpoint()).unwrap();
+        let writers = NativeWriters {
+            pending: Default::default(),
+            remote: remote.clone(),
+            open: Default::default(),
+            mounts: Default::default(),
+        };
+        let key = SessionKey::derive("test");
+        let tickets = crate::router::hosted::view::TicketKey::derive("test");
+        let endpoint = endpoint(&key, &tickets, &writers);
+        let bearer = token(&agent, &remote).await;
+        let client = Client::connect(&endpoint, bearer).await;
+        let space = agent.did().to_string();
+        let seeded = client
+            .result(
+                "tonk_evaluate",
+                json!({ "space": space, "document": EXPEL_SCHEMA }),
+            )
+            .await;
+        assert_eq!(seeded["isError"], false, "{seeded}");
+        let member = Ed25519Signer::generate().await.unwrap().did().to_string();
+
+        let asked = client
+            .result(
+                "tonk_remove_member",
+                json!({ "space": space, "member": member }),
+            )
+            .await;
+        assert_eq!(asked["isError"], false, "{asked}");
+        let ask = &asked["structuredContent"]["card"];
+        assert_eq!(ask["kind"], "ask", "{asked}");
+        assert!(ask["say"].as_str().unwrap().starts_with("remove "), "{ask}");
+        let answers = ask["answers"].as_array().unwrap();
+        assert_eq!(answers[0]["tool"], "tonk_proposal_dismiss", "{ask}");
+        let dismissed = client
+            .result("tonk_proposal_dismiss", answers[0]["arguments"].clone())
+            .await;
+        assert_eq!(dismissed["isError"], false, "{dismissed}");
+        // Dropped: the card's apply no longer finds it.
+        let late = client
+            .result("tonk_proposal_apply", answers[1]["arguments"].clone())
+            .await;
+        assert_eq!(late["isError"], true, "{late}");
+
+        // Only a DID names a member.
+        let (refused, error) = client
+            .call(
+                "tonk_remove_member",
+                json!({ "space": space, "member": "sam\n  member: did:key:zOther" }),
+            )
+            .await;
+        assert!(error, "{refused}");
 
         service.stop().await.unwrap();
     }

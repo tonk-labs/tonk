@@ -700,6 +700,10 @@ impl<W: Writers> McpEndpoint<'_, W> {
                 self.leave_space(arguments, verified, bearer, session, call)
                     .await
             }
+            super::propose::RENAME | super::propose::REMOVE_MEMBER => {
+                self.key_command(name, arguments, verified, bearer, session, call)
+                    .await
+            }
             super::propose::APPLY | super::propose::DISMISS => {
                 self.answer_proposal(name, arguments, verified, bearer, session, call)
                     .await
@@ -935,6 +939,67 @@ impl<W: Writers> McpEndpoint<'_, W> {
             .answer("not now", Look::Ring, super::propose::DISMISS, args.clone())
             .answer("make passlink", Look::Main, super::propose::APPLY, args);
         json!({"content":[{"type":"text","text":format!("{say} Waiting for approval in the card.")}],"structuredContent":{"card":card.to_value()},"isError":false})
+    }
+
+    /// `tonk_rename_space` and `tonk_remove_member`: the space's own key
+    /// command, held for the person to confirm as `tonk_evaluate` holds it
+    /// (see [`super::propose::KEY_COMMANDS`]). Nothing changes until they
+    /// apply it in the card.
+    async fn key_command(
+        &self,
+        name: &str,
+        arguments: &Value,
+        verified: &Verified,
+        bearer: &str,
+        session: &str,
+        call: &mut Call,
+    ) -> Value {
+        let Some(space) = arguments["space"]
+            .as_str()
+            .and_then(|space| space.parse::<Did>().ok())
+        else {
+            call.end(Outcome::Invalid, "bad_space");
+            return tool_result(
+                json!("`space` is required: an exact subject from tonk_list_spaces."),
+                true,
+            );
+        };
+        call.space = Some(space.clone());
+        let document = if name == super::propose::RENAME {
+            let Some(new) = arguments["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|new| !new.is_empty())
+            else {
+                call.end(Outcome::Invalid, "no_name");
+                return tool_result(json!("`name` is required: the space's new name."), true);
+            };
+            if new.chars().count() > super::propose::NAME_LIMIT {
+                call.end(Outcome::Invalid, "long_name");
+                return tool_result(
+                    json!(format!(
+                        "`name` is at most {} characters.",
+                        super::propose::NAME_LIMIT
+                    )),
+                    true,
+                );
+            }
+            super::propose::rename_document(space.as_ref(), new)
+        } else {
+            let Some(member) = arguments["member"]
+                .as_str()
+                .and_then(|member| member.parse::<Did>().ok())
+            else {
+                call.end(Outcome::Invalid, "bad_member");
+                return tool_result(
+                    json!("`member` is required: the member account's DID."),
+                    true,
+                );
+            };
+            super::propose::remove_member_document(member.as_ref())
+        };
+        self.evaluate(verified, bearer, session, &space, &document, true, call)
+            .await
     }
 
     /// `tonk_leave_space`: hold leaving a granted space on the agent

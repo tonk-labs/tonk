@@ -965,7 +965,7 @@ async fn open_peer(
     remote: &url::Url,
     (agent, home): (&Did, &url::Url),
 ) -> Result<HostedPeer, TonkWorkerError> {
-    let peer = HostedPeer::open_in(
+    let peer = HostedPeer::open_for_agent_in(
         Directory::At(directory.to_owned()),
         &key.seed,
         std::slice::from_ref(&key.chain),
