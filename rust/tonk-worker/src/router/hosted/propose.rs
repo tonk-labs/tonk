@@ -59,10 +59,6 @@ pub const LEAVE: &str = "tonk_leave_space";
 /// own `tonk/rename-repository`, held as a key command.
 pub const RENAME: &str = "tonk_rename_space";
 
-/// The model's tool that asks the person to remove a member from a space:
-/// the space's own `member/expel`, held as a key command.
-pub const REMOVE_MEMBER: &str = "tonk_remove_member";
-
 /// The longest name [`RENAME`] takes, as `tonk_create_space` caps it.
 pub const NAME_LIMIT: usize = 100;
 
@@ -72,11 +68,6 @@ pub const NAME_LIMIT: usize = 100;
 pub fn rename_document(space: &str, name: &str) -> String {
     let name = serde_json::to_string(name).expect("a string serializes");
     format!("tonk/rename-repository!:\n  subject: {space}\n  name: {name}\n")
-}
-
-/// The `member/expel` document that removes `member`.
-pub fn remove_member_document(member: &str) -> String {
-    format!("member/expel!:\n  member: {member}\n")
 }
 
 /// How long a change is held, in seconds.
@@ -402,41 +393,6 @@ pub fn tools() -> Vec<Value> {
             },
             // It holds the rename and shows the card; it changes nothing.
             // The card's tonk_proposal_apply does the rename.
-            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
-            "_meta": {
-                "ui": { "resourceUri": super::card::CARD_URI },
-                "openai/outputTemplate": super::card::CARD_URI,
-                "openai/widgetAccessible": true,
-            },
-        }),
-        json!({
-            "name": REMOVE_MEMBER,
-            "title": "Ask to remove a member from a Tonk space",
-            "description": "Ask the person to remove a member from a space. Shows a card in \
-                the chat; nothing changes until they confirm there, and the card tells you \
-                when they do. The member loses their access to the space; what they added \
-                stays in it. Find the member's DID as the `member` field of the space's \
-                `member` concept (tonk_query). Needs write access to the space (see \
-                tonk_list_spaces).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "space": {
-                        "type": "string",
-                        "pattern": "^did:key:[A-Za-z0-9]+$",
-                        "description": "The space's exact subject, from tonk_list_spaces.",
-                    },
-                    "member": {
-                        "type": "string",
-                        "pattern": "^did:key:[A-Za-z0-9]+$",
-                        "description": "The member account's DID: the `member` field of their roster row.",
-                    },
-                },
-                "required": ["space", "member"],
-                "additionalProperties": false,
-            },
-            // It holds the removal and shows the card; it changes nothing.
-            // The card's tonk_proposal_apply revokes the access.
             "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
             "_meta": {
                 "ui": { "resourceUri": super::card::CARD_URI },

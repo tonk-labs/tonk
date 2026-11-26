@@ -360,7 +360,7 @@ fn a_document_naming_a_key_command_is_asked_first() {
 }
 
 #[dialog_common::test]
-fn the_named_tools_write_one_key_command_each() {
+fn the_rename_tool_writes_one_key_command() {
     let rename = rename_document("did:key:zLaunch", "Launch \"2\"\n  name: other");
     assert_eq!(
         rename,
@@ -368,10 +368,6 @@ fn the_named_tools_write_one_key_command_each() {
     );
     assert!(names_key_command(&rename));
     assert_eq!(rename.lines().count(), 3, "the name adds no line: {rename}");
-
-    let remove = remove_member_document("did:key:zSam");
-    assert_eq!(remove, "member/expel!:\n  member: did:key:zSam\n");
-    assert!(names_key_command(&remove));
 }
 
 #[dialog_common::test]

@@ -45,15 +45,12 @@ When the person asks you to leave a space granted to you, call
 only the person's answer there drops your access. Do not claim you left until
 the card tells you. Your own space cannot be left.
 
-## Renaming a space and removing a member
+## Renaming a space
 
 To rename a space, call `tonk_rename_space` with its subject and the new name.
-To remove a member, call `tonk_remove_member` with the space's subject and the
-member account's DID, the `member` field of their row in the space's `member`
-concept. Each shows a card and changes nothing until the person confirms
-there; do not claim it is done until the card tells you. A rename is seen by
-everyone in the space; a removed member loses their access, and what they
-added stays.
+It shows a card and changes nothing until the person confirms there; do not
+claim it is done until the card tells you. Everyone in the space sees the new
+name.
 
 ## Reading and writing
 
@@ -68,9 +65,8 @@ you which. Use it for many changes at once, for changes others will see that
 are hard to undo, or when the person asked to confirm first. Wait for their
 answer; do not write the same change again meanwhile.
 
-Rename a space, remove a member or make a share link with its own tool
-(`tonk_rename_space`, `tonk_remove_member`, `tonk_create_share_link`), not with
-`tonk_evaluate`.
+Rename a space or make a share link with its own tool (`tonk_rename_space`,
+`tonk_create_share_link`), not with `tonk_evaluate`.
 
 Read only what the task needs. Discover a space's schema by querying
 `concept:`; inspect a concept's `source` descriptors for exact attribute
