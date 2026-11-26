@@ -34,7 +34,9 @@ pub(super) fn tools() -> Vec<Value> {
                 "properties": {"id":{"type":"string"},"approve":{"type":"boolean"}},
                 "required":["id","approve"], "additionalProperties":false
             },
-            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":true},
+            // It adds a space to the person's own account: an additive write
+            // confined to Tonk, so not open-world.
+            "annotations": {"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false},
             "_meta": {"ui":{"visibility":["app"]},"openai/visibility":"private"}
         }),
     ]
