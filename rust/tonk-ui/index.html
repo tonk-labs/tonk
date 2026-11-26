@@ -1244,6 +1244,15 @@
         <link data-trunk rel="copy-dir" href="./assets/in-agent" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />
+        <!-- OpenAI's domain verification for Tonk's app in ChatGPT: the
+       token its developer settings issued, at the origin-root path they
+       fetch. -->
+        <link
+            data-trunk
+            rel="copy-file"
+            href="./assets/.well-known/openai-apps-challenge"
+            data-target-path=".well-known"
+        />
         <!-- Sealed-guest element runtime (registration-only wasm). Built as
        a wasm-bindgen `web` worker bundle so trunk compiles + watches the
        guest crate (no hand-run wasm-bindgen, no checked-in bundle). The
