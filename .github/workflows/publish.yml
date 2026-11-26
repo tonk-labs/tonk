@@ -47,7 +47,7 @@ jobs:
     name: Cloudflare Artifacts
     outputs:
       channel: ${{ github.event_name == 'pull_request' && 'preview' || github.ref == 'refs/heads/main' && 'dev' || steps.release.outputs.channel }}
-      provider: ${{ steps.deploy-preview.outputs.url || github.ref == 'refs/heads/main' && 'https://tonk.foundation' || steps.release.outputs.channel == 'staging' && 'https://staging.tonk.xyz' || 'https://tonk.network' }}
+      provider: ${{ steps.deploy-preview.outputs.url || github.ref == 'refs/heads/main' && 'https://tonk.foundation' || steps.release.outputs.channel == 'staging' && 'https://tonk.spot' || 'https://tonk.network' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -447,7 +447,7 @@ jobs:
       # The MCP Worker serving `/mcp` on this deployment's origin, bound
       # into the access service as `MCP_WORKER`, so it is deployed first:
       # `tonk-mcp-worker-dev` for tonk.foundation, `-staging` for
-      # staging.tonk.xyz and `tonk-mcp-worker` for tonk.network.
+      # tonk.spot and `tonk-mcp-worker` for tonk.network.
       - name: Deploy MCP worker
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || steps.release.outputs.channel == 'staging' || steps.release.outputs.channel == 'stable'
         id: mcp-worker
@@ -455,7 +455,7 @@ jobs:
           set -euo pipefail
           case "$CHANNEL" in
             dev) name=tonk-mcp-worker-dev; origin=https://tonk.foundation ;;
-            staging) name=tonk-mcp-worker-staging; origin=https://staging.tonk.xyz ;;
+            staging) name=tonk-mcp-worker-staging; origin=https://tonk.spot ;;
             stable) name=tonk-mcp-worker; origin=https://tonk.network ;;
             *) echo "no MCP worker for channel '$CHANNEL'" >&2; exit 1 ;;
           esac

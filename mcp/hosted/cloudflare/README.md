@@ -11,7 +11,7 @@ ignored. Deployment requires the existing `CLOUDFLARE_ACCOUNT_ID` and
 | --- | --- | --- | --- |
 | Same-repository PR | `tonk-mcp-pr-N` | `https://tonk-mcp-pr-N.<subdomain>.workers.dev/mcp` | Matching `pr-N` access preview |
 | Push to main | `tonk-mcp-dev` | `https://agent-dev.tonk.host/mcp` | `https://tonk.foundation` |
-| Prerelease v tag | `tonk-mcp-staging` | `https://agent-staging.tonk.host/mcp` | `https://staging.tonk.xyz` |
+| Prerelease v tag | `tonk-mcp-staging` | `https://agent-staging.tonk.host/mcp` | `https://tonk.spot` |
 | Final v tag | `tonk-mcp` | `https://agent.tonk.host/mcp` | `https://tonk.network` |
 
 Each worker has its own origin and private checkpoint bucket. Release channels

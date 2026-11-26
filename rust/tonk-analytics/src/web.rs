@@ -80,12 +80,11 @@ export function ph_init(key, host, version) {
         // environment = "website" in its own repo) apart within the
         // shared PostHog project.
         // tonk.network is the production origin the CLI builds invite links
-        // against. Staging answers on staging.tonk.xyz and on tonk.spot,
-        // which serves the same deployment.
+        // against. Staging answers on tonk.spot.
         var host = location.hostname;
         var environment =
             host === "tonk.network" ? "production"
-            : (host === "staging.tonk.xyz" || host === "tonk.spot") ? "staging"
+            : host === "tonk.spot" ? "staging"
             : "dev";
         // `shell` separates the desktop app's embedded web views from a
         // browser without changing what `environment` means.

@@ -35,7 +35,7 @@ A documented callback is not an observed authorization attempt.
 | Channel | MCP URL | Tonk provider |
 | --- | --- | --- |
 | Development | https://agent-dev.tonk.host/mcp | https://tonk.foundation |
-| Staging | https://agent-staging.tonk.host/mcp | https://staging.tonk.xyz |
+| Staging | https://agent-staging.tonk.host/mcp | https://tonk.spot |
 | Stable | https://agent.tonk.host/mcp | https://tonk.network |
 | PR N | https://tonk-mcp-pr-N.tonk.workers.dev/mcp | Matching Tonk PR preview |
 

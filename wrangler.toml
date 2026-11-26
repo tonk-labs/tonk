@@ -150,7 +150,7 @@ binding = "MCP_WORKER"
 service = "tonk-mcp-worker"
 
 [env.staging]
-routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
+routes = [{ pattern = "tonk.spot", custom_domain = true }]
 
 # Keep Wrangler's rebuild on the invitation-enabled staging artifact.
 [env.staging.build]
@@ -218,7 +218,7 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # development branch. Its state is disjoint from staging and production, and
 # being off the tonk.network apex it mints its own passkey credentials.
 
-# The MCP Worker that serves `/mcp` on staging.tonk.xyz, deployed by
+# The MCP Worker that serves `/mcp` on tonk.spot, deployed by
 # continuous integration before this environment.
 [[env.staging.services]]
 binding = "MCP_WORKER"

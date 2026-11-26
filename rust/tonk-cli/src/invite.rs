@@ -1158,14 +1158,14 @@ mod tests {
 
         #[dialog_common::test]
         fn it_replaces_the_access_service_path_with_join() {
-            let base = base_url_for_remote("https://staging.tonk.xyz/ucan/").unwrap();
-            assert_eq!(base, "https://staging.tonk.xyz/join");
+            let base = base_url_for_remote("https://tonk.spot/ucan/").unwrap();
+            assert_eq!(base, "https://tonk.spot/join");
         }
 
         #[dialog_common::test]
         fn it_handles_an_endpoint_with_no_path() {
-            let base = base_url_for_remote("https://staging.tonk.xyz").unwrap();
-            assert_eq!(base, "https://staging.tonk.xyz/join");
+            let base = base_url_for_remote("https://tonk.spot").unwrap();
+            assert_eq!(base, "https://tonk.spot/join");
         }
 
         /// `/ucan` and `/ucan/` behave identically: joining an
@@ -1176,8 +1176,8 @@ mod tests {
         #[dialog_common::test]
         fn it_treats_a_trailing_slash_as_irrelevant() {
             assert_eq!(
-                base_url_for_remote("https://staging.tonk.xyz/ucan").unwrap(),
-                base_url_for_remote("https://staging.tonk.xyz/ucan/").unwrap(),
+                base_url_for_remote("https://tonk.spot/ucan").unwrap(),
+                base_url_for_remote("https://tonk.spot/ucan/").unwrap(),
             );
         }
 

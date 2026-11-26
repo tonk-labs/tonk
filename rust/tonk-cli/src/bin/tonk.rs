@@ -4206,7 +4206,7 @@ mod account_spaces_parser_tests {
             assert!(Cli::try_parse_from(args).is_err());
         }
         assert!(
-            Cli::try_parse_from(["tonk", "join", "--via", "https://staging.tonk.xyz"]).is_err(),
+            Cli::try_parse_from(["tonk", "join", "--via", "https://tonk.spot"]).is_err(),
             "--via selects a new invitation's deployment, not resume mode"
         );
         assert!(Cli::try_parse_from(["tonk", "connect"]).is_err());
@@ -4223,14 +4223,14 @@ mod account_spaces_parser_tests {
             "--name",
             "my-agent",
             "--via",
-            "https://staging.tonk.xyz",
+            "https://tonk.spot",
         ])
         .expect("copied handoff parses");
         assert!(
             matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None, .. })
             if url == invite
                 && name.as_deref() == Some("my-agent")
-                && via.as_deref() == Some("https://staging.tonk.xyz"))
+                && via.as_deref() == Some("https://tonk.spot"))
         );
     }
 

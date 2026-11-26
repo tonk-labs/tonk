@@ -269,7 +269,7 @@ Connection imports join through the deployment the link was issued on: the
 origin of its signed `/ucan/` endpoint, the same deployment a browser join
 uses. To restrict an import to one deployment, pass its HTTPS origin or a
 loopback HTTP origin with `--via`, for example
-`tonk join --via https://staging.tonk.xyz TOOL_LINK`; a link for any other
+`tonk join --via https://tonk.spot TOOL_LINK`; a link for any other
 deployment is then refused with `connection_untrusted_route`, naming both. The
 command-line option overrides `TONK_CONNECTION_ORIGIN`, which sets the same
 restriction for an environment. Either way the importer requires the signed

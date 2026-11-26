@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class RuntimeShareTests: XCTestCase {
-  let origin = URL(string: "https://staging.tonk.xyz")!
+  let origin = URL(string: "https://tonk.spot")!
   let subject = "did:key:zSpace"
 
   private func validate(_ url: String, kind: String = "open", origins: [URL]? = nil) throws
@@ -17,9 +17,9 @@ final class RuntimeShareTests: XCTestCase {
 
   func testInvitationIsAnOpenTicketOrJoinLinkOnAKnownHost() throws {
     for link in [
-      "https://staging.tonk.xyz/space/did:key:zSpace#seed",
-      "https://staging.tonk.xyz/join#fixture",
-      "https://staging.tonk.xyz/join?access=chain&ref=space",
+      "https://tonk.spot/space/did:key:zSpace#seed",
+      "https://tonk.spot/join#fixture",
+      "https://tonk.spot/join?access=chain&ref=space",
     ] {
       XCTAssertEqual(try validate(link), link)
     }
@@ -27,13 +27,13 @@ final class RuntimeShareTests: XCTestCase {
     XCTAssertNoThrow(
       try validate("https://sync.tonk.example/space/did:key:zSpace#seed", origins: [origin, sync]))
     for invalid in [
-      "https://tonk.network/join#fixture", "https://staging.tonk.xyz/space/did:key:zOther#seed",
-      "https://staging.tonk.xyz/space/did:key:zSpace", "https://staging.tonk.xyz/join",
-      "http://staging.tonk.xyz/join#fixture", "https://user@staging.tonk.xyz/join#fixture",
+      "https://tonk.network/join#fixture", "https://tonk.spot/space/did:key:zOther#seed",
+      "https://tonk.spot/space/did:key:zSpace", "https://tonk.spot/join",
+      "http://tonk.spot/join#fixture", "https://user@tonk.spot/join#fixture",
     ] {
       XCTAssertThrowsError(try validate(invalid), invalid)
     }
-    XCTAssertThrowsError(try validate("https://staging.tonk.xyz/join#fixture", kind: "scoped"))
+    XCTAssertThrowsError(try validate("https://tonk.spot/join#fixture", kind: "scoped"))
   }
 
   func testALinkForOneAccountIsAScopedJoinLinkNamingThatAccount() throws {
@@ -44,12 +44,12 @@ final class RuntimeShareTests: XCTestCase {
         ["kind": kind, "url": url, "recipientRoot": root], subject: subject, origins: [origin],
         recipient: "did:key:zAda")
     }
-    let link = "https://staging.tonk.xyz/join?access=chain&ref=space"
+    let link = "https://tonk.spot/join?access=chain&ref=space"
     XCTAssertEqual(try scoped(link).absoluteString, link)
     XCTAssertThrowsError(try scoped(link, kind: "open"), "an open link is not for one account")
     XCTAssertThrowsError(try scoped(link, root: "did:key:zOther"), "addressed to someone else")
     for invalid in [
-      "https://staging.tonk.xyz/join#seed", "https://staging.tonk.xyz/space/did:key:zSpace#seed",
+      "https://tonk.spot/join#seed", "https://tonk.spot/space/did:key:zSpace#seed",
       "https://tonk.network/join?access=chain",
     ] {
       XCTAssertThrowsError(try scoped(invalid), invalid)

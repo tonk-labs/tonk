@@ -84,7 +84,7 @@ final class RuntimeInspectionTests: XCTestCase {
       <input type="password" value="PASSWORD_SENTINEL">
       <iframe sandbox="allow-scripts" srcdoc="<html><body><label><input type='checkbox' checked>Pack food</label><button>Save</button><script>setTimeout(() => { throw new Error('fixture failure'); }, 100);</script></body></html>"></iframe>
       </body></html>
-      """, baseURL: URL(string: "https://staging.tonk.xyz"))
+      """, baseURL: URL(string: "https://tonk.spot"))
     var result: [String: Any] = [:]
     for _ in 0..<50 {
       result = try await inspector.snapshot(in: webView)
