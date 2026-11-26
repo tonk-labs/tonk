@@ -113,6 +113,16 @@ pub enum SyncError {
         /// Whole seconds allowed for the phase.
         seconds: u64,
     },
+    /// A write the push made was refused as temporarily unavailable — on
+    /// the filesystem, because another process holds the cell's lock — and
+    /// stayed refused after every retry ([`crate::held::ATTEMPTS`]). The
+    /// refused write wrote nothing. Reported with the I/O exit code, as it
+    /// was before it had a variant of its own.
+    #[error("{reason}")]
+    Unavailable {
+        /// What to tell the person, naming the refusal as dialog gave it.
+        reason: String,
+    },
     /// Anything else — network, storage, decode. Surfaced
     /// verbatim so the caller can pick the underlying message
     /// up in stderr.
@@ -135,6 +145,7 @@ impl crate::Coded for SyncError {
         match self {
             SyncError::UpstreamNotConfigured { .. }
             | SyncError::Io(_)
+            | SyncError::Unavailable { .. }
             | SyncError::Rejected { .. }
             | SyncError::Timeout { .. } => ExitCode::IoError,
             SyncError::NonFastForward | SyncError::RivalWriter { .. } => ExitCode::CommitError,
@@ -222,12 +233,33 @@ fn authorization<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a
 /// `OK(outcome)` always means the operation completed; consult
 /// `outcome.advanced` to learn whether anything actually went
 /// over the wire.
+///
+/// A push refused because another tonk process holds a cell it writes is
+/// tried again, up to [`crate::held::ATTEMPTS`] times in all, with a short
+/// backoff: the refusal wrote nothing.
 pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
+    crate::held::retry(
+        |error| matches!(error, SyncError::Unavailable { .. }),
+        |attempt| push_once(site, attempt),
+    )
+    .await
+}
+
+/// One try at [`push`]. A retry (`attempt` past 1) first reads the
+/// branch's head and upstream again from storage, which the holder of the
+/// refused cell may have moved.
+async fn push_once(site: &TonkSite, attempt: u32) -> Result<SyncOutcome, SyncError> {
     let session = site
         .branch()
         .await
         .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
+    if attempt > 1 {
+        branch
+            .refresh(&site.operator)
+            .await
+            .map_err(|e| SyncError::Io(format!("read branch head: {e}")))?;
+    }
     let before = branch.revision();
     let upstream_after = run_remote(
         "push active branch",
@@ -504,10 +536,15 @@ fn map_pull_error(error: PullError) -> SyncError {
 }
 
 fn classify_failure(error: &(dyn std::error::Error + 'static)) -> SyncError {
-    match rejection(error) {
-        Some((reason, permanent)) => SyncError::Rejected { reason, permanent },
-        None => SyncError::Io(error.to_string()),
+    if let Some((reason, permanent)) = rejection(error) {
+        return SyncError::Rejected { reason, permanent };
     }
+    if let Some(held) = crate::held::unavailable(error) {
+        return SyncError::Unavailable {
+            reason: crate::held::message(held),
+        };
+    }
+    SyncError::Io(error.to_string())
 }
 
 #[cfg(test)]

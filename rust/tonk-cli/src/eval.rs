@@ -143,6 +143,12 @@ pub enum EvalError {
     /// I/O, repo-not-found, or identity failure.
     #[error("{0}")]
     Io(String),
+    /// The commit was refused because another process holds the branch's
+    /// head cell, and stayed refused after every retry
+    /// ([`crate::held::ATTEMPTS`]). Nothing was written. Reported with
+    /// the I/O exit code, as it was before it had a variant of its own.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl crate::Coded for EvalError {
@@ -152,7 +158,7 @@ impl crate::Coded for EvalError {
             EvalError::Parse(_) | EvalError::Empty(_) => ExitCode::ParseError,
             EvalError::Analyze(_) => ExitCode::AnalyzeError,
             EvalError::Commit(_) => ExitCode::CommitError,
-            EvalError::Io(_) => ExitCode::IoError,
+            EvalError::Io(_) | EvalError::Unavailable(_) => ExitCode::IoError,
         }
     }
 }
@@ -172,6 +178,13 @@ pub async fn run_against_site(
 /// commit: a later document sees what an earlier one declared, and a
 /// rejected document leaves nothing committed. The response covers all
 /// of them; `--home` applies after the last.
+///
+/// A commit refused because another tonk process holds the branch's
+/// head cell is evaluated and committed again, up to
+/// [`crate::held::ATTEMPTS`] times in all: the refusal wrote nothing,
+/// and the commit's transaction is consumed, so the documents are
+/// evaluated afresh over the head as it then stands — which is the head
+/// the other process published, when it was committing.
 pub async fn run_documents(
     site: &TonkSite,
     sources: Vec<Source>,
@@ -195,11 +208,36 @@ pub async fn run_documents(
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
 
+    crate::held::retry(
+        |error| matches!(error, EvalError::Unavailable(_)),
+        |attempt| evaluate_and_commit(site, attempt, several, documents.clone(), &options),
+    )
+    .await
+}
+
+/// One try at [`run_documents`]: evaluate `documents` in one transaction
+/// and commit it. A retry (`attempt` past 1) first reads the branch's
+/// head again from storage: the cached handle still names the head the
+/// refused try read, and building over it would lose to whatever the
+/// holder published meanwhile.
+async fn evaluate_and_commit(
+    site: &TonkSite,
+    attempt: u32,
+    several: bool,
+    documents: Vec<(String, Url, String)>,
+    options: &Options,
+) -> Result<Outcome, EvalError> {
     let session = site
         .branch()
         .await
         .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
     let branch = session.handle();
+    if attempt > 1 {
+        branch
+            .refresh(&site.operator)
+            .await
+            .map_err(|e| EvalError::Io(format!("read branch head: {e}")))?;
+    }
     let revision_before = branch.revision();
 
     let mut txn = branch.transaction();
@@ -264,7 +302,12 @@ pub async fn run_documents(
             .publish()
             .perform(&site.operator)
             .await
-            .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+            .map_err(|e| match crate::held::unavailable(&e) {
+                Some(held) => {
+                    EvalError::Unavailable(format!("commit failed: {}", crate::held::message(held)))
+                }
+                None => EvalError::Io(format!("commit failed: {e}")),
+            })?;
         // The commit went through the branch handle, outside its stack:
         // schedule the stack's subscriptions, so the reactor's commit
         // contract holds. The CLI opens none, so nothing settles them.

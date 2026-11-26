@@ -51,6 +51,12 @@ const SAVE_RETRY_LIMIT: usize = 4;
 /// turns, but another process over the same storage meets this one at
 /// the storage's lock, which refuses at once rather than waiting and
 /// leaves the retry to the caller.
+///
+/// The lock case cannot be matched by type here, though dialog refuses
+/// it as `MemoryError::Rejected(Rejection::Unavailable { .. })`: the save
+/// returns a `CredentialError`, and dialog-peer's site-secret provider
+/// renders the commit's failure into `CredentialError::Storage(String)`,
+/// so the rejection reaches this function as text only.
 fn is_head_moved(error: &impl std::fmt::Display) -> bool {
     let rendered = error.to_string();
     rendered.contains("Version mismatch") || rendered.contains("Concurrent write in progress")

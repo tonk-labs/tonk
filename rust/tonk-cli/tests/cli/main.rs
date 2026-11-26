@@ -33,6 +33,7 @@ mod context;
 mod data_verbs;
 mod eval_documents;
 mod handoff;
+mod held_lock;
 mod include;
 #[cfg(feature = "integration-tests")]
 mod invitation_attribution;

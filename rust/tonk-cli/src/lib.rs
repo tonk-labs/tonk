@@ -56,6 +56,7 @@ pub mod elements;
 pub mod eval;
 pub mod guide;
 pub mod handoff;
+pub mod held;
 pub mod identity;
 pub mod inventory;
 pub mod invite;
