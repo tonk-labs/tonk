@@ -43,13 +43,19 @@ pub fn shown(value: &Value) -> String {
     match value {
         Value::String(text) => format!("{text:?}"),
         Value::Bytes(bytes) => {
+            // The rule as stored, then on a line of its own the canonical
+            // form Dialog-DB hashes it by (`canonical_descriptor`).
             let rule = match (InductiveRule::decode(bytes), DeductiveRule::decode(bytes)) {
-                (Ok(rule), _) => serde_json::to_string(&rule).ok(),
-                (_, Ok(rule)) => serde_json::to_string(&rule).ok(),
+                (Ok(rule), _) => serde_json::to_string(&rule)
+                    .ok()
+                    .zip(serde_json::to_string(&rule.canonical_descriptor()).ok()),
+                (_, Ok(rule)) => serde_json::to_string(&rule)
+                    .ok()
+                    .zip(serde_json::to_string(&rule.canonical_descriptor()).ok()),
                 _ => None,
             };
             match rule {
-                Some(rule) => format!("rule {rule}"),
+                Some((stored, canonical)) => format!("rule {stored}\n{canonical}"),
                 None => format!("bytes[{}]", bytes.len()),
             }
         }

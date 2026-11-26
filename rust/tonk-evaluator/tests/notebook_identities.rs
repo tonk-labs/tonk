@@ -115,8 +115,55 @@ fn numbered(key: &str) -> bool {
     rest.len() < key.len() && !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
 }
 
+/// The rule as stored.
 fn json_of(source: &str) -> serde_json::Value {
-    serde_json::from_str(source.strip_prefix("rule ").expect("a decoded rule")).expect("JSON")
+    let stored = source.strip_prefix("rule ").expect("a decoded rule");
+    serde_json::from_str(stored.lines().next().expect("a rule")).expect("JSON")
+}
+
+/// The canonical form Dialog-DB hashes the rule by.
+fn canonical_of(source: &str) -> serde_json::Value {
+    serde_json::from_str(source.lines().nth(1).expect("a canonical form")).expect("JSON")
+}
+
+/// Where two JSON values part, as the paths to the first leaves that
+/// differ, each with what the YAML and the notation hold there.
+fn residual(
+    path: &str,
+    yaml: &serde_json::Value,
+    notation: &serde_json::Value,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value as J;
+    if out.len() >= 4 {
+        return;
+    }
+    match (yaml, notation) {
+        (J::Object(a), J::Object(b)) => {
+            for key in a.keys().chain(b.keys()).collect::<BTreeSet<_>>() {
+                match (a.get(key), b.get(key)) {
+                    (Some(x), Some(y)) => residual(&format!("{path}.{key}"), x, y, out),
+                    (x, y) => out.push(format!(
+                        "{path}.{key}: yaml {} / notation {}",
+                        x.map_or("-".into(), |x| x.to_string()),
+                        y.map_or("-".into(), |y| y.to_string())
+                    )),
+                }
+            }
+        }
+        (J::Array(a), J::Array(b)) if a.len() == b.len() => {
+            for (at, (x, y)) in a.iter().zip(b).enumerate() {
+                residual(&format!("{path}[{at}]"), x, y, out);
+            }
+        }
+        (J::Array(a), J::Array(b)) => out.push(format!(
+            "{path}: {} items in the YAML, {} in the notation",
+            a.len(),
+            b.len()
+        )),
+        (x, y) if x != y => out.push(format!("{path}: yaml {x} / notation {y}")),
+        _ => {}
+    }
 }
 
 fn strings(json: &serde_json::Value, key: &str, into: &mut BTreeSet<String>) {
@@ -194,29 +241,45 @@ fn causes(yaml: &str, notation: &str) -> Vec<String> {
 }
 
 /// Why a rule of the YAML and the notation's rule for the same head are
-/// stored as two rules, in one word: what the test pins.
+/// stored as two rules, read off the canonical forms Dialog-DB hashes
+/// (`canonical_descriptor`): what is left once it has renamed the body's
+/// locals and sorted its premises.
 fn category(yaml: &str, notation: &str) -> &'static str {
-    let (a, b) = (shape(&json_of(yaml)), shape(&json_of(notation)));
-    if a == b {
-        return "variables";
-    }
-    let sorted = |json: &serde_json::Value| {
-        let mut json = json.clone();
-        if let Some(premises) = json["when"].as_array_mut() {
-            premises.sort_by_key(|premise| premise.to_string());
+    let (a, b) = (canonical_of(yaml), canonical_of(notation));
+    // Premises sorted again after the shape leaves names out: Dialog-DB
+    // sorts them by its canonical names, which the head's labels feed, so
+    // other labels can sort the same premises otherwise.
+    let sorted = |json: serde_json::Value| {
+        let mut json = json;
+        for key in ["when", "unless"] {
+            if let Some(premises) = json[key].as_array_mut() {
+                premises.sort_by_key(|premise| premise.to_string());
+            }
         }
         json
     };
-    if sorted(&a) == sorted(&b) {
-        return "premise order";
+    let (sa, sb) = (sorted(shape(&a)), sorted(shape(&b)));
+    let blanks = |json: &serde_json::Value| json.to_string().matches("{\"?\":{}}").count();
+    let text = |json: &serde_json::Value| json.to_string();
+    if sa == sb {
+        // The head's fields are named by each writer (`~0`, `~1`, ...)
+        // and the identity keeps those names as written.
+        return if blanks(&a) != blanks(&b) {
+            "the head's field labels, and a blank the notation names"
+        } else {
+            "the head's field labels"
+        };
     }
-    if yaml.matches("\"==\"").count() != notation.matches("\"==\"").count() {
-        return "== binding";
+    if text(&a).matches("\"==\"").count() != text(&b).matches("\"==\"").count() {
+        return "a key bound with ==";
     }
-    if notation.contains("symbol:") {
-        return "command metadata and a concept named as a symbol";
+    if text(&b).contains("symbol:") {
+        return "a concept named as a symbol, a cardinality for a type";
     }
-    "meaning"
+    if text(&a).matches("case:none").count() != text(&b).matches("case:none").count() {
+        return "a case:none the chain already implies";
+    }
+    "something else"
 }
 
 /// The three ways an entity can fare: kept by both sides, moved to
@@ -266,22 +329,29 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 /// the intent role (`role:`) the YAML gives the retitle command's
 /// fields, which the notation has no spelling for.
 ///
-/// Rules: a rule is stored under the entity its body hashes to, so the
-/// YAML's rule and the notation's for the same head are one rule only
-/// when the bodies are the same; otherwise a space that holds the YAML's
-/// and installs the notation's holds both, and both fire, until the old
-/// one is taken out. Three of seventeen are one rule. The other fourteen:
+/// Rules: a rule is stored under the entity its canonical body hashes
+/// to: Dialog-DB renames the body's locals and sorts its premises first,
+/// but keeps the head's field names as written. So the YAML's rule and
+/// the notation's for the same head are one rule only when their
+/// canonical bodies are the same; otherwise a space that holds the
+/// YAML's and installs the notation's holds both, and both fire, until
+/// the old one is taken out. Three of seventeen are one rule. What is
+/// left between the other fourteen, read off the canonical forms:
 ///
-/// - two differ only in how their variables are named or numbered
-///   (a variable the YAML writes `_` is named in the notation);
-/// - one only in the order of its premises;
-/// - seven where the notation binds a collection's key with `==` and the
-///   YAML binds it in the pattern;
-/// - one where the notation's command carries no intent metadata and
-///   names a concept as a symbol;
-/// - one that means something else: the notation's rule for
-///   `xyz.tonk.notebook.block/at` requires `insert/next` to be
-///   `case:none` where the YAML's leaves it free;
+/// - three differ in the head's field labels, which each writer
+///   generates (`~0`, `~1`, ...) and numbers its own way, and in a
+///   variable the notation names where the YAML leaves it blank (`_`); in
+///   one of them the labels alone sort the same premises in another
+///   order;
+/// - seven where the notation binds a collection's key with `==` as a
+///   premise of its own, or the YAML does where the notation binds it in
+///   the pattern;
+/// - one where the notation's command reads its concept as a symbol and
+///   its subject under a cardinality where the YAML gives a type;
+/// - one where the notation's tail rule for `xyz.tonk.notebook.block/at`
+///   also requires `insert/next` to be `case:none`, which its
+///   `block/chain ... next: case:none` premise already implies, since the
+///   chain's `next` is the insert's;
 /// - one YAML rule, retracting a removed block's notebook and source
 ///   together, is two in the notation, one per field (a retract by
 ///   entity alone retracts each field's claims);
@@ -395,6 +465,19 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
                     for cause in causes(&ours[&rule].source, &theirs[&other].source) {
                         println!("    {cause}");
                     }
+                    let mut parted = Vec::new();
+                    residual(
+                        "",
+                        &canonical_of(&ours[&rule].source),
+                        &canonical_of(&theirs[&other].source),
+                        &mut parted,
+                    );
+                    for part in &parted {
+                        println!(
+                            "    canonical {}",
+                            part.chars().take(240).collect::<String>()
+                        );
+                    }
                     *categories.entry(why).or_default() += 1;
                 }
                 None => {
@@ -411,11 +494,10 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
     assert_eq!(
         categories,
         BTreeMap::from([
-            ("variables", 2),
-            ("premise order", 1),
-            ("== binding", 7),
-            ("command metadata and a concept named as a symbol", 1),
-            ("meaning", 1),
+            ("the head's field labels, and a blank the notation names", 3),
+            ("a key bound with ==", 7),
+            ("a concept named as a symbol, a cardinality for a type", 1),
+            ("a case:none the chain already implies", 1),
         ])
     );
     // The YAML's session rule, and its two-field retract, which the
