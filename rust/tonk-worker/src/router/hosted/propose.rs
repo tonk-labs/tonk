@@ -321,7 +321,7 @@ pub fn tools() -> Vec<Value> {
             "name": SHARE, "title": "Create a Tonk share link",
             "description": "Ask the person to make a passlink for a space with sharing enabled. Anyone with the approved link can join and write. The card provides the link after approval.",
             "inputSchema":{"type":"object","properties":{"space":{"type":"string","pattern":"^did:key:[A-Za-z0-9]+$"}},"required":["space"],"additionalProperties":false},
-            "annotations":{"readOnlyHint":true,"openWorldHint":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
             "_meta":super::card::tool_meta()
         }),
         json!({
@@ -344,7 +344,7 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
             // It holds the request and shows the card; it changes nothing.
-            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
             "_meta": {
                 "ui": { "resourceUri": super::card::CARD_URI },
                 "openai/outputTemplate": super::card::CARD_URI,
@@ -374,6 +374,7 @@ pub fn tools() -> Vec<Value> {
             // It forgets the held change and writes nothing to the space.
             "annotations": {
                 "readOnlyHint": true,
+                "destructiveHint": false,
                 "openWorldHint": false,
             },
             "_meta": app_only,

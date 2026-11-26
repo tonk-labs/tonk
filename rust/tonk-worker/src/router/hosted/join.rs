@@ -357,7 +357,7 @@ pub fn tools() -> Vec<Value> {
                 "required": ["link"],
                 "additionalProperties": false,
             },
-            "annotations": { "readOnlyHint": true, "openWorldHint": true },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true },
             "_meta": {
                 "ui": { "resourceUri": CARD_URI },
                 "openai/outputTemplate": CARD_URI,

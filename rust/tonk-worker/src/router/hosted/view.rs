@@ -119,7 +119,7 @@ pub fn tools() -> Vec<Value> {
                 "required": ["space"],
                 "additionalProperties": false,
             },
-            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
             "_meta": {
                 "ui": { "resourceUri": RELAY_URI },
                 "openai/outputTemplate": RELAY_URI,
@@ -175,7 +175,7 @@ pub fn tools() -> Vec<Value> {
                 "required": ["space"],
                 "additionalProperties": false,
             },
-            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
         }),
     ]
 }

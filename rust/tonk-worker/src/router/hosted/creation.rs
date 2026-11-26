@@ -23,7 +23,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "properties": { "name": {"type":"string","minLength":1,"maxLength":100} },
                 "required": ["name"], "additionalProperties": false
             },
-            "annotations": {"readOnlyHint":true,"openWorldHint":false},
+            "annotations": {"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
             "_meta": super::card::tool_meta()
         }),
         json!({
