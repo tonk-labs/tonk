@@ -1852,7 +1852,11 @@ impl SyncQueue {
     /// is claimed on the loop's next pass, so only its newest head is
     /// pushed, never each one between. The retry set is left to the drain,
     /// so a repo that keeps failing does not spin its loop.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    // Natively nothing watches or loops yet; tests drive these directly.
+    #[cfg_attr(
+        not(any(test, all(target_arch = "wasm32", target_os = "unknown"))),
+        allow(dead_code)
+    )]
     pub(crate) fn claim(&self, repo: &str) -> bool {
         let mut claimed = false;
         for slot in [&self.dirty, &self.moved] {
@@ -1865,7 +1869,11 @@ impl SyncQueue {
 
     /// Record that a watch of `repo`'s upstream said it moved: its loop
     /// pulls it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    // Natively nothing watches or loops yet; tests drive these directly.
+    #[cfg_attr(
+        not(any(test, all(target_arch = "wasm32", target_os = "unknown"))),
+        allow(dead_code)
+    )]
     pub(crate) fn moved(&self, repo: &str, now: f64) {
         if let Ok(mut moved) = self.moved.lock() {
             moved.insert(repo.to_owned(), now);
@@ -1888,7 +1896,11 @@ impl SyncQueue {
     }
 
     /// The watch of `repo` is running: the sweep leaves `repo` to it.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    // Natively nothing watches or loops yet; tests drive these directly.
+    #[cfg_attr(
+        not(any(test, all(target_arch = "wasm32", target_os = "unknown"))),
+        allow(dead_code)
+    )]
     pub(crate) fn watched(&self, repo: &str) {
         if let Ok(mut watching) = self.watching.lock() {
             watching.insert(repo.to_owned(), true);
@@ -2312,7 +2324,7 @@ async fn watch_repo(
     operator: &crate::worker::DefaultOperator,
     held: impl Fn(&crate::worker::TonkState) -> Option<std::sync::Arc<dialog_reactor::BranchState>>,
 ) {
-    use dialog_repository::{Observation, Upstream};
+    use dialog_repository::Upstream;
     use futures_util::{StreamExt as _, pin_mut};
 
     let upstreams = branch.branch.pulls();
@@ -2350,36 +2362,71 @@ async fn watch_repo(
             return;
         }
         match observed {
-            Ok(Observation::Advanced(_)) => {
-                // Wakes its loop, which pulls the head just recorded now
-                // rather than on the next drain's schedule.
-                state.read().await.sync_queue.moved(repo, current_millis());
-            }
-            Ok(Observation::Diverged) => {
-                // Nothing was recorded, and the loop's pull merges the
-                // head last recorded, so ask the remote where it stands:
-                // that records it. Through a handle opened for it, since
-                // a fetch records against the edition its handle last saw.
-                let fetched = match remote.branch(name.clone()).open().perform(operator).await {
-                    Ok(fresh) => fresh
+            Ok(observation) => {
+                take_observation(state, repo, observation, || async {
+                    // Through a handle opened for it, since a fetch
+                    // records against the edition its handle last saw.
+                    let fresh = remote
+                        .branch(name.clone())
+                        .open()
+                        .perform(operator)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    fresh
                         .fetch()
                         .perform(operator)
                         .await
                         .map(|_| ())
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error.to_string()),
-                };
-                if let Err(error) = fetched {
-                    log!("{repo}: a diverged head could not be fetched: {error}");
-                }
-                state.read().await.sync_queue.moved(repo, current_millis());
+                        .map_err(|error| error.to_string())
+                })
+                .await
             }
-            Ok(Observation::Stale) => {}
             Err(error) => log!("{repo}: a watched head was not recorded: {error}"),
         }
     }
     // The socket's report says why: closed, or ended by the service.
     log!("{repo} is no longer watched: its watch ended");
+}
+
+/// Act on one head the watch of `repo`'s upstream delivered, as dialog
+/// classified it on recording it. `fetch` asks the remote where it stands,
+/// which records that head.
+#[cfg_attr(
+    not(any(test, all(target_arch = "wasm32", target_os = "unknown"))),
+    allow(dead_code)
+)]
+pub(crate) async fn take_observation<Fetch, Fetched>(
+    state: &AppState,
+    repo: &str,
+    observation: dialog_repository::Observation,
+    fetch: Fetch,
+) where
+    Fetch: FnOnce() -> Fetched,
+    Fetched: std::future::Future<Output = Result<(), String>>,
+{
+    use dialog_repository::Observation;
+    match observation {
+        // A stale head is one already recorded, not one this branch took:
+        // a push refused because upstream moved records the head it found
+        // there without merging it, and the watch delivering that head
+        // after finds it recorded. As dialog's own replication does, both
+        // wake its loop, which pulls the head now recorded rather than on
+        // the next drain's schedule. A watched space's pull merges the
+        // recorded head without asking the remote, and takes nothing when
+        // the branch already has it.
+        Observation::Advanced(_) | Observation::Stale => {
+            state.read().await.sync_queue.moved(repo, current_millis());
+        }
+        Observation::Diverged => {
+            // Nothing was recorded, and the loop's pull merges the head
+            // last recorded, so ask the remote where it stands: that
+            // records it.
+            if let Err(error) = fetch().await {
+                log!("{repo}: a diverged head could not be fetched: {error}");
+            }
+            state.read().await.sync_queue.moved(repo, current_millis());
+        }
+    }
 }
 
 /// Re-issue a due session's bounded in-memory grant to the same operator
@@ -3151,15 +3198,21 @@ mod held_sync_tests {
     /// them, and failed offline (`BUG-213`). The sync now pulls a space with
     /// `Download::QueriedRanges`, which fetches what the member holds of
     /// the space before the head moves.
-    #[dialog_common::test]
-    async fn it_reads_a_synced_space_without_the_service() {
+    /// A founder that wrote `count` notes into a space it syncs through
+    /// the access service, and a member that joined it and synced them.
+    async fn founder_and_member(
+        count: usize,
+    ) -> (
+        dialog_common::helpers::Service<
+            tonk_access_service::helpers::AccessServiceAddress,
+            tonk_access_service::helpers::AccessServer,
+        >,
+        AppState,
+        AppState,
+        String,
+    ) {
         let (tonk, service, root, remote) =
             crate::router::account_state::tests::ready_account_state(None).await;
-        let endpoint = service
-            .address
-            .access_service_url
-            .trim_end_matches('/')
-            .to_owned();
         let grant =
             tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
                 .await
@@ -3182,7 +3235,7 @@ mod held_sync_tests {
         crate::router::repository::enable_sync_inner(&founder, &key, &remote)
             .await
             .expect("the remote attaches");
-        write_notes(&founder, &key, 0, 400, true).await;
+        write_notes(&founder, &key, 0, count, true).await;
 
         let origin = crate::axum::RequestOrigin::parse("https://local.example/")
             .unwrap_or_else(|_| panic!("the origin parses"));
@@ -3208,6 +3261,17 @@ mod held_sync_tests {
         super::sync_repository(&member, &key)
             .await
             .expect("the member syncs");
+        (service, founder, member, key)
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_a_synced_space_without_the_service() {
+        let (service, founder, member, key) = founder_and_member(400).await;
+        let endpoint = service
+            .address
+            .access_service_url
+            .trim_end_matches('/')
+            .to_owned();
         assert_eq!(
             notes(&member, &key).await,
             400,
@@ -3245,6 +3309,97 @@ mod held_sync_tests {
             before,
             "what the member read from its own store before the sync, it \
              reads from it after"
+        );
+
+        service.stop().await.expect("the service stops");
+    }
+
+    /// A head a refused push recorded is still pulled when the watch then
+    /// delivers it.
+    ///
+    /// A push that confirms where upstream stands records the head it
+    /// finds there, and is refused when that head is not merged. The
+    /// watch, delivering the same head after, finds it recorded and
+    /// answers it as `Stale`: one recorded, not one this branch took.
+    /// Dropping it left the branch behind until some other trigger
+    /// pulled.
+    #[dialog_common::test]
+    async fn it_pulls_a_watched_head_a_refused_push_recorded() {
+        use dialog_repository::{Observation, Upstream};
+
+        let (service, founder, member, key) = founder_and_member(1).await;
+        member.read().await.sync_queue.watched(&key);
+
+        // Both write in the same window, and the founder lands first.
+        write_notes(&member, &key, 1, 2, false).await;
+        write_notes(&founder, &key, 2, 3, false).await;
+        super::sync_repository(&founder, &key)
+            .await
+            .expect("the founder syncs");
+
+        let tonk = member.read().await.clone();
+        let refused = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .push()
+            .perform(&tonk.operator)
+            .await
+            .expect_err("the member's push finds upstream moved");
+        assert!(
+            matches!(&refused, crate::reactor::ReactorError::Push(push) if super::is_push_out_of_date(push)),
+            "the push is refused as out of date: {refused}"
+        );
+        assert_eq!(notes(&member, &key).await, 2, "the refusal merged nothing");
+
+        // The watch delivers the founder's head, the one just recorded.
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("the member's branch");
+        let Some(Upstream::Remote { remote, branch, .. }) =
+            session.handle().pulls().iter().next().cloned()
+        else {
+            panic!("the member pulls from the service");
+        };
+        let upstream = remote
+            .branch(branch)
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("the upstream opens");
+        let delivered = upstream
+            .cache()
+            .content()
+            .expect("the refusal recorded the founder's head");
+        let observation = upstream
+            .observe(delivered)
+            .perform(&tonk.operator)
+            .await
+            .expect("the head is observed");
+        assert_eq!(observation, Observation::Stale);
+        drop(tonk);
+
+        super::take_observation(&member, &key, observation, || async {
+            panic!("a recorded head needs no fetch")
+        })
+        .await;
+
+        // The space's loop syncs on its next pass what is claimed there.
+        assert!(
+            member.read().await.sync_queue.claim(&key),
+            "the delivered head is queued for the space's loop"
+        );
+        super::sync_repository(&member, &key)
+            .await
+            .expect("the member syncs");
+        assert_eq!(
+            notes(&member, &key).await,
+            3,
+            "the member takes the founder's head"
         );
 
         service.stop().await.expect("the service stops");

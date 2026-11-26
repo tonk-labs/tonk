@@ -201,6 +201,36 @@ pub fn registration_command(container_bytes: &[u8]) -> Option<RegistrationComman
     }
 }
 
+/// The cell of an account the service tells its watches of again when a
+/// command changed what the account reads from the service without
+/// writing the account: dialog's `branch/{name}` space and its
+/// `revision` cell, for the account's main branch.
+///
+/// `/created-space/create` is such a command. It writes only a row here
+/// (the agent holds no authority over the person's account branch), so no
+/// device of the person learns of it from the account's own head. Telling
+/// the account's watches of the head they already hold reaches each
+/// device that follows the account as a head it already recorded, which
+/// it syncs on, and its sweep recovers the space.
+pub fn account_head_cell() -> (String, String) {
+    (
+        format!("branch/{}", tonk_account::MAIN_BRANCH),
+        "revision".to_string(),
+    )
+}
+
+/// The account whose watches are owed a word of `answer`, the answer to
+/// `container`: the owner a space was created for. See
+/// [`account_head_cell`].
+pub fn announced_account(container: &[u8], answer: &Answer) -> Option<String> {
+    match (registration_command(container), answer) {
+        (Some(RegistrationCommand::CreateSpace), Answer::Subscription(receipt)) => {
+            Some(receipt.provider.to_string())
+        }
+        _ => None,
+    }
+}
+
 /// The JSON answer to a registration invocation: a customer receipt for
 /// the `/customer` commands, a consumer receipt for `/provider/add`.
 #[derive(Debug, Serialize)]
