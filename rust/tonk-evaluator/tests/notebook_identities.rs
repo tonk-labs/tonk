@@ -262,12 +262,14 @@ fn category(yaml: &str, notation: &str) -> &'static str {
     let blanks = |json: &serde_json::Value| json.to_string().matches("{\"?\":{}}").count();
     let text = |json: &serde_json::Value| json.to_string();
     if sa == sb {
-        // The head's fields are named by each writer (`~0`, `~1`, ...)
-        // and the identity keeps those names as written.
+        // The two read the same with every name left out. What tells them
+        // apart is a variable one names and the other leaves blank (`_`):
+        // the head's field labels (`~0`, `~1`, ...) differ in the text as
+        // well, but the identity renames those itself.
         return if blanks(&a) != blanks(&b) {
-            "the head's field labels, and a blank the notation names"
+            "a blank the notation names"
         } else {
-            "the head's field labels"
+            "the descriptor's text alone"
         };
     }
     if text(&a).matches("\"==\"").count() != text(&b).matches("\"==\"").count() {
@@ -330,19 +332,19 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 /// fields, which the notation has no spelling for.
 ///
 /// Rules: a rule is stored under the entity its canonical body hashes
-/// to: Dialog-DB renames the body's locals and sorts its premises first,
-/// but keeps the head's field names as written. So the YAML's rule and
-/// the notation's for the same head are one rule only when their
-/// canonical bodies are the same; otherwise a space that holds the
-/// YAML's and installs the notation's holds both, and both fire, until
-/// the old one is taken out. Three of seventeen are one rule. What is
-/// left between the other fourteen, read off the canonical forms:
+/// to: Dialog-DB renames the body's locals and the head's fields and
+/// sorts its premises first. So the YAML's rule and the notation's for
+/// the same head are one rule only when their canonical bodies are the
+/// same; otherwise a space that holds the YAML's and installs the
+/// notation's holds both, and both fire, until the old one is taken out.
+/// Three of seventeen are one rule. What is left between the other
+/// fourteen, read off `canonical_descriptor()` (provisional: the text it
+/// gives still carries each writer's head labels, `~0`, `~1`, ..., which
+/// the identity does not, so the rule entities are what to compare once
+/// Dialog-DB blanks a variable used once):
 ///
-/// - three differ in the head's field labels, which each writer
-///   generates (`~0`, `~1`, ...) and numbers its own way, and in a
-///   variable the notation names where the YAML leaves it blank (`_`); in
-///   one of them the labels alone sort the same premises in another
-///   order;
+/// - three where the notation names a variable the YAML leaves blank
+///   (`_`), and nothing else once names are left out;
 /// - seven where the notation binds a collection's key with `==` as a
 ///   premise of its own, or the YAML does where the notation binds it in
 ///   the pattern;
@@ -494,7 +496,7 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
     assert_eq!(
         categories,
         BTreeMap::from([
-            ("the head's field labels, and a blank the notation names", 3),
+            ("a blank the notation names", 3),
             ("a key bound with ==", 7),
             ("a concept named as a symbol, a cardinality for a type", 1),
             ("a case:none the chain already implies", 1),
