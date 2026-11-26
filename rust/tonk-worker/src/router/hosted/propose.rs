@@ -318,7 +318,7 @@ pub fn tools() -> Vec<Value> {
     });
     vec![
         json!({
-            "name": SHARE, "title": "Create a Tonk share link",
+            "name": SHARE, "title": "Ask to create a Tonk share link",
             "description": "Ask the person to make a passlink for a space with sharing enabled. Anyone with the approved link can join and write. The card provides the link after approval.",
             "inputSchema":{"type":"object","properties":{"space":{"type":"string","pattern":"^did:key:[A-Za-z0-9]+$"}},"required":["space"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
@@ -326,7 +326,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": LEAVE,
-            "title": "Leave a Tonk space",
+            "title": "Ask to leave a Tonk space",
             "description": "Ask the person to let you leave one of the spaces granted to you. \
                 Shows a card in the chat; nothing changes until they confirm there, and the \
                 card tells you when they do. Leaving drops your access to the space; what you \

@@ -16,7 +16,7 @@ pub(super) fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": CREATE,
-            "title": "Create a Tonk space",
+            "title": "Ask to create a Tonk space",
             "description": "Ask the person to create a space they own and grant this agent read and write access. They approve in the chat card.",
             "inputSchema": {
                 "type": "object",
