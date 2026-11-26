@@ -150,6 +150,7 @@ fn body_for(value: Value) -> Body {
         Value::SignedInt(i) => Body::from(i.to_string()),
         Value::UnsignedInt(u) => Body::from(u.to_string()),
         Value::Float(f) => Body::from(f.to_string()),
+        Value::Composite(c) => Body::from(serde_json::to_string(&c).unwrap_or_default()),
     }
 }
 

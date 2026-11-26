@@ -300,13 +300,13 @@ pub async fn upload(
             the: media_type_attr,
             of: entity.clone(),
             is: Value::String(content_type.clone()),
-            policy: dialog_corpus::Pick::Last,
+            policy: dialog_corpus::Cardinality::One,
         })
         .assert(RawClaim {
             the: name_attr,
             of: entity.clone(),
             is: Value::String(name.clone()),
-            policy: dialog_corpus::Pick::Last,
+            policy: dialog_corpus::Cardinality::One,
         });
     tx.commit()
         .perform(&tonk.operator)

@@ -950,8 +950,8 @@ mod tests {
         async fn assert_concept_named(&self, name: &str, descriptor: &ConceptDescriptor) {
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }
@@ -1019,8 +1019,8 @@ mod tests {
                     .expect("descriptor JSON is well-formed");
             let mut txn = self.branch.transaction();
             for (_, attr) in descriptor.with().iter() {
-                for statement in tonk_schema::concept::attribute_statements(attr.descriptor())
-                    .expect("attribute facts")
+                for statement in
+                    tonk_schema::concept::field_attribute_statements(attr).expect("attribute facts")
                 {
                     txn = txn.assert(statement);
                 }
@@ -1193,6 +1193,19 @@ concept!: &job
       as:
         - case:suspended
         - case:active
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
+
+        // A ranked list of relations is no longer read by dialog: a
+        // rule deriving one relation from each, read by a field that
+        // ranks, replaces it. The refusal is dialog's.
+        let syntax = must_parse(
+            "\
+concept!: &job
+  description: \"a job\"
+  with:
     handle:
       description: \"the email, else the phone\"
       the:
@@ -1202,7 +1215,13 @@ concept!: &job
 ",
         );
         let result = super::analyze_local(&syntax);
-        assert!(result.is_ok(), "ranked reads lower: {:?}", result.err());
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| format!("{error:?}").contains("names one relation")),
+            "a ranked list of relations is refused: {result:?}"
+        );
 
         let syntax = must_parse(
             "\
@@ -1793,10 +1812,8 @@ concept!: &person
         // 3 statements: 2 inline attrs + 1 concept.
         assert_eq!(analysis.mutate.statements.len(), 3);
         // First two are anonymous attributes (no published name).
-        for i in 0..2 {
-            let Statement::Assert(Application::Concept { name, .. }) =
-                &analysis.mutate.statements[i]
-            else {
+        for (i, statement) in analysis.mutate.statements.iter().take(2).enumerate() {
+            let Statement::Assert(Application::Concept { name, .. }) = statement else {
                 panic!("expected Assert(Concept) for inline attr {i}");
             };
             assert!(name.is_none(), "inline attr should have no published name");

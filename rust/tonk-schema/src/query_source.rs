@@ -50,7 +50,9 @@ pub enum QuerySource<'a, Q> {
     /// A query staged against a branch session.
     Branch(SelectQuery<'a, Q>),
     /// A query staged against a transaction's pending-writes overlay.
-    Transaction(TransactionSelectQuery<'a, Q>),
+    /// Boxed: a staged transaction query is several times the size of a
+    /// branch one.
+    Transaction(Box<TransactionSelectQuery<'a, Q>>),
 }
 
 /// The result stream of [`QuerySource::perform`].
@@ -73,7 +75,7 @@ impl<'a, Q> From<SelectQuery<'a, Q>> for QuerySource<'a, Q> {
 
 impl<'a, Q> From<TransactionSelectQuery<'a, Q>> for QuerySource<'a, Q> {
     fn from(query: TransactionSelectQuery<'a, Q>) -> Self {
-        Self::Transaction(query)
+        Self::Transaction(Box::new(query))
     }
 }
 
@@ -170,7 +172,7 @@ impl Source<'_> {
         match self {
             Self::Branch(layer) => QuerySource::Branch(layer.select(query)),
             Self::Transaction(transaction) => {
-                QuerySource::Transaction(transaction.query().select(query))
+                QuerySource::Transaction(Box::new(transaction.query().select(query)))
             }
         }
     }
@@ -196,7 +198,7 @@ impl<'a, Q: Application> QuerySource<'a, Q> {
     ) -> QueryStream<impl Output<Q::Conclusion> + 'a, impl Output<Q::Conclusion> + 'a> {
         match self {
             Self::Branch(query) => Either::Left(query.perform(env)),
-            Self::Transaction(query) => Either::Right(query.perform(env)),
+            Self::Transaction(query) => Either::Right((*query).perform(env)),
         }
     }
 }

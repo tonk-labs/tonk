@@ -1125,8 +1125,15 @@ fn handle_evaluate(ev: &CustomEvent) {
         }
     };
 
+    // A caller may name the body's type: a notation-tour cell posts
+    // `application/x-dialog-notation+json` (demo, `tonk-inspector`'s
+    // `notation_cell`). Anything else is asserted notation, as before.
+    let content_type = Reflect::get(&detail, &JsValue::from_str("contentType"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| "application/x-tonk-notation".to_owned());
     let promise = future_to_promise(async move {
-        match http::post_text(&url, &document, "application/x-tonk-notation").await {
+        match http::post_text(&url, &document, &content_type).await {
             Ok(json_text) => parse_json_response(&json_text),
             Err(e) => Err(error_to_js(&e)),
         }

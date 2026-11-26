@@ -1499,7 +1499,7 @@ impl Notebook {
         let Ok(style) = document.create_element("style") else {
             return;
         };
-        style.set_text_content(Some(OUTPUT_CSS));
+        style.set_text_content(Some(&format!("{OUTPUT_CSS}{}", crate::notation_cell::CSS)));
         let node: web_sys::Node = root.clone().into();
         if node.append_child(&style).is_ok() {
             let _ = js_sys::Reflect::set(&root, &"__tonkNotebookStyled".into(), &true.into());
@@ -1646,6 +1646,22 @@ impl Notebook {
                 continue;
             };
             let language = editor.get_attribute("language").unwrap_or_default();
+            // Demo (notation tour): a ```notation fence is a cell the worker
+            // evaluates with the notation's own pipeline. Once bound, its
+            // editor reads `clojure`, which the marker on the wrapper keeps
+            // from being mistaken for an ordinary code block.
+            if crate::notation_cell::is_notation(&language)
+                || wrapper.dataset().get("notationCell").is_some()
+            {
+                crate::notation_cell::bind(
+                    &self.editor_root(),
+                    &wrapper,
+                    &editor,
+                    &format!("{}@{}", self.branch, self.repo),
+                    &self.closures,
+                );
+                continue;
+            }
             // A bare fence has no language at all; treat it as a cell.
             if !language.is_empty() && !CELL_LANGUAGES.contains(&language.as_str()) {
                 continue;

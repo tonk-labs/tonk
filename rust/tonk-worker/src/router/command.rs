@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use dialog_capability::{Command, Provider};
 use dialog_common::{ConditionalSend, ConditionalSync};
-use dialog_corpus::{Changes, Entity, Fact, Pick, Update as _, Value};
+use dialog_corpus::{Cardinality, Changes, Entity, Fact, Update as _, Value};
 use dialog_query::ConceptDescriptor;
 use dialog_repository::{
     CommitError, Effect, EffectReport, Failure, Provider as CommandProvider, Stack,
@@ -230,7 +230,7 @@ impl Task {
             dialog_repository::progress_attr(),
             entity.clone(),
             Value::Entity(state.clone()),
-            Pick::Last,
+            Cardinality::One,
         );
         // Everything an invocation carries lands in `control:` for one
         // tick; the library's rules keep the state and its words.
@@ -238,7 +238,7 @@ impl Task {
             tonk_schema::invocation::Reported::the().into(),
             state,
             Value::String(status.into()),
-            Pick::Last,
+            Cardinality::One,
         );
         let origin = CommandOrigin {
             repo: scope.repo.clone(),
@@ -285,7 +285,7 @@ pub(crate) fn answer(
             tonk_schema::invocation::Output::the().into(),
             entity.clone(),
             Value::Entity(output),
-            Pick::Last,
+            Cardinality::One,
         );
     }
     Ok(rows)

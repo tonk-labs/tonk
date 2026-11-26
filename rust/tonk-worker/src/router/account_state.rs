@@ -3211,7 +3211,7 @@ pub(crate) mod tests {
                             is: Value::UnsignedInt(round),
                             cause: None,
                         },
-                        dialog_corpus::Pick::All,
+                        dialog_corpus::Cardinality::Many,
                     ))
                     .collect(),
                 )
@@ -3294,7 +3294,7 @@ pub(crate) mod tests {
                         is: Value::UnsignedInt(n),
                         cause: None,
                     },
-                    dialog_corpus::Pick::All,
+                    dialog_corpus::Cardinality::Many,
                 )
             })
             .collect();

@@ -37,7 +37,7 @@ async fn ask(env: &CommandEnv, request: &str, time: f64) -> Outcome {
             the: format!("xyz.tonk.site/{name}").parse().ok()?,
             of: site.clone(),
             is,
-            policy: dialog_corpus::Pick::Last,
+            policy: dialog_corpus::Cardinality::One,
         })
     };
     let (Some(request_claim), Some(time_claim)) = (

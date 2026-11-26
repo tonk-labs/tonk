@@ -175,7 +175,7 @@ mod tests {
             "test/status".parse().expect("attribute"),
             "tonk:test/handoff".parse().expect("entity"),
             Value::String("failed".into()),
-            dialog_corpus::Pick::All,
+            dialog_corpus::Cardinality::Many,
         );
         vec![OverlaySnapshot {
             repository: None,

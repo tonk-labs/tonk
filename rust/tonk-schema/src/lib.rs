@@ -50,6 +50,8 @@ pub use tonk_core::{claim, conclusion, meta};
 pub mod transact;
 
 pub mod concept;
+/// How tonk spells the way an attribute is read, and dialog's cardinality and field pick.
+pub mod pick;
 
 pub mod resolution;
 /// Moving definitions an earlier release wrote to their current shape.

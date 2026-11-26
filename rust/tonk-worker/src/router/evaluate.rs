@@ -146,6 +146,35 @@ fn deserialize_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::
     ))
 }
 
+/// `POST /api/repository/{repo}/branch/{branch}/evaluate`, as routed: a
+/// notation-tour cell (demo, `application/x-dialog-notation+json`) goes to
+/// [`super::notation_tour`], everything else to [`evaluate`].
+#[wasm_compat]
+pub async fn evaluate_route(
+    state: State<AppState>,
+    path: Path<EvaluatePath>,
+    query: axum::extract::Query<EvaluateQuery>,
+    client: Option<Extension<super::ClientId>>,
+    lifetime: Option<Extension<crate::worker::FetchLifetime>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<::axum::response::Response, TonkWorkerError> {
+    use ::axum::response::IntoResponse as _;
+    if super::notation_tour::is_cell(&headers) {
+        return super::notation_tour::evaluate(
+            &state.0,
+            &path.repo,
+            &path.branch,
+            query.transact,
+            &body,
+        )
+        .await;
+    }
+    evaluate(state, path, query, client, lifetime, headers, body)
+        .await
+        .map(|response| response.into_response())
+}
+
 /// `POST /api/repository/{repo}/branch/{branch}/evaluate`
 ///
 /// Body: an asserted-notation document — any mix of queries and
@@ -480,7 +509,7 @@ fn record_claims(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 },
             ),
             dialog_corpus::Instruction::Retract(artifact) => (
@@ -489,7 +518,7 @@ fn record_claims(
                     the: artifact.the,
                     of: artifact.of,
                     is: artifact.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 },
             ),
         })
@@ -894,7 +923,7 @@ async fn evaluate_on_branch_with<'a>(
                     the: found.the,
                     of: found.of,
                     is: found.is,
-                    policy: dialog_corpus::Pick::All,
+                    policy: dialog_corpus::Cardinality::Many,
                 };
                 if !kept.contains(&identity(&stale)) {
                     txn = txn.retract(stale);
@@ -1070,7 +1099,7 @@ async fn evaluate_on_branch_with<'a>(
                         the: "xyz.tonk.test/raced-head".parse().expect("test attribute"),
                         of: "test:evaluate-race".parse().expect("test entity"),
                         is: dialog_corpus::Value::String("advanced".to_owned()),
-                        policy: dialog_corpus::Pick::All,
+                        policy: dialog_corpus::Cardinality::Many,
                     })
                     .commit()
                     .perform(&tonk_state.operator)

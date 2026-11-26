@@ -601,10 +601,8 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
                 } else if let Some(t) = attr_descriptor.content_type() {
                     let _ = writeln!(out, "      as:          {}", type_to_notation(&t));
                 }
-                let pick = attr_descriptor.descriptor().pick();
-                let implied = if among.is_empty() { "last" } else { "top" };
-                if pick.name() != implied {
-                    let _ = writeln!(out, "      pick:        :{}", pick.name());
+                if attr_descriptor.descriptor().cardinality() == dialog_query::Cardinality::Many {
+                    let _ = writeln!(out, "      pick:        :all");
                 }
                 let desc = attr_descriptor.description();
                 if !desc.is_empty() {

@@ -312,11 +312,10 @@ impl ConceptByEntity {
                     entity: attribute_entity.to_string(),
                 });
             };
-            let field = if optional_fields.contains(&field_name) {
-                ConceptFieldDescriptor::optional(facts.descriptor)
-            } else {
-                ConceptFieldDescriptor::required(facts.descriptor)
-            };
+            let field = facts
+                .reading
+                .field(facts.descriptor, optional_fields.contains(&field_name))
+                .map_err(ConceptLookupError::query)?;
             fields.push((field_name, field));
         }
 
@@ -349,6 +348,9 @@ pub struct Attribute {
     pub entity: Entity,
     /// The reconstructed descriptor.
     pub descriptor: AttributeDescriptor,
+    /// How tonk reads it: its cardinality, and the rank a concept field
+    /// reading it picks (see [`crate::pick`]).
+    pub reading: crate::pick::Reading,
 }
 
 /// Builder for looking up an attribute's full fact-set by entity.
@@ -388,11 +390,12 @@ impl AttributeByEntity {
             return Ok(None);
         };
         let policy = attribute_policy_facts(&self.entity, source, env).await?;
-        let descriptor =
+        let (descriptor, reading) =
             build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: self.entity,
             descriptor,
+            reading,
         }))
     }
 }
@@ -489,11 +492,12 @@ impl AttributeById {
             return Ok(None);
         };
         let policy = attribute_policy_facts(&facts.this, source, env).await?;
-        let descriptor =
+        let (descriptor, reading) =
             build_attribute_descriptor(&facts, &policy).map_err(ConceptLookupError::query)?;
         Ok(Some(Attribute {
             entity: facts.this,
             descriptor,
+            reading,
         }))
     }
 }
@@ -537,6 +541,7 @@ impl AttributeByName {
 /// declaration writes, and what [`AttributeByEntity`] reads back.
 pub fn attribute_statements(
     descriptor: &AttributeDescriptor,
+    reading: crate::pick::Reading,
 ) -> Result<Vec<dialog_query::AttributeStatement>, String> {
     use dialog_query::the;
     let entity: Entity = descriptor
@@ -548,8 +553,7 @@ pub fn attribute_statements(
         of: entity.clone(),
         is: value,
         cause: None,
-        cardinality: None,
-        pick: Some(dialog_query::Pick::Last),
+        cardinality: Some(dialog_query::Cardinality::One),
     };
     let mut statements = vec![claim(
         the!("db.attribute/id"),
@@ -562,9 +566,11 @@ pub fn attribute_statements(
             .map_err(|e| format!("type is no entity: {e}"))?;
         statements.push(claim(the!("db.attribute/as"), Value::Entity(kind)));
     }
-    let pick: Entity = descriptor
-        .pick()
-        .uri()
+    // Tonk's meta vocabulary stores the pick as an entity: `last:`,
+    // `all:`, or the rank (`top:`, `max:`, `min:`) a field reading the
+    // attribute picks.
+    let pick: Entity = reading
+        .pick_entity()
         .parse()
         .map_err(|e| format!("pick is no entity: {e}"))?;
     statements.push(claim(the!("db.attribute/pick"), Value::Entity(pick)));
@@ -586,7 +592,7 @@ pub fn attribute_statements(
 fn build_attribute_descriptor(
     facts: &AnonymousAttribute,
     policy: &AttributePolicyFacts,
-) -> Result<AttributeDescriptor, String> {
+) -> Result<(AttributeDescriptor, crate::pick::Reading), String> {
     let mut shape = serde_json::Map::new();
     // The stored id spells the relation: `domain/name` for an
     // attribute, `domain/[position]` or `domain/[symbol]` for a
@@ -606,9 +612,12 @@ fn build_attribute_descriptor(
             serde_json::Value::String(kind.0.to_string()),
         );
     }
+    // A pick this release does not know reads as cardinality one, so a
+    // space an older release wrote still loads.
+    let reading = crate::pick::Reading::of_pick(&facts.pick.0.to_string()).unwrap_or_default();
     shape.insert(
-        "pick".to_owned(),
-        serde_json::Value::String(facts.pick.0.to_string()),
+        "cardinality".to_owned(),
+        serde_json::Value::String(reading.cardinality.name().to_owned()),
     );
     if !facts.description.0.is_empty() {
         shape.insert(
@@ -623,8 +632,17 @@ fn build_attribute_descriptor(
             .map_err(|e| format!("could not parse the ranked values of {:?}: {e}", facts.id.0))?;
         shape.insert("as".to_owned(), listed);
     }
-    serde_json::from_value(serde_json::Value::Object(shape))
-        .map_err(|e| format!("could not reconstruct AttributeDescriptor: {e}"))
+    let descriptor = serde_json::from_value(serde_json::Value::Object(shape))
+        .map_err(|e| format!("could not reconstruct AttributeDescriptor: {e}"))?;
+    Ok((descriptor, reading))
+}
+
+/// [`attribute_statements`] for the attribute a concept's field reads,
+/// with the rank the field picks.
+pub fn field_attribute_statements(
+    field: &ConceptFieldDescriptor,
+) -> Result<Vec<dialog_query::AttributeStatement>, String> {
+    attribute_statements(field.descriptor(), crate::pick::Reading::of_field(field))
 }
 
 // -----------------------------------------------------------------
@@ -685,7 +703,9 @@ impl Statement for AnonymousConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
     }
     fn retract(self, update: &mut impl Update) {
@@ -788,7 +808,9 @@ impl Statement for TransientConcept {
             &self.this,
             &self.descriptor,
             update,
-            |update, the, of, is| Update::associate(update, the, of, is, dialog_corpus::Pick::All),
+            |update, the, of, is| {
+                Update::associate(update, the, of, is, dialog_corpus::Cardinality::Many)
+            },
         );
         dialog_repository::Transient(self.this).assert(update);
     }
@@ -1435,13 +1457,11 @@ where
             .try_vec()
             .await?;
         let policy = AttributePolicyFacts::from_claims(policy);
-        let descriptor =
+        let (descriptor, reading) =
             build_attribute_descriptor(&facts, &policy).map_err(EvaluationError::Store)?;
-        let field = if optional_fields.contains(&field_name) {
-            ConceptFieldDescriptor::optional(descriptor)
-        } else {
-            ConceptFieldDescriptor::required(descriptor)
-        };
+        let field = reading
+            .field(descriptor, optional_fields.contains(&field_name))
+            .map_err(EvaluationError::Store)?;
         fields.push((field_name, field));
     }
 
@@ -2126,7 +2146,7 @@ mod tests {
         let mut txn = branch.transaction();
         for (_, field) in descriptor.with().iter() {
             for statement in
-                crate::concept::attribute_statements(field.descriptor()).expect("attribute facts")
+                crate::concept::field_attribute_statements(field).expect("attribute facts")
             {
                 txn = txn.assert(statement);
             }
@@ -2176,8 +2196,8 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_str(
             r#"{
                 "with": {
-                    "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"] },
-                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "pick": "all:" },
+                    "status": { "the": "xyz.tonk.job/status", "as": ["case:suspended", "case:active"], "pick": "top" },
+                    "tags": { "the": "xyz.tonk.job/tags", "as": "text:", "cardinality": "many" },
                     "name": { "the": "xyz.tonk.job/name", "as": "text:" }
                 }
             }"#,
@@ -2186,7 +2206,7 @@ mod tests {
         let mut txn = branch.transaction();
         for (_, field) in descriptor.with().iter() {
             for statement in
-                crate::concept::attribute_statements(field.descriptor()).expect("attribute facts")
+                crate::concept::field_attribute_statements(field).expect("attribute facts")
             {
                 txn = txn.assert(statement);
             }
@@ -2211,11 +2231,11 @@ mod tests {
                 .find(|(n, _)| *n == name)
                 .unwrap_or_else(|| panic!("{name} rebuilds"))
                 .1
-                .descriptor()
                 .clone()
         };
-        let status = field("status");
-        assert_eq!(status.pick().name(), "top");
+        let pick = |name: &str| crate::pick::Reading::of_field(&field(name)).pick_name();
+        let status = field("status").descriptor().clone();
+        assert_eq!(pick("status"), "top");
         assert_eq!(
             status.among(),
             &[
@@ -2235,9 +2255,9 @@ mod tests {
             declared.to_uri(),
             "the rebuilt descriptor keeps the declared identity"
         );
-        assert_eq!(field("tags").pick().name(), "all");
-        let name = field("name");
-        assert_eq!(name.pick().name(), "last");
+        assert_eq!(pick("tags"), "all");
+        let name = field("name").descriptor().clone();
+        assert_eq!(pick("name"), "last");
         assert!(name.among().is_empty());
         Ok(())
     }
