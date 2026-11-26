@@ -344,7 +344,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": JOIN,
-            "title": "Join a Tonk space",
+            "title": "Ask to join a Tonk space",
             "description": "Ask the person to let you join a Tonk space from an invite link \
                 they gave you. Shows a card in the chat where they choose your access (read, \
                 or write) and join; you are the one who joins, as this connection's \
@@ -357,7 +357,7 @@ pub fn tools() -> Vec<Value> {
                 "required": ["link"],
                 "additionalProperties": false,
             },
-            "annotations": { "readOnlyHint": true, "openWorldHint": true },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": true },
             "_meta": {
                 "ui": { "resourceUri": CARD_URI },
                 "openai/outputTemplate": CARD_URI,

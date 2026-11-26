@@ -318,15 +318,15 @@ pub fn tools() -> Vec<Value> {
     });
     vec![
         json!({
-            "name": SHARE, "title": "Create a Tonk share link",
+            "name": SHARE, "title": "Ask to create a Tonk share link",
             "description": "Ask the person to make a passlink for a space with sharing enabled. Anyone with the approved link can join and write. The card provides the link after approval.",
             "inputSchema":{"type":"object","properties":{"space":{"type":"string","pattern":"^did:key:[A-Za-z0-9]+$"}},"required":["space"],"additionalProperties":false},
-            "annotations":{"readOnlyHint":true,"openWorldHint":false},
+            "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false},
             "_meta":super::card::tool_meta()
         }),
         json!({
             "name": LEAVE,
-            "title": "Leave a Tonk space",
+            "title": "Ask to leave a Tonk space",
             "description": "Ask the person to let you leave one of the spaces granted to you. \
                 Shows a card in the chat; nothing changes until they confirm there, and the \
                 card tells you when they do. Leaving drops your access to the space; what you \
@@ -344,7 +344,7 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
             // It holds the request and shows the card; it changes nothing.
-            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false },
             "_meta": {
                 "ui": { "resourceUri": super::card::CARD_URI },
                 "openai/outputTemplate": super::card::CARD_URI,
@@ -374,6 +374,7 @@ pub fn tools() -> Vec<Value> {
             // It forgets the held change and writes nothing to the space.
             "annotations": {
                 "readOnlyHint": true,
+                "destructiveHint": false,
                 "openWorldHint": false,
             },
             "_meta": app_only,

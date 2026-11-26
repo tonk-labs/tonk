@@ -619,12 +619,12 @@ async fn every_listed_tool_has_a_title_and_annotations() {
         let hints = &tool["annotations"];
         assert!(hints["readOnlyHint"].is_boolean(), "{name}: readOnlyHint");
         assert!(hints["openWorldHint"].is_boolean(), "{name}: openWorldHint");
-        if hints["readOnlyHint"] == false {
-            assert!(
-                hints["destructiveHint"].is_boolean(),
-                "{name}: destructiveHint"
-            );
-        }
+        // The MCP spec reads destructiveHint only when readOnlyHint is
+        // false, but ChatGPT's app review wants it stated on every tool.
+        assert!(
+            hints["destructiveHint"].is_boolean(),
+            "{name}: destructiveHint"
+        );
     }
     let evaluate = tools
         .iter()
