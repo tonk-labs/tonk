@@ -1681,9 +1681,9 @@ pub fn tools() -> Vec<Value> {
             }
             if name == "tonk_evaluate" {
                 tool["description"] = json!(
-                    "Write to a space with inline Tonk notation \
-                     (https://tonk-labs.github.io/docs/notation.html): assertions and commands, run \
-                     once, answered after the write is saved. Needs write access to the \
+                    "Add or update data in a writable space using inline Tonk notation assertions \
+                     (https://tonk-labs.github.io/docs/notation.html). Each write runs \
+                     once and returns after it is saved. Needs write access to the \
                      space (see tonk_list_spaces). Read tonk_guide (notation, views, events) \
                      before authoring unfamiliar schemas or views. If a response is lost, query \
                      before trying again; never replay automatically. With confirm: true \
