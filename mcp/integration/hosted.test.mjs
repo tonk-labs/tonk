@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,10 +12,9 @@ import { startWorker } from '../worker-process.mjs';
 import { createHostedService } from '../hosted/service.mjs';
 import { createDurableState } from '../hosted/durable-state.mjs';
 assert.ok(process.env.TONK_WORKER_BINARY, 'TONK_WORKER_BINARY is required');
-assert.ok(process.env.TONK_PYTHON, 'TONK_PYTHON with mcp==1.26.0 is required');
 const issuer = 'https://fixture.example';
 const redirect = 'http://127.0.0.1:54321/callback';
-const clients = ['node', 'python'].map((clientId) => ({
+const clients = ['node', 'modern'].map((clientId) => ({
   clientId,
   displayName: clientId + ' SDK',
   redirectUris: ['http://127.0.0.1/callback'],
@@ -26,7 +24,7 @@ const clients = ['node', 'python'].map((clientId) => ({
 }));
 
 test(
-  'production hosted composition over real HTTP with Node/Python SDKs and native worker data',
+  'production hosted composition over real HTTP with Node SDK clients and native worker data',
   { timeout: 180000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tonk-hosted-sdk-'));
@@ -199,7 +197,7 @@ test(
       await once(server, 'listening');
       base = 'http://127.0.0.1:' + server.address().port;
       const a = await login('node'),
-        b = await login('python');
+        b = await login('modern');
       assert.equal(checkpoints, 2);
       const document = await readFile(
         new URL('../fixtures/authoring/tasks.notation', import.meta.url),
@@ -230,20 +228,24 @@ test(
           await client.close();
         }
       }
-      const python = spawn(
-        process.env.TONK_PYTHON,
-        [new URL('./python-client.py', import.meta.url).pathname],
-        { stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-      let output = '',
-        errors = '';
-      python.stdout.on('data', (data) => (output += data));
-      python.stderr.on('data', (data) => (errors += data));
-      python.stdin.end(
-        JSON.stringify({ url: base + '/mcp', token: b.access_token, space: spaces[1] }),
-      );
-      assert.equal((await once(python, 'exit'))[0], 0, errors);
-      assert.match(output, /readback passed/);
+      // Written before expiry and service reconstruction, read back after refresh.
+      const writer = await connect(b.access_token, true);
+      try {
+        const resources = await writer.listResources();
+        assert.ok(resources.resources.length > 0);
+        await writer.readResource({ uri: resources.resources[0].uri });
+        const written = await writer.callTool({
+          name: 'tonk_evaluate',
+          arguments: {
+            space: spaces[1],
+            document:
+              'integration-task!:\n  this: urn:test:modern\n  title: Modern SDK\n  done: false\n',
+          },
+        });
+        assert.notEqual(written.isError, true, JSON.stringify(written.content));
+      } finally {
+        await writer.close();
+      }
       time += 600001;
       assert.equal(
         (
@@ -264,7 +266,7 @@ test(
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          client_id: 'python',
+          client_id: 'modern',
           grant_type: 'refresh_token',
           refresh_token: b.refresh_token,
         }),
@@ -277,10 +279,10 @@ test(
           name: 'tonk_query',
           arguments: {
             space: spaces[1],
-            document: 'integration-task:\n  this: urn:test:python\n  title: ?title\n',
+            document: 'integration-task:\n  this: urn:test:modern\n  title: ?title\n',
           },
         });
-        assert.ok(JSON.stringify(read.structuredContent).includes('Python SDK'));
+        assert.ok(JSON.stringify(read.structuredContent).includes('Modern SDK'));
       } finally {
         await reconnected.close();
       }

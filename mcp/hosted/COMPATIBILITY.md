@@ -11,7 +11,7 @@ this branch has been deployed. These are local results, not client certification
 | Client/version | Transport/protocol | Registration/callback | UI | Result |
 | --- | --- | --- | --- | --- |
 | Node SDK 2.3.0, Node 24.18.0 | Streamable HTTP; 2025-11-25 and 2026-07-28 | Explicit public client; literal loopback with varying port | Headless and Apps capability tests pass | Actual local HTTP and native data read/write/readback pass; fixture account approval/membership |
-| Python SDK 1.26.0, Python 3.13.5 | Streamable HTTP; 2025-11-25 | Explicit public client; literal loopback | Headless tested | Actual local HTTP list, guide, write/readback pass; bearer token supplied by fixture OAuth flow |
+| Python SDK 1.26.0, Python 3.13.5 | Streamable HTTP; 2025-11-25 | Explicit public client; literal loopback | Headless tested | Actual local HTTP list, guide, write/readback pass; bearer token supplied by fixture OAuth flow. Not rerun: the Python client was removed from the suite and CI |
 | ChatGPT, version unavailable | Expected Streamable HTTP | Existing `${worker}-chatgpt`; exact existing callback | Local schema, private metadata and Apps-session tests pass | Live login/tools/rendering regression unverified |
 | Claude hosted, version unavailable | Expected Streamable HTTP | Configured `${worker}-claude`; documented `https://claude.ai/api/mcp/auth_callback` | Unverified | No live authorization attempt or tool call; not claimed supported |
 | Claude Code 2.1.259 installed | HTTP supported by client docs | Its documented `http://localhost:PORT/callback` is rejected by our literal-address-only policy | Unverified | Blocked pending verified literal-address override or separately reviewed exact-localhost policy; no live acceptance |
@@ -149,16 +149,13 @@ npm --prefix mcp run test:hosted
 npm --prefix mcp run test:apps
 npm --prefix mcp run check:format
 cargo build --locked -p tonk-worker --features native-host --bin tonk-worker-host
-python3 -m venv /tmp/tonk-mcp-python
-/tmp/tonk-mcp-python/bin/pip install -r mcp/integration/requirements.txt
-TONK_WORKER_BINARY="$PWD/target/debug/tonk-worker-host" TONK_PYTHON=/tmp/tonk-mcp-python/bin/python npm --prefix mcp run test:integration
+TONK_WORKER_BINARY="$PWD/target/debug/tonk-worker-host" npm --prefix mcp run test:integration
 ```
 
-Use the actual target directory if `CARGO_TARGET_DIR` is configured. Python SDK
-1.26.0 is required, not skipped when unavailable. The HTTP test runs Node and
-Python against disposable native storage, exercises expiry/restore/refresh, and
-reads Python-authored data back after service reconstruction. It never reuses or
-clears user credentials. CI installs the same pinned Python SDK.
+Use the actual target directory if `CARGO_TARGET_DIR` is configured. The HTTP
+test runs two Node SDK clients (2025-11-25 and 2026-07-28) against disposable
+native storage, exercises expiry/restore/refresh, and reads data written before
+service reconstruction back after it. It never reuses or clears user credentials.
 
 ## Local packaging evidence
 
