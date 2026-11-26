@@ -1,10 +1,10 @@
 //! A notation library is lowered to claims with no branch
 //! (`notation_library_claims`): nothing it reads is there. A write whose
-//! `when` reads stored facts, or a retract by entity alone, which reads
+//! premises read stored facts, or a retract by entity alone, which reads
 //! the entity's claims to know what to retract, would write nothing. Such
 //! a form is refused, naming itself, rather than installed as nothing. A
-//! `when` that reads no stored fact, as the notebook's routes read only
-//! `id`, still writes.
+//! write whose premises read no stored fact, as the notebook's routes read
+//! only `id`, still writes.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -31,16 +31,16 @@ fn refusal(library: &NotationLibrary) -> Option<&str> {
 }
 
 #[dialog_common::test]
-async fn a_write_whose_when_reads_stored_facts_is_refused() {
+async fn a_write_whose_premises_read_stored_facts_is_refused() {
     let library = lowered(
         "(assert (thing thing:a name: \"A\"))
-(assert (thing ?t name: \"B\") (when (thing ?t name: \"A\")))
+(assert (thing ?t name: \"B\") (thing ?t name: \"A\"))
 ",
     )
     .await;
     let refused = refusal(&library).expect("the write is refused");
     assert!(
-        refused.contains("(when (thing ?t name: \"A\"))"),
+        refused.contains("(thing ?t name: \"A\")"),
         "the refusal names the form: {refused}"
     );
 }
@@ -61,9 +61,9 @@ async fn a_retract_by_entity_alone_is_refused() {
 }
 
 #[dialog_common::test]
-async fn a_write_whose_when_reads_no_stored_fact_still_writes() {
+async fn a_write_whose_premises_read_no_stored_fact_still_writes() {
     let library = lowered(
-        "(assert (thing ?t name: \"B\") (when (id ?t name: \"B\")))
+        "(assert (thing ?t name: \"B\") (id ?t name: \"B\"))
 ",
     )
     .await;

@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook-views.clj at f2bae5bba6548154172828f1b1cc83b1c8ac85b6
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook-views.clj at fbcd06b74692fd6a8e6dc9fe7a214c867e5cb7bf
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; The notebook's views, restated as queries whose answer is markup, as

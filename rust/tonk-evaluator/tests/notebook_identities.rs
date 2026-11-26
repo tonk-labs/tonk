@@ -337,14 +337,16 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 /// the same head are one rule only when their canonical bodies are the
 /// same; otherwise a space that holds the YAML's and installs the
 /// notation's holds both, and both fire, until the old one is taken out.
-/// Three of seventeen are one rule. What is left between the other
-/// fourteen, read off `canonical_descriptor()` (provisional: the text it
-/// gives still carries each writer's head labels, `~0`, `~1`, ..., which
-/// the identity does not, so the rule entities are what to compare once
-/// Dialog-DB blanks a variable used once):
+/// Dialog-DB blanks a variable used once, so a `_` and a named variable
+/// used once are the same rule. Five of seventeen are one rule, compared
+/// by entity. What is left between the other twelve:
 ///
-/// - three where the notation names a variable the YAML leaves blank
-///   (`_`), and nothing else once names are left out;
+/// - one where the notation names a variable the YAML leaves blank, and
+///   nothing else once names are left out. It is not used once: the
+///   notation's rule positioning a block before its successor reads
+///   `block/insert ... next: ?x` with the `?x` of its `block/chain`
+///   premise, so it joins the two on `next`, where the YAML's leaves the
+///   insert's `next` blank;
 /// - seven where the notation binds a collection's key with `==` as a
 ///   premise of its own, or the YAML does where the notation binds it in
 ///   the pattern;
@@ -427,7 +429,7 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
         .keys()
         .filter(|rule| theirs.contains_key(*rule))
         .collect();
-    assert_eq!(one.len(), 3, "rules stored as one: {one:?}");
+    assert_eq!(one.len(), 5, "rules stored as one: {one:?}");
     for rule in &one {
         assert_eq!(ours[*rule], theirs[*rule], "one entity, one stored source");
     }
@@ -496,7 +498,7 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
     assert_eq!(
         categories,
         BTreeMap::from([
-            ("a blank the notation names", 3),
+            ("a blank the notation names", 1),
             ("a key bound with ==", 7),
             ("a concept named as a symbol, a cardinality for a type", 1),
             ("a case:none the chain already implies", 1),

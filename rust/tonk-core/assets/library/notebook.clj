@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at f2bae5bba6548154172828f1b1cc83b1c8ac85b6
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at fbcd06b74692fd6a8e6dc9fe7a214c867e5cb7bf
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; notebook: a <tonk-notebook> document whose ```dialog-yaml fences are live
@@ -263,7 +263,7 @@
 ; entity the YAML pins it to, `tonk:notebook/index-route`; the design gives
 ; a concept the identity of its attributes and no way to pin one. YAML 392.
 (assert (route ?r path: "/notebook" concept: tonk:notebook/index-route)
-  (when (id ?r path: "/notebook" concept: tonk:notebook/index-route)))
+  (id ?r path: "/notebook" concept: tonk:notebook/index-route))
 
 ; Both notebook route models are pinned, as every route model should be. A
 ; concept's identity comes from its fields alone, and a route model's fields
@@ -291,7 +291,7 @@
 ; One notebook, `/space/{repo}/notebook/{entity}`.
 ; GAP: a concept named by an entity, `tonk:notebook/route`, as above. YAML 439.
 (assert (route ?r path: "/notebook/{*entity}" concept: tonk:notebook/route)
-  (when (id ?r path: "/notebook/{*entity}" concept: tonk:notebook/route)))
+  (id ?r path: "/notebook/{*entity}" concept: tonk:notebook/route))
 
 ; A single notebook page (`/space/{repo}/notebook/{entity}`).
 ; GAP: a concept pinned to an entity, `this: tonk:notebook/route`. YAML 442.

@@ -1202,12 +1202,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-29
   notebook: notebook:notation-tour
-  source: "A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the `when` below finds the to-do asserted just above it, and tags it."
+  source: "A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the premise below finds the to-do asserted just above it, and tags it."
 
 notebook/block!:
   this: id:notation-tour/block-30
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (todo todo:paint title: \"Paint the fence\" state: :open list: list:garden))\n(assert (tagged ?t tag: \"outdoors\") (when (todo ?t state: :open list: list:garden ...)))\n\n(select (tagged ?t tag: \"outdoors\"))\n```"
+  source: "```notation\n(assert (todo todo:paint title: \"Paint the fence\" state: :open list: list:garden))\n(assert (tagged ?t tag: \"outdoors\") (todo ?t state: :open list: list:garden ...))\n\n(select (tagged ?t tag: \"outdoors\"))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-31

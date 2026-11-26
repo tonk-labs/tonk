@@ -168,11 +168,11 @@ Now issue the command, and read the state back in the same cell: the rules fired
 (select (tagged ?t tag: ?tag))
 ```
 
-A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the `when` below finds the to-do asserted just above it, and tags it.
+A cell is a sequence. Each form reads what the forms before it wrote, in the same cell and the same commit: the premise below finds the to-do asserted just above it, and tags it.
 
 ```notation
 (assert (todo todo:paint title: "Paint the fence" state: :open list: list:garden))
-(assert (tagged ?t tag: "outdoors") (when (todo ?t state: :open list: list:garden ...)))
+(assert (tagged ?t tag: "outdoors") (todo ?t state: :open list: list:garden ...))
 
 (select (tagged ?t tag: "outdoors"))
 ```

@@ -730,26 +730,31 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // that retracts a removed block's own facts by entity alone retracts
     // every field's claims now, and compiles to two inductive rules, so
     // its 8 rule claims are 16.
+    // Moved at dialog fbcd06b7 from 211 identical and 155 only in the
+    // notation: a variable used once is a blank in a rule's identity
+    // (dialog-db#893), so the rules persisting an inserted block and
+    // recording its successor are one rule on both sides, and their 13
+    // claims are identical.
     assert_eq!(
         as_it_is,
         Headline {
             yaml: 390,
-            identical: 211,
-            differently: 112,
-            not_at_all: 67,
-            only_notation: 155,
+            identical: 224,
+            differently: 101,
+            not_at_all: 65,
+            only_notation: 142,
         }
     );
-    // At b423dd78 the adjustment changes nothing: what it adjusted is how
+    // At b423dd78 and since the adjustment changes nothing: what it adjusted is how
     // the notation now writes the notebook as it is.
     assert_eq!(
         read_one,
         Headline {
             yaml: 390,
-            identical: 211,
-            differently: 112,
-            not_at_all: 67,
-            only_notation: 155,
+            identical: 224,
+            differently: 101,
+            not_at_all: 65,
+            only_notation: 142,
         }
     );
     Ok(())
