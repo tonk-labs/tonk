@@ -275,6 +275,67 @@ A form is data too. When a cell runs, this notebook keeps each of its forms on t
                                           :operand {:items [{:type :constant :value ?t}]}}]}}))
 ```
 
+## Parse, analyze and compile through queries
+
+Run this select to parse source into an ordered list of syntax values. You can hover `syntax/parse` for its role in the pipeline.
+
+```notation
+(select (syntax/parse "(select (tour.todo/title of: todo:1 is: ?title))" is: ?forms))
+```
+
+Run analysis on a quoted concept. The apostrophe makes the form data. Its variables and field labels belong to the form being analyzed. The result includes its declaration and any lowered forms.
+
+```notation
+(select (syntax/analyze
+  '(concept (pipeline/task ?t title: ?title)
+     (tour.pipeline/title of: ?t is: ?title as: :text cardinality: :one))
+  is: ?analyzed diagnostics: ?messages))
+```
+
+This select feeds the reader's result into the analyzer, then passes the analyzer's result to the compiler. Expand the result to inspect the compiled steps and the diagnostics from each phase.
+
+```notation
+(select (tour.pipeline syntax:result forms: ?forms analyzed: ?analyzed steps: ?steps
+         read: ?read analysis: ?analysis compile: ?compile)
+  (syntax/parse "(assert (tour.todo/title of: todo:pending is: \"Pipeline example\" cardinality: :one))"
+    is: ?forms diagnostics: ?read)
+  (syntax/analyze ?forms is: ?analyzed diagnostics: ?analysis)
+  (syntax/compile ?analyzed is: ?steps diagnostics: ?compile))
+```
+
+Store a quoted form as a fact, then look it up by entity. The `notation/read` premise parses the equivalent source independently and matches the same composite. The other premises analyze and compile the stored value.
+
+```notation
+(assert (tour.syntax/form of: syntax:example
+  is: '(select (tour.todo/title of: todo:1 is: ?title)) cardinality: :one))
+```
+
+```notation
+(select (tour.pipeline syntax:result saved: ?form analyzed: ?analysis steps: ?steps)
+  (tour.syntax/form of: syntax:example is: ?form)
+  (notation/read text: "(select (tour.todo/title of: todo:1 is: ?title))" tree: ?form)
+  (syntax/analyze ?form is: ?analysis)
+  (syntax/compile ?analysis is: ?steps))
+```
+
+The compiler returns a preview. A host can run a stored analyzed value by preparing it with `check_analyzed` and passing the result to the ordinary evaluation driver.
+
+## Try the editor
+
+Hover over `editor/task` or `title:` in the second cell to see the declaration from the first cell. Delete the end of `editor/task` and invoke completion. Then try misspelling the operation to see an inline diagnostic.
+
+```notation
+; A task used to demonstrate editor references.
+(concept (editor/task ?t title: ?title)
+  ; The task's display title.
+  (tour.editor/title of: ?t is: ?title as: :text cardinality: :one))
+(assert (editor/task task:example title: "Try completion"))
+```
+
+```notation
+(select (editor/task task:example title: ?title))
+```
+
 ## What the notation refuses
 
 Each of these is refused on purpose, and says why and where.

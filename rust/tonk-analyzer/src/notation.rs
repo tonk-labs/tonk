@@ -11,6 +11,8 @@
 //! A later revision of the notation is meant to be a change here and
 //! nowhere else.
 
+/// Language-server diagnostics and reference information for notation.
+pub mod editor;
 pub mod live;
 /// Demo (notation tour): one notebook cell in the notation, evaluated.
 pub mod tour;

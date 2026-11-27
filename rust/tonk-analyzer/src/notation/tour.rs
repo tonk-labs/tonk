@@ -399,6 +399,7 @@ impl Prepared {
     /// committed (`wrote`) or left out (a dry run), and say what each
     /// form did.
     pub async fn finish<E: Reader>(self, branch: &Branch, wrote: bool, env: &E) -> Answer {
+        dialog_notation::supplied::supply_pipeline(env);
         let Prepared {
             mut answer,
             mut forms,

@@ -1057,7 +1057,7 @@ notebook/named!:
 
 notebook/blocks!:
   this: notebook:notation-tour
-  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55, N00056V: id:notation-tour/block-56, N00057V: id:notation-tour/block-57, N00058V: id:notation-tour/block-58, N00059V: id:notation-tour/block-59, N00060V: id:notation-tour/block-60, N00061V: id:notation-tour/block-61, N00062V: id:notation-tour/block-62, N00063V: id:notation-tour/block-63}
+  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55, N00056V: id:notation-tour/block-56, N00057V: id:notation-tour/block-57, N00058V: id:notation-tour/block-58, N00059V: id:notation-tour/block-59, N00060V: id:notation-tour/block-60, N00061V: id:notation-tour/block-61, N00062V: id:notation-tour/block-62, N00063V: id:notation-tour/block-63, N00064V: id:notation-tour/block-64, N00065V: id:notation-tour/block-65, N00066V: id:notation-tour/block-66, N00067V: id:notation-tour/block-67, N00068V: id:notation-tour/block-68, N00069V: id:notation-tour/block-69, N00070V: id:notation-tour/block-70, N00071V: id:notation-tour/block-71, N00072V: id:notation-tour/block-72, N00073V: id:notation-tour/block-73, N00074V: id:notation-tour/block-74, N00075V: id:notation-tour/block-75, N00076V: id:notation-tour/block-76}
 
 notebook/block!:
   this: id:notation-tour/block-1
@@ -1292,85 +1292,150 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-47
   notebook: notebook:notation-tour
-  source: "## What the notation refuses\n\nEach of these is refused on purpose, and says why and where."
+  source: "## Parse, analyze and compile through queries\n\nRun this select to parse source into an ordered list of syntax values. You can hover `syntax/parse` for its role in the pipeline."
 
 notebook/block!:
   this: id:notation-tour/block-48
   notebook: notebook:notation-tour
-  source: "A name nothing defines:"
+  source: "```notation\n(select (syntax/parse \"(select (tour.todo/title of: todo:1 is: ?title))\" is: ?forms))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-49
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
+  source: "Run analysis on a quoted concept. The apostrophe makes the form data. Its variables and field labels belong to the form being analyzed. The result includes its declaration and any lowered forms."
 
 notebook/block!:
   this: id:notation-tour/block-50
   notebook: notebook:notation-tour
-  source: "A line of a concept that says no cardinality:"
+  source: "```notation\n(select (syntax/analyze\n  '(concept (pipeline/task ?t title: ?title)\n     (tour.pipeline/title of: ?t is: ?title as: :text cardinality: :one))\n  is: ?analyzed diagnostics: ?messages))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-51
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
+  source: "This select feeds the reader's result into the analyzer, then passes the analyzer's result to the compiler. Expand the result to inspect the compiled steps and the diagnostics from each phase."
 
 notebook/block!:
   this: id:notation-tour/block-52
   notebook: notebook:notation-tour
-  source: "A read that leaves fields out without `...`: the refusal names what it leaves out and the read written with `...`."
+  source: "```notation\n(select (tour.pipeline syntax:result forms: ?forms analyzed: ?analyzed steps: ?steps\n         read: ?read analysis: ?analysis compile: ?compile)\n  (syntax/parse \"(assert (tour.todo/title of: todo:pending is: \\\"Pipeline example\\\" cardinality: :one))\"\n    is: ?forms diagnostics: ?read)\n  (syntax/analyze ?forms is: ?analyzed diagnostics: ?analysis)\n  (syntax/compile ?analyzed is: ?steps diagnostics: ?compile))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-53
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(select (todo ?t title: ?title))\n```"
+  source: "Store a quoted form as a fact, then look it up by entity. The `notation/read` premise parses the equivalent source independently and matches the same composite. The other premises analyze and compile the stored value."
 
 notebook/block!:
   this: id:notation-tour/block-54
   notebook: notebook:notation-tour
-  source: "`top` is gone from the notation: the refusal says what to write instead."
+  source: "```notation\n(assert (tour.syntax/form of: syntax:example\n  is: '(select (tour.todo/title of: todo:1 is: ?title)) cardinality: :one))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-55
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
+  source: "```notation\n(select (tour.pipeline syntax:result saved: ?form analyzed: ?analysis steps: ?steps)\n  (tour.syntax/form of: syntax:example is: ?form)\n  (notation/read text: \"(select (tour.todo/title of: todo:1 is: ?title))\" tree: ?form)\n  (syntax/analyze ?form is: ?analysis)\n  (syntax/compile ?analysis is: ?steps))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-56
   notebook: notebook:notation-tour
-  source: "A declared name is strict kebab-case: lowercase words joined by one `-`."
+  source: "The compiler returns a preview. A host can run a stored analyzed value by preparing it with `check_analyzed` and passing the result to the ordinary evaluation driver."
 
 notebook/block!:
   this: id:notation-tour/block-57
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(concept (to--do ?t title: ?title)\n  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one))\n```"
+  source: "## Try the editor\n\nHover over `editor/task` or `title:` in the second cell to see the declaration from the first cell. Delete the end of `editor/task` and invoke completion. Then try misspelling the operation to see an inline diagnostic."
 
 notebook/block!:
   this: id:notation-tour/block-58
   notebook: notebook:notation-tour
-  source: "A read of a concept says no pick: the pick is the concept's, on its field."
+  source: "```notation\n; A task used to demonstrate editor references.\n(concept (editor/task ?t title: ?title)\n  ; The task's display title.\n  (tour.editor/title of: ?t is: ?title as: :text cardinality: :one))\n(assert (editor/task task:example title: \"Try completion\"))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-59
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(select (urgency ?t level: (max ?level)))\n```"
+  source: "```notation\n(select (editor/task task:example title: ?title))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-60
   notebook: notebook:notation-tour
-  source: "A write through a concept that leaves a field out:"
+  source: "## What the notation refuses\n\nEach of these is refused on purpose, and says why and where."
 
 notebook/block!:
   this: id:notation-tour/block-61
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))\n```"
+  source: "A name nothing defines:"
 
 notebook/block!:
   this: id:notation-tour/block-62
   notebook: notebook:notation-tour
-  source: "One rule that both asserts and retracts: it is written as a rule for each."
+  source: "```notation\n; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-63
+  notebook: notebook:notation-tour
+  source: "A line of a concept that says no cardinality:"
+
+notebook/block!:
+  this: id:notation-tour/block-64
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(concept (flag ?t on: ?on)\n  (tour.todo/flag of: ?t is: ?on as: :boolean))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-65
+  notebook: notebook:notation-tour
+  source: "A read that leaves fields out without `...`: the refusal names what it leaves out and the read written with `...`."
+
+notebook/block!:
+  this: id:notation-tour/block-66
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(select (todo ?t title: ?title))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-67
+  notebook: notebook:notation-tour
+  source: "`top` is gone from the notation: the refusal says what to write instead."
+
+notebook/block!:
+  this: id:notation-tour/block-68
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(concept (rank ?t level: (top ?u))\n  (tour.todo/rank of: ?t is: ?u as: [:high :low] cardinality: :many))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-69
+  notebook: notebook:notation-tour
+  source: "A declared name is strict kebab-case: lowercase words joined by one `-`."
+
+notebook/block!:
+  this: id:notation-tour/block-70
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(concept (to--do ?t title: ?title)\n  (tour.todo/title of: ?t is: ?title as: :text cardinality: :one))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-71
+  notebook: notebook:notation-tour
+  source: "A read of a concept says no pick: the pick is the concept's, on its field."
+
+notebook/block!:
+  this: id:notation-tour/block-72
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(select (urgency ?t level: (max ?level)))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-73
+  notebook: notebook:notation-tour
+  source: "A write through a concept that leaves a field out:"
+
+notebook/block!:
+  this: id:notation-tour/block-74
+  notebook: notebook:notation-tour
+  source: "```notation\n; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))\n```"
+
+notebook/block!:
+  this: id:notation-tour/block-75
+  notebook: notebook:notation-tour
+  source: "One rule that both asserts and retracts: it is written as a rule for each."
+
+notebook/block!:
+  this: id:notation-tour/block-76
   notebook: notebook:notation-tour
   source: "```notation\n; expect: refused\n(rule (all (assert (tour.todo ?t list: ?to)) (retract (tour.todo ?t list: ?from)))\n  (tour.move ?t to: ?to)\n  (tour.todo ?t list: ?from))\n```"
 

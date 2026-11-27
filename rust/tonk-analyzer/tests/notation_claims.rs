@@ -718,6 +718,20 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         println!("## pins not checked: another sketch");
         return Ok(());
     }
+    let rule_ids = |forms: &[Form]| {
+        forms
+            .iter()
+            .flat_map(|form| &form.claims.durable)
+            .filter(|(the, _, _)| the == "dialog.rule/source")
+            .map(|(_, entity, _)| entity.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let yaml_rules = rule_ids(&yaml);
+    let notation_rules = rule_ids(&notation.forms);
+    assert_eq!(yaml_rules.len(), 17);
+    assert_eq!(notation_rules.len(), 17);
+    assert_eq!(yaml_rules.intersection(&notation_rules).count(), 14);
+
     // Pinned: a change to either side has to move these on purpose.
     // Moved at dialog 7b7484a8 from 107 and 231 identical: the notebook's
     // views are queries now, kept by `notation::live`, and no longer
@@ -735,14 +749,16 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
     // (dialog-db#893), so the rules persisting an inserted block and
     // recording its successor are one rule on both sides, and their 13
     // claims are identical.
+    // The updated notebook fixture and keyed-head compiler fix bring
+    // the total to 290 identical claims.
     assert_eq!(
         as_it_is,
         Headline {
             yaml: 390,
-            identical: 224,
-            differently: 101,
-            not_at_all: 65,
-            only_notation: 142,
+            identical: 290,
+            differently: 51,
+            not_at_all: 49,
+            only_notation: 83,
         }
     );
     // At b423dd78 and since the adjustment changes nothing: what it adjusted is how
@@ -751,10 +767,10 @@ async fn it_measures_the_notebook_in_two_notations() -> anyhow::Result<()> {
         read_one,
         Headline {
             yaml: 390,
-            identical: 224,
-            differently: 101,
-            not_at_all: 65,
-            only_notation: 142,
+            identical: 290,
+            differently: 51,
+            not_at_all: 49,
+            only_notation: 83,
         }
     );
     Ok(())

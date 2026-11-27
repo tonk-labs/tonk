@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/tests/fixtures/core.clj at fbcd06b74692fd6a8e6dc9fe7a214c867e5cb7bf
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/core.clj at d248b175d4b292b01b8b36d8aab6e2280d4fbfdd
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; core: the concepts of tonk's core that the notebook reads and does not
@@ -70,3 +70,20 @@
   (tonk.dialog.intent/expression of: ?i is: ?e as: :entity cardinality: :one)
   ; The command it would run.
   (tonk.dialog.intent/command of: ?i is: ?c as: :entity cardinality: :one))
+
+; Invocations: what became of a command someone ran. An invoker that wants
+; to follow a command (the command palette) stamps it, as it lands in
+; `control:` for one tick, with when it was run and which command it is;
+; rules copy that command's life into the stack's `session:` layer.
+; Ported from tonk's core.yaml 3005-3036.
+
+; A followed command as it lands, in `control:` for one tick.
+; GAP: a concept pinned to an entity, `this: tonk:command/invoked`: the
+; notation names no entity for a concept (gaps row 6). YAML 3026.
+; GAP: a sized type, `as: float:64`: the notation's types are unsized, so
+; `at` is `:float`. YAML 3031.
+(concept (command/invoked ?c at: ?at concept: ?concept)
+  ; When the invoker ran it, in milliseconds since the epoch, by its own clock.
+  (xyz.tonk.command/invoked-at of: ?c is: ?at as: :float cardinality: :one)
+  ; The concept of the command that was run.
+  (xyz.tonk.command/concept of: ?c is: ?concept as: :entity cardinality: :one))
