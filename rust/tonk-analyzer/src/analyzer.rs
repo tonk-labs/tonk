@@ -3584,6 +3584,130 @@ person!:
         }
     }
 
+    /// A field label names the relation `db.concept.with/<label>` (and,
+    /// under `maybe:`, `db.concept.optional/<label>`) that records the
+    /// field on the concept entity, so it has to be a name dialog takes
+    /// for a relation's name half. One that isn't is refused at the
+    /// label with dialog's reason, under `with:` and `maybe:` alike;
+    /// it used to panic building the concept-of-concept schema.
+    #[dialog_common::test]
+    async fn it_rejects_an_invalid_field_label() {
+        let cases = [
+            ("-todo", "must start with a lowercase letter"),
+            ("todo-", "must not end with a hyphen"),
+            ("2do", "must start with a lowercase letter"),
+            ("toDo", "only lowercase letters, digits, or hyphens"),
+            ("to_do", "only lowercase letters, digits, or hyphens"),
+            ("todo/item", "exactly one '/'"),
+            ("café", "only lowercase letters, digits, or hyphens"),
+        ];
+        for block in ["with", "maybe"] {
+            for (label, why) in cases {
+                // Under `with:` the label follows `title` in the same
+                // block (line 6); under `maybe:` it opens its own
+                // block (line 7).
+                let opener = if block == "maybe" { "  maybe:\n" } else { "" };
+                let source = format!(
+                    "concept!: &todo\n  with:\n    title:\n      description: \"t\"\n      \
+                     the: x.todo/title\n      as: text\n{opener}    {label}:\n      \
+                     description: \"d\"\n      the: x.todo/done\n      as: boolean\n"
+                );
+                let syntax = must_parse(&source);
+                let err = analyze_empty(&syntax)
+                    .await
+                    .expect_err(&format!("`{block}:` label {label:?} should be refused"));
+                assert!(
+                    matches!(
+                        &err.kind,
+                        AnalyzeErrorKind::InvalidFieldLabel { label: l, reason, .. }
+                            if l == label && reason.contains(why)
+                    ),
+                    "`{block}:` label {label:?}: expected InvalidFieldLabel saying {why:?}, got {err:?}"
+                );
+                assert!(
+                    err.to_string().contains(&format!("{label:?}")),
+                    "the message names the label: {err}"
+                );
+                let range = err.range.expect("refused at the label");
+                assert_eq!(
+                    (range.start.line, range.start.character),
+                    (if block == "with" { 6 } else { 7 }, 4),
+                    "`{block}:` label {label:?} is pointed at"
+                );
+            }
+        }
+    }
+
+    /// The labels dialog takes as a relation's name half lower.
+    #[dialog_common::test]
+    async fn it_accepts_kebab_case_field_labels() {
+        for label in ["todo", "to-do", "to--do", "to-2", "to-2do"] {
+            let source = format!(
+                "concept!: &todo\n  with:\n    {label}:\n      description: \"d\"\n      \
+                 the: x.todo/done\n      as: boolean\n"
+            );
+            let syntax = must_parse(&source);
+            let result = analyze_empty(&syntax).await;
+            assert!(result.is_ok(), "label {label:?} lowers: {:?}", result.err());
+        }
+    }
+
+    /// A `the:` dialog refuses is reported with dialog's reason, not
+    /// the untagged-enum message serde gives when no variant matched.
+    #[dialog_common::test]
+    async fn it_rejects_an_invalid_relation_with_dialogs_reason() {
+        let cases = [
+            ("x.todo/Title", "name must start with a lowercase letter"),
+            ("X.todo/title", "domain must start with a lowercase letter"),
+            ("x.todo/ti_tle", "name must contain only lowercase letters"),
+            ("x.todo/title-", "name must not end with a hyphen"),
+        ];
+        for (the, why) in cases {
+            let syntax = must_parse(&format!(
+                "attribute!: &todo/title\n  description: \"t\"\n  the: \"{the}\"\n  as: text\n"
+            ));
+            let err = analyze_empty(&syntax)
+                .await
+                .expect_err(&format!("`the: {the}` should be refused"));
+            assert!(
+                matches!(
+                    &err.kind,
+                    AnalyzeErrorKind::InvalidAttributeBody { reason }
+                        if reason.contains(the) && reason.contains(why)
+                            && !reason.contains("untagged enum")
+                ),
+                "`the: {the}`: expected dialog's reason {why:?}, got {err:?}"
+            );
+        }
+        // A ranked list is checked entry by entry.
+        let syntax = must_parse(
+            "attribute!: &todo/title\n  description: \"t\"\n  the:\n    - x.todo/title\n    \
+             - \"x.todo/Name\"\n  as: text\n",
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason }
+                    if reason.contains("x.todo/Name") && reason.contains("lowercase letter")
+            ),
+            "a ranked `the:` names the entry dialog refused, got {err:?}"
+        );
+        // A keyed collection's `the:` is a domain.
+        let syntax = must_parse(
+            "attribute!: &todo/tags\n  description: \"t\"\n  the: \"X.todo\"\n  as: {[symbol]: text}\n",
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason }
+                    if reason.contains("X.todo") && reason.contains("start with a lowercase letter")
+            ),
+            "a keyed collection's domain is checked as a domain, got {err:?}"
+        );
+    }
+
     /// `this: demo/1` resolves a numbered anchor name declared by an
     /// earlier expression (`&demo/1`). Regression: the reference
     /// used to parse as a string literal and fail with
