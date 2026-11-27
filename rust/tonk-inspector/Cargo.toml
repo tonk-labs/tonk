@@ -50,6 +50,7 @@ web-sys = { workspace = true, features = [
     "RequestMode",
     "Response",
     "Selection",
+    "Text",
     "Window",
 ] }
 

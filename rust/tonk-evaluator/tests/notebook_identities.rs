@@ -278,6 +278,9 @@ fn category(yaml: &str, notation: &str) -> &'static str {
     if text(&b).contains("symbol:") {
         return "a concept named as a symbol, a cardinality for a type";
     }
+    if text(&a).contains("\"float:64\"") && text(&b).contains("\"float:\"") {
+        return "a float type with a different width annotation";
+    }
     if text(&a).matches("case:none").count() != text(&b).matches("case:none").count() {
         return "a case:none the chain already implies";
     }
@@ -318,18 +321,14 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 ///
 /// Names (`db.name/referent`): every concept the notebook declares
 /// without pinning it to an entity keeps its entity. The two route
-/// concepts the YAML pins (`this: tonk:notebook/route`, gaps row 6) move
-/// to the entity their attributes give. The element moves from its body's
-/// hash to the entity the notation names it by. The YAML's names for
-/// attributes, its four events and its session concept
-/// `notebook/retitled` have no notation counterpart.
+/// concepts and the session concept `notebook/retitled` use pinned
+/// entities in YAML and attribute-derived identities in the notation.
+/// The element moves from its body's hash to the entity the notation
+/// names it by. Attribute aliases and four events appear only in YAML.
 ///
-/// Attributes: every relation the notation declares keeps its entity.
-/// `xyz.tonk.invocation/output`, which only the YAML's session rule
-/// writes, is the YAML's alone. Five keep their entity and differ in
-/// what is said of them: three descriptions reworded in the sketch, and
-/// the intent role (`role:`) the YAML gives the retitle command's
-/// fields, which the notation has no spelling for.
+/// Attributes: every relation keeps its entity, including the session
+/// output. Five differ in metadata: three descriptions and the two
+/// intent roles on the YAML retitle command's fields.
 ///
 /// Rules: a rule is stored under the entity its canonical body hashes
 /// to: Dialog-DB renames the body's locals and the head's fields and
@@ -337,32 +336,12 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 /// the same head are one rule only when their canonical bodies are the
 /// same; otherwise a space that holds the YAML's and installs the
 /// notation's holds both, and both fire, until the old one is taken out.
-/// Dialog-DB blanks a variable used once, so a `_` and a named variable
-/// used once are the same rule. Five of seventeen are one rule, compared
-/// by entity. What is left between the other twelve:
-///
-/// - one where the notation names a variable the YAML leaves blank, and
-///   nothing else once names are left out. It is not used once: the
-///   notation's rule positioning a block before its successor reads
-///   `block/insert ... next: ?x` with the `?x` of its `block/chain`
-///   premise, so it joins the two on `next`, where the YAML's leaves the
-///   insert's `next` blank;
-/// - seven where the notation binds a collection's key with `==` as a
-///   premise of its own, or the YAML does where the notation binds it in
-///   the pattern;
-/// - one where the notation's command reads its concept as a symbol and
-///   its subject under a cardinality where the YAML gives a type;
-/// - one where the notation's tail rule for `xyz.tonk.notebook.block/at`
-///   also requires `insert/next` to be `case:none`, which its
-///   `block/chain ... next: case:none` premise already implies, since the
-///   chain's `next` is the insert's;
-/// - one YAML rule, retracting a removed block's notebook and source
-///   together, is two in the notation, one per field (a retract by
-///   entity alone retracts each field's claims);
-/// - one YAML rule writes the retitle's output to the session layer
-///   (`in: "session:"`, gaps row 16) and has no counterpart.
+/// Fourteen of the seventeen rules share an identity. The remaining
+/// pairs differ in the key bindings for the block position, the retitle
+/// subject's concept and type, and the float type for the invocation
+/// timestamp in the session output rule.
 #[dialog_common::test]
-async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
+async fn the_notebook_keeps_its_unpinned_concepts_and_most_rules() {
     let yaml = yaml_claims("notebook.yaml", NOTEBOOK_YAML).await;
     let notation = notation_claims(NOTEBOOK_CLJ).await;
 
@@ -386,11 +365,15 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
                 "notebook/named",
                 "notebook/retitle",
             ]),
-            moved: set(&["notebook-save", "notebook/index-route", "notebook/route"]),
+            moved: set(&[
+                "notebook-save",
+                "notebook/index-route",
+                "notebook/retitled",
+                "notebook/route",
+            ]),
             yaml_only: set(&[
                 "block/source",
                 "notebook/retitle-subject",
-                "notebook/retitled",
                 "notebook/title",
                 "on/block-edit",
                 "on/block-place",
@@ -404,7 +387,7 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
     let (ours, theirs) = (attributes(&yaml), attributes(&notation));
     let fated = fate(&ours, &theirs);
     assert_eq!(fated.moved, BTreeSet::new());
-    assert_eq!(fated.yaml_only, set(&["xyz.tonk.invocation/output"]));
+    assert_eq!(fated.yaml_only, BTreeSet::new());
     assert_eq!(fated.notation_only, BTreeSet::new());
     let restated: BTreeSet<String> = fated
         .kept
@@ -429,7 +412,7 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
         .keys()
         .filter(|rule| theirs.contains_key(*rule))
         .collect();
-    assert_eq!(one.len(), 5, "rules stored as one: {one:?}");
+    assert_eq!(one.len(), 14, "rules stored as one: {one:?}");
     for rule in &one {
         assert_eq!(ours[*rule], theirs[*rule], "one entity, one stored source");
     }
@@ -498,15 +481,12 @@ async fn the_notebook_keeps_its_unpinned_concepts_and_moves_most_rules() {
     assert_eq!(
         categories,
         BTreeMap::from([
-            ("a blank the notation names", 1),
-            ("a key bound with ==", 7),
+            ("a key bound with ==", 1),
             ("a concept named as a symbol, a cardinality for a type", 1),
-            ("a case:none the chain already implies", 1),
+            ("a float type with a different width annotation", 1),
         ])
     );
-    // The YAML's session rule, and its two-field retract, which the
-    // notation writes as two rules of other heads.
-    assert_eq!((unpaired_yaml, unpaired_notation), (2, 2));
+    assert_eq!((unpaired_yaml, unpaired_notation), (0, 0));
 }
 
 const CORE_CLJ: &str = include_str!("../../tonk-core/assets/library/core.clj");

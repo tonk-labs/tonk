@@ -21,6 +21,7 @@ use lsp_types::{
     request::{Completion, HoverRequest, Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
+use tonk_analyzer::notation::editor::Editor;
 use tonk_schema::claim::ConceptDescriptor;
 use tonk_schema::concept::{
     AttributeDescriptor, ConceptDescriptor as DialogConceptDescriptor, Type,
@@ -30,24 +31,16 @@ use tonk_schema::resolution::{ConceptDefinition, ConceptReference, NamedReferenc
 use crate::env::{EnvProvider, Opened, Repo};
 use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 
-/// Per-URI document state. Today only the latest text is
-/// retained; the version that the client tagged the
-/// `didOpen` / `didChange` with flows straight to the
-/// matching `publishDiagnostics` and isn't stored. Carrying
-/// the version through is what lets `@codemirror/lsp-client`
-/// discard diagnostic frames whose ranges no longer match the
-/// buffer it's editing.
-#[derive(Debug, Clone, Default)]
+/// The latest text and version of an open document.
 struct Document {
     text: String,
     /// The `languageId` the document was opened as.
     language: String,
+    version: i32,
+    editor: Option<Editor>,
 }
 
-/// The `languageId` of a document in the Dialog notation. The server
-/// holds such a document and answers it nothing yet: no diagnostics and
-/// no completions, until a dialog query checks the notation. A document
-/// of any other language is read as tonk's YAML notation, as before.
+/// The `languageId` of a document in the Dialog notation.
 pub const NOTATION_LANGUAGE: &str = "dialog-notation";
 
 /// LSP language server for `tonk-notation` documents.
@@ -219,11 +212,13 @@ impl Server {
                     self.documents.insert(
                         uri.clone(),
                         Document {
-                            text: text.clone(),
+                            text,
                             language: p.text_document.language_id,
+                            version,
+                            editor: None,
                         },
                     );
-                    self.publish(uri, &text, Some(version), env).await;
+                    self.publish_document(uri, env).await;
                 }
             }
             "textDocument/didChange" => {
@@ -246,21 +241,87 @@ impl Server {
                     self.documents.insert(
                         uri.clone(),
                         Document {
-                            text: last.text.clone(),
+                            text: last.text,
                             language,
+                            version,
+                            editor: None,
                         },
                     );
-                    self.publish(uri, &last.text, Some(version), env).await;
+                    self.publish_document(uri, env).await;
                 }
             }
             "textDocument/didClose" => {
-                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
-                    self.documents.remove(&p.text_document.uri);
+                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params)
+                    && self
+                        .documents
+                        .remove(&p.text_document.uri)
+                        .is_some_and(|doc| doc.language == NOTATION_LANGUAGE)
+                {
+                    self.check_notation(&p.text_document.uri);
                 }
             }
             _ => {
                 // Unknown notification — spec says ignore.
             }
+        }
+    }
+
+    async fn publish_document(&mut self, uri: Uri, env: &impl EnvProvider) {
+        let Some(doc) = self.documents.get(&uri) else {
+            return;
+        };
+        if doc.language == NOTATION_LANGUAGE {
+            self.check_notation(&uri);
+        } else {
+            let (text, version) = (doc.text.clone(), doc.version);
+            self.publish(uri, &text, Some(version), env).await;
+        }
+    }
+
+    /// Check the edited cell and its dependents using the nearest
+    /// preceding cell's saved definitions. Each affected cell is
+    /// checked once and becomes the context for the cell after it.
+    fn check_notation(&mut self, uri: &Uri) {
+        let mut context = None;
+        let documents = match notation_location(uri) {
+            Some((scope, position)) => {
+                context = self
+                    .documents
+                    .iter()
+                    .filter_map(|(uri, document)| {
+                        let (other, order) = notation_location(uri)?;
+                        let editor = document.editor.as_ref()?;
+                        (other == scope && order < position).then_some((order, editor))
+                    })
+                    .max_by_key(|(order, _)| *order)
+                    .map(|(_, editor)| editor.clone());
+                let mut later: Vec<_> = self
+                    .documents
+                    .keys()
+                    .filter_map(|uri| {
+                        let (other, order) = notation_location(uri)?;
+                        (other == scope && order >= position).then(|| (order, uri.clone()))
+                    })
+                    .collect();
+                later.sort_unstable_by_key(|(order, _)| *order);
+                later.into_iter().map(|(_, uri)| uri).collect::<Vec<_>>()
+            }
+            None => vec![uri.clone()],
+        };
+        let Some(mut editor) = context.or_else(|| Editor::new().ok()) else {
+            return;
+        };
+        for uri in documents {
+            let Some(document) = self.documents.get_mut(&uri) else {
+                continue;
+            };
+            if document.language != NOTATION_LANGUAGE {
+                continue;
+            }
+            let diagnostics = editor.check(&document.text);
+            document.editor = Some(editor.clone());
+            let version = document.version;
+            self.enqueue_diagnostics(uri, Some(version), diagnostics);
         }
     }
 
@@ -278,7 +339,9 @@ impl Server {
             return Vec::new();
         };
         if doc.language == NOTATION_LANGUAGE {
-            return Vec::new();
+            return doc.editor.as_ref().map_or_else(Vec::new, |editor| {
+                editor.complete(&doc.text, params.text_document_position.position)
+            });
         }
         let text = doc.text.as_str();
         let position = params.text_document_position.position;
@@ -345,6 +408,9 @@ impl Server {
         let doc = self.documents.get(uri)?;
         let text = doc.text.as_str();
         let position = params.text_document_position_params.position;
+        if doc.language == NOTATION_LANGUAGE {
+            return doc.editor.as_ref()?.hover(text, position);
+        }
 
         // Identify the identifier under the cursor by widening
         // from the cursor in both directions over symbol chars.
@@ -432,25 +498,14 @@ impl Server {
         version: Option<i32>,
         env: &impl EnvProvider,
     ) {
-        let notation = self
-            .documents
-            .get(&uri)
-            .is_some_and(|document| document.language == NOTATION_LANGUAGE);
-        // A notation document is answered with an empty frame: nothing
-        // checks the notation here yet.
-        let mut diagnostics = Vec::new();
-        if !notation {
-            let parsed = tonk_notation::parse(text);
-            diagnostics = parsed.diagnostics.clone();
-            // Only run the analyzer when the parser is happy — its
-            // errors are noise on top of structural parse failures.
-            if diagnostics.is_empty()
-                && let Some(syntax) = &parsed.syntax
-                && !syntax.expressions.is_empty()
-            {
-                let opened = open_for(&uri, env).await;
-                diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
-            }
+        let parsed = tonk_notation::parse(text);
+        let mut diagnostics = parsed.diagnostics;
+        if diagnostics.is_empty()
+            && let Some(syntax) = &parsed.syntax
+            && !syntax.expressions.is_empty()
+        {
+            let opened = open_for(&uri, env).await;
+            diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
         }
         // Clamp every range against the live text. The parser
         // already clamps its own emissions, but analyzer
@@ -460,6 +515,15 @@ impl Server {
         for diagnostic in &mut diagnostics {
             diagnostic.range = clamp_range_to_text(diagnostic.range, text);
         }
+        self.enqueue_diagnostics(uri, version, diagnostics);
+    }
+
+    fn enqueue_diagnostics(
+        &mut self,
+        uri: Uri,
+        version: Option<i32>,
+        diagnostics: Vec<lsp_types::Diagnostic>,
+    ) {
         // Echo the version we just analyzed. `@codemirror/lsp-client`
         // (line 34 of its `diagnostics.ts`) drops frames whose
         // version doesn't match its tracked file version — which is
@@ -481,6 +545,17 @@ impl Server {
         self.outbound
             .push(OutboundNotification::new(PublishDiagnostics::METHOD, value));
     }
+}
+
+/// The inspector's notation buffer URI ends in `/notation/<notebook>/<order>/<buffer>`.
+fn notation_location(uri: &Uri) -> Option<(&str, usize)> {
+    let (without_buffer, _) = uri.as_str().rsplit_once('/')?;
+    let (scope, order) = without_buffer.rsplit_once('/')?;
+    let (_, notebook) = scope.rsplit_once("/notation/")?;
+    if notebook.is_empty() || !notebook.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((scope, order.parse().ok()?))
 }
 
 /// Run analyzer diagnostics against the parsed syntax. Always
@@ -1570,117 +1645,148 @@ mod tests {
         assert_eq!(diags.len(), 1);
     }
 
-    /// A document opened as the Dialog notation is held and answered
-    /// with an empty frame, on open and on every change, whatever its
-    /// text: the YAML reader that would refuse `a:\n  b: 1\n c: 2\n`
-    /// is not run on it.
     #[dialog_common::test]
-    async fn a_notation_document_publishes_empty_diagnostics() {
+    async fn notation_diagnostics_range_and_version_follow_edits() {
         let mut server = Server::new();
-        let _ = run(
-            &mut server,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": { "capabilities": {} }
-            }),
-        )
-        .await;
+        let uri = "tonk-buffer:///test/main/notation/3/0/1";
         run(
             &mut server,
             &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        "uri": "tonk-buffer:///test/main/notation-0",
-                        "languageId": NOTATION_LANGUAGE,
-                        "version": 1,
-                        "text": "a:\n  b: 1\n c: 2\n"
-                    }
-                }
+                "jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": { "textDocument": {
+                    "uri": uri, "languageId": NOTATION_LANGUAGE, "version": 1,
+                    "text": "(select (todo ?t"
+                } }
             }),
         )
         .await;
         let outbound = server.take_outbound();
-        assert_eq!(outbound.len(), 1);
-        assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
+        let errors = outbound[0].params["diagnostics"].as_array().unwrap();
         assert_eq!(outbound[0].params["version"], 1);
-        assert_eq!(outbound[0].params["diagnostics"], json!([]));
-
+        assert_eq!(errors[0]["severity"], 1);
+        assert_eq!(errors[0]["source"], "dialog-notation");
+        let warning = r#"(concept (todo/add text: ?x)
+            (xyz.todo.add/text of: ?c is: ?x in: :control cardinality: :many))
+            (assert (todo/add text: "eggs"))"#;
         run(
             &mut server,
             &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didChange",
+                "jsonrpc": "2.0", "method": "textDocument/didChange",
                 "params": {
-                    "textDocument": {
-                        "uri": "tonk-buffer:///test/main/notation-0",
-                        "version": 2
-                    },
-                    "contentChanges": [{ "text": "(select (todo ?t" }]
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "contentChanges": [{ "text": warning }]
                 }
             }),
         )
         .await;
         let outbound = server.take_outbound();
-        assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].params["version"], 2);
-        assert_eq!(outbound[0].params["diagnostics"], json!([]));
+        let notes = outbound[0].params["diagnostics"].as_array().unwrap();
+        assert!(notes.iter().any(|note| note["severity"] == 2), "{notes:?}");
+        assert!(notes.iter().all(|note| note["severity"] != 1), "{notes:?}");
     }
 
-    /// A notation document is offered no completions: what the YAML
-    /// reader would offer is not the notation's.
     #[dialog_common::test]
-    async fn a_notation_document_offers_no_completions() {
+    async fn notation_completion_and_hover_follow_preceding_cells() {
         let mut server = Server::new();
-        let _ = run(
+        let first = "tonk-buffer:///test/main/notation/3/0/1";
+        let second = "tonk-buffer:///test/main/notation/3/1/2";
+        let unrelated = "tonk-buffer:///test/main/notation/4/1/3";
+        for (uri, text) in [
+            (
+                first,
+                r#"; One tracked task.
+                (concept (example/task ?t title: ?title)
+                  (xyz.task/title of: ?t is: ?title as: :text cardinality: :one))"#,
+            ),
+            (second, "(select (example/task task:1 title: ?title))"),
+            (unrelated, "(select (example/task task:1 title: ?title))"),
+        ] {
+            run(
+                &mut server,
+                &json!({
+                    "jsonrpc": "2.0", "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": uri, "languageId": NOTATION_LANGUAGE, "version": 1, "text": text,
+                    } }
+                }),
+            )
+            .await;
+        }
+        let frames = server.take_outbound();
+        assert_eq!(frames[1].params["diagnostics"], json!([]));
+        assert!(
+            !frames[2].params["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let complete = run(
             &mut server,
             &json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": { "capabilities": {} }
-            }),
-        )
-        .await;
-        run(
-            &mut server,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
+                "jsonrpc": "2.0", "id": 1, "method": "textDocument/completion",
                 "params": {
-                    "textDocument": {
-                        "uri": "tonk-buffer:///test/main/notation-1",
-                        "languageId": NOTATION_LANGUAGE,
-                        "version": 1,
-                        "text": "\n"
-                    }
-                }
-            }),
-        )
-        .await;
-        let _ = server.take_outbound();
-        let reply = run(
-            &mut server,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "textDocument/completion",
-                "params": {
-                    "textDocument": { "uri": "tonk-buffer:///test/main/notation-1" },
-                    "position": { "line": 0, "character": 0 }
+                    "textDocument": { "uri": second },
+                    "position": { "line": 0, "character": 19 }
                 }
             }),
         )
         .await
-        .expect("a response");
-        let result = &reply["result"];
-        let items = result["items"].as_array().or(result.as_array());
+        .unwrap();
+        let choices = complete["result"]["items"].as_array().unwrap();
+        let choice = choices
+            .iter()
+            .find(|item| item["label"] == "example/task")
+            .unwrap();
+        assert_eq!(choice["textEdit"]["range"]["start"]["character"], 9);
+        let fields = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0", "id": 3, "method": "textDocument/completion",
+                "params": {
+                    "textDocument": { "uri": second },
+                    "position": { "line": 0, "character": 32 }
+                }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fields["result"]["items"][0]["label"], "title:");
+        let hover = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+                "params": {
+                    "textDocument": { "uri": second },
+                    "position": { "line": 0, "character": 32 }
+                }
+            }),
+        )
+        .await
+        .unwrap();
         assert!(
-            items.is_none_or(Vec::is_empty),
-            "no completions for the notation, got {result}"
+            hover["result"]["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("xyz.task/title")
+        );
+
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0", "method": "textDocument/didClose",
+                "params": {"textDocument": {"uri": first}}
+            }),
+        )
+        .await;
+        let frames = server.take_outbound();
+        assert_eq!(frames[0].params["uri"], second);
+        assert!(
+            !frames[0].params["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
         );
     }
 

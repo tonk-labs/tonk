@@ -2,8 +2,8 @@
 //! cell the worker evaluates with the Dialog notation's own pipeline.
 //!
 //! A YAML cell (`dialog-yaml`) runs on every clean frame of its language
-//! server. The notation has no language server in tonk, so a notation cell
-//! runs when asked: its Run button, or Cmd/Ctrl+Enter (`<tonk-code>`'s
+//! server. A notation cell runs when asked using its Run button or
+//! Cmd/Ctrl+Enter (`<tonk-code>`'s
 //! `run`). The cells above it in the notebook are its context: their
 //! definitions are in scope, the way a later paragraph reads an earlier one.
 //!
@@ -35,9 +35,7 @@ pub(crate) const HIGHLIGHT: &str = "clojure";
 
 /// The LSP `languageId` a notation cell reports (`<tonk-code>`'s
 /// `lsp-language`), so it registers with the notebook's language server
-/// as what it is, not as the `clojure` it is highlighted as. The server
-/// answers no diagnostics and no completions for it yet: those wait for
-/// a dialog query that checks the notation.
+/// as the Dialog notation. Clojure supplies highlighting.
 pub(crate) const LSP_LANGUAGE: &str = "dialog-notation";
 
 /// The next notation cell's LSP buffer number, global like the YAML
@@ -131,17 +129,18 @@ pub(crate) fn bind(
     wrapper: &HtmlElement,
     editor: &Element,
     with: &str,
+    order: (usize, usize),
     closures: &Rc<std::cell::RefCell<Vec<Closure<dyn FnMut(Event)>>>>,
 ) {
     if editor.get_attribute("language").as_deref() != Some(HIGHLIGHT) {
         let _ = editor.set_attribute("language", HIGHLIGHT);
     }
+    register(wrapper, editor, with, order);
     if wrapper.dataset().get(MARKER).is_some() {
         return;
     }
     let _ = wrapper.dataset().set(MARKER, "");
     let _ = wrapper.set_attribute("data-cell-language", "notation");
-    register(editor, with);
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -757,25 +756,45 @@ fn command_text(bound: &serde_json::Value, event: &Event, element: &Element) -> 
     Some(out)
 }
 
-/// Register a notation cell's editor with the notebook's language server:
-/// a buffer of its own under `with` (`branch@repo`), reported as
-/// [`LSP_LANGUAGE`], and announced to the provider the way the YAML cells
-/// are, since the editor can be mounted before it is inside the provider.
-fn register(editor: &Element, with: &str) {
+/// Allocate an identity for a notebook's group of editor buffers.
+pub(crate) fn notebook_scope() -> usize {
+    NEXT_BUFFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn register(
+    wrapper: &HtmlElement,
+    editor: &Element,
+    with: &str,
+    (notebook, order): (usize, usize),
+) {
     let (branch, repo) = with.split_once('@').unwrap_or((with, ""));
-    let id = NEXT_BUFFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let source = format!("tonk-buffer:///{repo}/{branch}/notation-{id}");
+    let id = wrapper.dataset().get("notationBuffer").unwrap_or_else(|| {
+        let id = notebook_scope().to_string();
+        let _ = wrapper.dataset().set("notationBuffer", &id);
+        id
+    });
+    let source = format!("tonk-buffer:///{repo}/{branch}/notation/{notebook}/{order}/{id}");
+    if let Some(previous) = editor.get_attribute("source") {
+        if previous == source {
+            return;
+        }
+        announce(editor, "tonk-code-disconnect", &previous);
+    }
     // The language first: setting `source` is what announces the editor.
     let _ = editor.set_attribute("lsp-language", LSP_LANGUAGE);
     let _ = editor.set_attribute("source", &source);
+    announce(editor, "tonk-code-connect", &source);
+}
+
+fn announce(editor: &Element, name: &str, source: &str) {
     let detail = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.as_str().into());
+    let _ = js_sys::Reflect::set(&detail, &"source".into(), &source.into());
     let _ = js_sys::Reflect::set(&detail, &"language".into(), &LSP_LANGUAGE.into());
     let init = web_sys::CustomEventInit::new();
     init.set_detail(&detail);
     init.set_bubbles(true);
     init.set_composed(true);
-    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("tonk-code-connect", &init) {
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(name, &init) {
         let _ = editor.dispatch_event(&event);
     }
 }

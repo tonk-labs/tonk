@@ -45,17 +45,22 @@ And asking reads them back. A variable binds. A read names every field, or ends 
 A query of several premises joins them on their shared variables. Its head is a shape of its own: here, what is open and the name of its list.
 
 ```notation
-(select (tour.open ?t title: ?title list: ?name)
+(query (todo/open-item ?t is: ?item)
   (todo ?t title: ?title state: :open list: ?l)
-  (list ?l name: ?name))
+  (list ?l name: ?name)
+  (is ?item {:title ?title :list ?name}))
+
+(select (todo/open-item ?t is: ?item))
 ```
 
 Negation: lists with nothing open on them. Every variable of an `unless` is bound by a premise before it.
 
 ```notation
-(select (tour.clear ?l name: ?name)
+(query (list/clear ?l is: ?name)
   (list ?l name: ?name)
   (unless (todo _ state: :open list: ?l ...)))
+
+(select (list/clear ?l is: ?name))
 ```
 
 Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask for the quick ones, and for pairs that fit in three hours, with what each pair adds up to.
@@ -69,16 +74,21 @@ Comparisons and arithmetic are formulas. Give each to-do an estimate, then ask f
 (assert (estimate todo:deck hours: 3))
 (assert (estimate todo:seeds hours: 2))
 
-(select (tour.quick ?t title: ?title hours: ?h)
+(query (todo/quick ?t is: ?item)
   (todo ?t title: ?title ...)
   (estimate ?t hours: ?h)
-  (< ?h : 2))
+  (< ?h : 2)
+  (is ?item {:title ?title :hours ?h}))
 
-(select (tour.morning ?a with: ?b total: (+ ?p : ?q))
+(query (todo/morning ?a with: ?b is: ?total)
   (estimate ?a hours: ?p)
   (estimate ?b hours: ?q)
   (< ?p : ?q)
-  (<= (+ ?p : ?q) : 3))
+  (<= (+ ?p : ?q) : 3)
+  (+ ?p : ?q is: ?total))
+
+(select (todo/quick ?t is: ?item))
+(select (todo/morning ?a with: ?b is: ?total))
 ```
 
 A fold: a `query` gathers with `distinct` and counts. Here, one summary per list with how many things are on it.
@@ -98,23 +108,26 @@ A deductive rule derives a relation from others, and is kept on the branch: any 
 
 ```notation
 ; A list is busy while something on it is open.
-(rule (tour.busy ?l name: ?name)
+(rule (list/busy-name ?l ?name)
   (list ?l name: ?name)
   (todo _ state: :open list: ?l ...))
 
-(select (tour.busy ?l name: ?name))
+(select (list/busy-name of: ?l is: ?name as: :text))
 ```
 
 Rules can recurse. One to-do blocks another; blocking is transitive.
 
 ```notation
-(assert (tour.blocks todo:seeds then: todo:deck))
-(assert (tour.blocks todo:deck then: todo:milk))
+(assert (tour.todo/blocks of: todo:seeds is: todo:deck cardinality: :many))
+(assert (tour.todo/blocks of: todo:deck is: todo:milk cardinality: :many))
 
-(rule (tour.before ?a then: ?b) (tour.blocks ?a then: ?b))
-(rule (tour.before ?a then: ?c) (tour.blocks ?a then: ?b) (tour.before ?b then: ?c))
+(rule (todo/before ?a ?b)
+  (tour.todo/blocks of: ?a is: ?b as: :entity))
+(rule (todo/before ?a ?c)
+  (tour.todo/blocks of: ?a is: ?b as: :entity)
+  (todo/before of: ?b is: ?c as: :entity))
 
-(select (tour.before ?a then: todo:milk))
+(select (todo/before of: ?a is: todo:milk as: :entity))
 ```
 
 A rule can derive one value of an entity, an attribute no line stores. Here, the name of the list a to-do is on. It is read like a stored attribute, its entity under `of:` and its value under `is:`, and `as:` types the value.
@@ -196,20 +209,20 @@ A field can elect one of many claims with `max` or `min`. Over a listed type the
 A value can be a record or a list, and a query takes it apart by shape. An open map matches any record that has the keys asked for; `...` names the rest.
 
 ```notation
-(assert (tour.note note:1 about: {:author "Ada" :tags ["math" "engines"] :pinned true}))
-(assert (tour.note note:2 about: {:author "Grace"}))
+(assert (tour.note/about of: note:1 is: {:author "Ada" :tags ["math" "engines"] :pinned true} cardinality: :one))
+(assert (tour.note/about of: note:2 is: {:author "Grace"} cardinality: :one))
 
-(select (tour.note ?n about: {:author ?who}))
+(select (tour.note/about of: ?n is: {:author ?who}))
 
-(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))
+(select (tour.note/about of: ?n is: {:author ?who :tags [?first ?second] :pinned true}))
 ```
 
 The empty set is written `{:}` (and the empty map `{}`). It is stored as the empty list, so the answer reads it back as `[]`, and a pattern `{:}` finds it.
 
 ```notation
-(assert (tour.note note:3 about: {:author "Lin" :tags {:}}))
+(assert (tour.note/about of: note:3 is: {:author "Lin" :tags {:}} cardinality: :one))
 
-(select (tour.note ?n about: {:author ?who :tags {:}}))
+(select (tour.note/about of: ?n is: {:author ?who :tags {:}}))
 ```
 
 ## Views
@@ -256,23 +269,103 @@ A check is a rule over syntax too. This one says something about a form without 
 The comment above a rule is kept as data about it, on the branch, and a query reads it like any other fact.
 
 ```notation
-(select (syntax.meta ?rule description: ?text))
+(select (syntax.meta/description of: ?rule is: ?text))
 ```
 
 A form is data too. When a cell runs, this notebook keeps each of its forms on the branch as the record the notation keeps a tree as (`syntax.form/is`, the "as data" half of the read stage). Dialog's `check` does not write syntax itself; the tour's evaluator does, as Dialog's own tests do. A query then takes the tour's own forms apart by the shape of their trees: every rule written above, by the name its head applies, and every assert of a to-do.
 
 ```notation
-(select (tour.rule ?f head: ?name)
-  (syntax.form ?f is: {:type :application
+(query (tour/rule-head ?f is: ?name)
+  (syntax.form/is of: ?f is: {:type :application
                        :operator {:type :reference :name /rule}
                        :operand {:items [{:operator {:name ?name}} ... ?premises]}}))
 
-(select (tour.assert ?f to-do: ?t)
-  (syntax.form ?f is: {:type :application
+(query (tour/asserted-todo ?f is: ?t)
+  (syntax.form/is of: ?f is: {:type :application
                        :operator {:type :reference :name /assert}
                        :operand {:items [{:type :application
                                           :operator {:type :reference :name /todo}
                                           :operand {:items [{:type :constant :value ?t}]}}]}}))
+
+(select (tour/rule-head ?f is: ?name))
+(select (tour/asserted-todo ?f is: ?t))
+```
+
+## Parse, analyze and compile through queries
+
+Run this select to parse source into an ordered list of syntax values. You can hover `syntax/parse` for its role in the pipeline.
+
+```notation
+(select (syntax/parse "(select (tour.todo/title of: todo:1 is: ?title))" is: ?forms))
+```
+
+Run analysis on a quoted concept. The apostrophe makes the form data. Its variables and field labels belong to the form being analyzed. The result includes its declaration and any lowered forms.
+
+```notation
+(select (syntax/analyze
+  '(concept (pipeline/task ?t title: ?title)
+     (tour.pipeline/title of: ?t is: ?title as: :text cardinality: :one))
+  is: ?analyzed diagnostics: ?messages))
+```
+
+This query reads a source string, passes the parsed forms to the analyzer, and passes the analysis to the compiler. Run the select to inspect the steps and the diagnostics from each phase.
+
+```notation
+(assert (tour.syntax/source of: syntax:example
+  is: "(assert (tour.todo/title of: todo:pending is: \"Pipeline example\" cardinality: :one))"
+  cardinality: :one))
+
+(query (pipeline/inspect ?example is: ?result)
+  (tour.syntax/source of: ?example is: ?source)
+  (syntax/parse ?source is: ?forms diagnostics: ?read)
+  (syntax/analyze ?forms is: ?analyzed diagnostics: ?analysis)
+  (syntax/compile ?analyzed is: ?steps diagnostics: ?compile)
+  (is ?result {:forms ?forms :analyzed ?analyzed :steps ?steps
+               :read ?read :analysis ?analysis :compile ?compile}))
+
+(select (pipeline/inspect syntax:example is: ?result))
+```
+
+Store a parsed form as a fact. The `notation/read` premise emits one row per top-level form, so this assertion writes the syntax tree from its only row. The second assertion reads the saved tree, analyzes it and stores the resulting analysis record.
+
+```notation
+(assert (tour.syntax/form of: syntax:example is: ?form cardinality: :one)
+  (notation/read text: "(select (tour.todo/title of: todo:1 is: ?title))" tree: ?form))
+
+(assert (tour.syntax/analysis of: syntax:example is: ?analysis cardinality: :one)
+  (tour.syntax/form of: syntax:example is: ?form)
+  (syntax/analyze ?form is: ?analysis))
+```
+
+Query the saved tree using a quote as the exact match. The second select calls a query that compiles the saved analysis directly.
+
+```notation
+(select (tour.syntax/form of: syntax:example
+  is: '(select (tour.todo/title of: todo:1 is: ?title))))
+
+(query (pipeline/compile-saved ?example is: ?steps)
+  (tour.syntax/analysis of: ?example is: ?analysis)
+  (syntax/compile ?analysis is: ?steps))
+
+(select (pipeline/compile-saved syntax:example is: ?steps))
+```
+
+The compiler returns a preview. A host can run a stored analyzed value by preparing it with `check_analyzed` and passing the result to the ordinary evaluation driver.
+
+## Try the editor
+
+Hover over `editor/task` or `title:` in the second cell to see the declaration from the first cell. Delete the end of `editor/task` and invoke completion. Then try misspelling the operation to see an inline diagnostic.
+
+```notation
+; A task used to demonstrate editor references.
+(concept (editor/task ?t title: ?title)
+  ; The task's display title.
+  (tour.editor/title of: ?t is: ?title as: :text cardinality: :one))
+(assert (editor/task task:example title: "Try completion"))
+```
+
+```notation
+(select (editor/task task:example title: ?title))
 ```
 
 ## What the notation refuses
@@ -283,7 +376,7 @@ A name nothing defines:
 
 ```notation
 ; expect: refused
-(rule (tour.seen ?t)
+(rule (todo/seen ?t ?title)
   (todo ?t title: ?title ...)
   (frobnicate ?t))
 ```
@@ -331,13 +424,4 @@ A write through a concept that leaves a field out:
 ```notation
 ; expect: refused
 (assert (todo todo:half title: "Half a to-do"))
-```
-
-One rule that both asserts and retracts: it is written as a rule for each.
-
-```notation
-; expect: refused
-(rule (all (assert (tour.todo ?t list: ?to)) (retract (tour.todo ?t list: ?from)))
-  (tour.move ?t to: ?to)
-  (tour.todo ?t list: ?from))
 ```

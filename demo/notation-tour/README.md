@@ -95,17 +95,22 @@ Scaffolding:
 - routing: the space is made by the seed link and opens on its home view,
   which shows the notebook; no route of the notation's is involved, and the
   notebook installed is `notebook.yaml`, not `notebook.clj`;
-- the Dialog pin is one exact revision of dialog-db's `feat/notation-poc`
-  (`fbcd06b7`), the same in the workspace and in the three crates outside
+- the Dialog pin is one exact revision of the notation query pipeline
+  (`dbfe4d92`), the same in the workspace and in the three crates outside
   it;
 - the space's title pill at the top right is tonk's own chrome and overlaps
   the first lines of a long notebook; left as it is.
 
 ## Known limits
 
+- The tour demonstrates separate and chained `syntax/parse`,
+  `syntax/analyze` and `syntax/compile` selects. It saves a parsed form
+  and its analysis as notebook facts, then queries both. Notation cells show
+  inline diagnostics, completion and reference hover using declarations in
+  that notebook's earlier cells.
 - Definitions live in the analyzer's memory only, so a cell re-reads the
-  cells above it each time, and the tour's concepts are not written as tonk
-  concepts.
+  cells above it when Run is pressed. The editor retains checked cell
+  contexts and refreshes downstream cells when an earlier cell changes.
 - Natively the live stream is not run.
 - Two behaviours of the notation the tour found are written up in
   `findings.md`; both are fixed at the pinned revision, and

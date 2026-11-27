@@ -1,4 +1,4 @@
-; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at fbcd06b74692fd6a8e6dc9fe7a214c867e5cb7bf
+; Copied from Dialog's rust/dialog-notation/tests/fixtures/notebook.clj at d248b175d4b292b01b8b36d8aab6e2280d4fbfdd
 ; (branch feat/notation-poc). Change it there and copy it again.
 
 ; notebook: a <tonk-notebook> document whose ```dialog-yaml fences are live
@@ -382,6 +382,26 @@
   (site ?site concept: tonk:notebook/route ...)
   (notebook/route ?site entity: ?n ...))
 
+; A retitle someone follows (the command palette) gets the notebook it
+; renamed as its output, so they are told it took. The head is declared
+; here, its line in `session:`, where it stays for the session, never
+; committed and never synced. YAML 851.
+
+; The notebook a followed retitle renamed, as its invocation's output, kept
+; in `session:`.
+; GAP: a concept pinned to an entity, `this: tonk:notebook/retitled`, as
+; `command/invoked` in core. YAML 862.
+(concept (notebook/retitled ?r output: ?output)
+  ; The notebook it renamed.
+  (xyz.tonk.invocation/output of: ?r is: ?output as: :entity in: :session cardinality: :one))
+
+; A followed retitle produces the notebook it renamed.
+; GAP: a command's own entity, read with `of:` as above, the managing
+; agent's opinion and not the design's. YAML 870.
+(rule (assert (notebook/retitled ?r output: ?output))
+  (notebook/retitle of: ?r subject: ?output ...)
+  (command/invoked ?r at: ?at concept: ?concept))
+
 ; Write one notebook block's source.
 (concept (block/edit subject: ?b source: ?s notebook: ?n)
   ; The block entity, stamped on the element's data-subject.
@@ -476,7 +496,7 @@
 ; agent's opinion and not the design's. YAML 773.
 (rule (block/position ?b at: ?at)
   (block/chain ?b next: case:none)
-  (block/insert of: ?b notebook: ?n source: ?s next: case:none prev: ?p)
+  (block/insert of: ?b notebook: ?n source: ?s next: _ prev: ?p)
   (block/position ?p at: ?lo)
   (dialog/position ?b after: ?lo before: "" is: ?at))
 
@@ -490,7 +510,7 @@
 ; agent's opinion and not the design's. YAML 811.
 (rule (block/position ?b at: ?at)
   (block/chain ?b next: ?x)
-  (block/insert of: ?b notebook: ?n source: ?s next: ?x prev: ?p)
+  (block/insert of: ?b notebook: ?n source: ?s next: _ prev: ?p)
   (block/position ?p at: ?lo)
   (block/position ?x at: ?hi)
   (dialog/position ?b after: ?lo before: ?hi is: ?at))
@@ -560,7 +580,7 @@
 ; would come back.
 
 ; Retract a removed block's own facts.
-(rule (retract (notebook/block ?b))
+(rule (retract (notebook/block ?b notebook: ?n source: ?s))
   (block/remove subject: ?b notebook: ?n ...)
   (notebook/block ?b notebook: ?n source: ?s))
 

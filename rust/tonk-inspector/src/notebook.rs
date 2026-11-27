@@ -630,6 +630,7 @@ fn mount(
         let _ = this.append_child(&provider);
 
         let notebook = Rc::new(Notebook {
+            notation_scope: crate::notation_cell::notebook_scope(),
             host: this.clone(),
             prose,
             repo: context.repo,
@@ -705,6 +706,7 @@ struct PendingEdit {
 /// Shared notebook state: the prose document, where to evaluate, and the
 /// per-fence cells bound so far.
 struct Notebook {
+    notation_scope: usize,
     /// The `<tonk-notebook>` element itself — where the block rows live and
     /// where the edit commands are dispatched from.
     host: HtmlElement,
@@ -1658,6 +1660,7 @@ impl Notebook {
                     &wrapper,
                     &editor,
                     &format!("{}@{}", self.branch, self.repo),
+                    (self.notation_scope, index as usize),
                     &self.closures,
                 );
                 continue;

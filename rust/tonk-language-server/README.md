@@ -2,6 +2,12 @@
 
 A transport-agnostic Language Server Protocol (LSP) implementation for `tonk-notation` documents.
 
+Notebook cells opened as `dialog-notation` use Dialog's reader, analyzer,
+and compiler for inline diagnostics. Completion and hover use the cell's
+declarations and the preceding cells in the same notebook. The server
+keeps a checked context per cell and rechecks dependent cells when an
+earlier one changes.
+
 This crate sits between [`tonk-notation`](../tonk-notation) (the pure language model), [`tonk-analyzer`](../tonk-analyzer) (resolution and diagnostics), and whatever runtime hosts the server (the in-browser service worker driving CodeMirror today, a stdio CLI tomorrow). It owns the JSON-RPC envelope, per-document text state, capability negotiation, and a server-push channel, and it resolves diagnostics, completion, and hover against the live branch the document belongs to. The crate is synchronous and runtime-agnostic: no `tokio`, no I/O. Hosts pump bytes through [`Server::handle_message`] and drain server-initiated notifications with [`Server::take_outbound`].
 
 ## LSP features

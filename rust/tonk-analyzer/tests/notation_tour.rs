@@ -82,6 +82,11 @@ async fn every_cell_of_the_tour_runs() {
         // A cell that asks something and runs clean answers something.
         for form in &answer.forms {
             if form.refused.is_none()
+                && (form.summary.starts_with("the query failed:")
+                    || form.summary.starts_with("the selection failed:"))
+            {
+                failures.push(format!("cell {}: `{}` {}", at + 1, form.form, form.summary));
+            } else if form.refused.is_none()
                 && form.summary.starts_with("0 ")
                 && !source.contains("; expect: empty")
             {
