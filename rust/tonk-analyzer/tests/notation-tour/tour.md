@@ -303,18 +303,25 @@ This select feeds the reader's result into the analyzer, then passes the analyze
   (syntax/compile ?analyzed is: ?steps diagnostics: ?compile))
 ```
 
-Store a quoted form as a fact, then look it up by entity. The `notation/read` premise parses the equivalent source independently and matches the same composite. The other premises analyze and compile the stored value.
+Store a parsed form as a fact. The `notation/read` premise emits one row per top-level form, so this assertion writes the syntax tree from its only row. The second assertion reads the saved tree, analyzes it and stores the resulting analysis record.
 
 ```notation
-(assert (tour.syntax/form of: syntax:example
-  is: '(select (tour.todo/title of: todo:1 is: ?title)) cardinality: :one))
+(assert (tour.syntax/form of: syntax:example is: ?form cardinality: :one)
+  (notation/read text: "(select (tour.todo/title of: todo:1 is: ?title))" tree: ?form))
+
+(assert (tour.syntax/analysis of: syntax:example is: ?analysis cardinality: :one)
+  (tour.syntax/form of: syntax:example is: ?form)
+  (syntax/analyze ?form is: ?analysis))
 ```
 
+Query the saved tree using a quote as the exact match. The second select compiles the saved analysis directly.
+
 ```notation
-(select (tour.pipeline syntax:result saved: ?form analyzed: ?analysis steps: ?steps)
-  (tour.syntax/form of: syntax:example is: ?form)
-  (notation/read text: "(select (tour.todo/title of: todo:1 is: ?title))" tree: ?form)
-  (syntax/analyze ?form is: ?analysis)
+(select (tour.syntax/form of: syntax:example
+  is: '(select (tour.todo/title of: todo:1 is: ?title))))
+
+(select (tour.pipeline syntax:result analyzed: ?analysis steps: ?steps)
+  (tour.syntax/analysis of: syntax:example is: ?analysis)
   (syntax/compile ?analysis is: ?steps))
 ```
 

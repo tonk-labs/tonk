@@ -96,7 +96,7 @@ Scaffolding:
   which shows the notebook; no route of the notation's is involved, and the
   notebook installed is `notebook.yaml`, not `notebook.clj`;
 - the Dialog pin is one exact revision of the notation query pipeline
-  (`2d569109`), the same in the workspace and in the three crates outside
+  (`a2299762`), the same in the workspace and in the three crates outside
   it;
 - the space's title pill at the top right is tonk's own chrome and overlaps
   the first lines of a long notebook; left as it is.
@@ -104,7 +104,8 @@ Scaffolding:
 ## Known limits
 
 - The tour demonstrates separate and chained `syntax/parse`,
-  `syntax/analyze` and `syntax/compile` selects. Notation cells show
+  `syntax/analyze` and `syntax/compile` selects. It saves a parsed form
+  and its analysis as notebook facts, then queries both. Notation cells show
   inline diagnostics, completion and reference hover using declarations in
   that notebook's earlier cells.
 - Definitions live in the analyzer's memory only, so a cell re-reads the

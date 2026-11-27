@@ -21,10 +21,10 @@ axum = { version = "0.8", default-features = false }
 base64 = "0.22"
 bytes = "1"
 console_error_panic_hook = "0.1"
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2d569109f1b912c0ce559f83375474267942b020", version = "0.5.0" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2d569109f1b912c0ce559f83375474267942b020", version = "0.5.0" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2d569109f1b912c0ce559f83375474267942b020", version = "0.5.0" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "2d569109f1b912c0ce559f83375474267942b020", version = "0.5.0" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a229976265aae7bd50bb797dd14e8f3118aaf11b", version = "0.5.0" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a229976265aae7bd50bb797dd14e8f3118aaf11b", version = "0.5.0" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a229976265aae7bd50bb797dd14e8f3118aaf11b", version = "0.5.0" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "a229976265aae7bd50bb797dd14e8f3118aaf11b", version = "0.5.0" }
 futures-util = "0.3"
 hex = "0.4"
 http = "1"

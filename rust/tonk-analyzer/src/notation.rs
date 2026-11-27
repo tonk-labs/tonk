@@ -23,7 +23,6 @@ use std::collections::BTreeMap;
 
 use dialog_corpus::{Changes, Instruction, Statement as _, Value};
 use dialog_notation::{Analyzer, Concept, Segment, Step, Syntax, check_forms};
-use dialog_query::ConceptConclusion;
 use dialog_query::query::Output as _;
 use dialog_repository::{QueryLayer, Transient};
 use tonk_schema::concept::QueryEnv;
@@ -252,22 +251,37 @@ pub async fn notation_library_claims<Env: QueryEnv>(
                         if let Some(rule) = &write.query.rule {
                             layer = layer.with(rule.clone());
                         }
-                        let rows: Vec<ConceptConclusion> = layer
-                            .select(write.query.select.clone())
-                            .perform(env)
-                            .try_vec()
-                            .await
-                            .map_err(|error| format!("a write's `when`: {error}"))?;
-                        if rows.is_empty() {
+                        let statements = if let Some(premises) = write.supplied_query() {
+                            dialog_notation::supplied::supply_pipeline(env);
+                            layer
+                                .select(premises.clone())
+                                .perform(env)
+                                .try_vec()
+                                .await
+                                .map_err(|error| format!("a write's `when`: {error}"))?
+                                .iter()
+                                .map(|row| write.supplied_statement(row))
+                                .collect::<Result<Vec<_>, _>>()
+                        } else {
+                            layer
+                                .select(write.query.select.clone())
+                                .perform(env)
+                                .try_vec()
+                                .await
+                                .map_err(|error| format!("a write's `when`: {error}"))?
+                                .iter()
+                                .map(|row| write.statement(row))
+                                .collect::<Result<Vec<_>, _>>()
+                        }
+                        .map_err(|error| error.to_string())?;
+                        if statements.is_empty() {
                             reads_nothing = Some(format!(
                                 "{} reads what is stored, and a library is installed with \
                                  nothing stored to read: it would write nothing",
                                 part.trim()
                             ));
                         }
-                        for row in &rows {
-                            let statement =
-                                write.statement(row).map_err(|error| error.to_string())?;
+                        for statement in statements {
                             if write.retract {
                                 statement.retract(&mut changes);
                             } else {
