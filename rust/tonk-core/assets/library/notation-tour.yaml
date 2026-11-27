@@ -1057,7 +1057,7 @@ notebook/named!:
 
 notebook/blocks!:
   this: notebook:notation-tour
-  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55, N00056V: id:notation-tour/block-56, N00057V: id:notation-tour/block-57, N00058V: id:notation-tour/block-58, N00059V: id:notation-tour/block-59, N00060V: id:notation-tour/block-60, N00061V: id:notation-tour/block-61, N00062V: id:notation-tour/block-62, N00063V: id:notation-tour/block-63, N00064V: id:notation-tour/block-64, N00065V: id:notation-tour/block-65, N00066V: id:notation-tour/block-66, N00067V: id:notation-tour/block-67, N00068V: id:notation-tour/block-68, N00069V: id:notation-tour/block-69, N00070V: id:notation-tour/block-70, N00071V: id:notation-tour/block-71, N00072V: id:notation-tour/block-72, N00073V: id:notation-tour/block-73, N00074V: id:notation-tour/block-74, N00075V: id:notation-tour/block-75, N00076V: id:notation-tour/block-76, N00077V: id:notation-tour/block-77}
+  block: {N00001V: id:notation-tour/block-1, N00002V: id:notation-tour/block-2, N00003V: id:notation-tour/block-3, N00004V: id:notation-tour/block-4, N00005V: id:notation-tour/block-5, N00006V: id:notation-tour/block-6, N00007V: id:notation-tour/block-7, N00008V: id:notation-tour/block-8, N00009V: id:notation-tour/block-9, N00010V: id:notation-tour/block-10, N00011V: id:notation-tour/block-11, N00012V: id:notation-tour/block-12, N00013V: id:notation-tour/block-13, N00014V: id:notation-tour/block-14, N00015V: id:notation-tour/block-15, N00016V: id:notation-tour/block-16, N00017V: id:notation-tour/block-17, N00018V: id:notation-tour/block-18, N00019V: id:notation-tour/block-19, N00020V: id:notation-tour/block-20, N00021V: id:notation-tour/block-21, N00022V: id:notation-tour/block-22, N00023V: id:notation-tour/block-23, N00024V: id:notation-tour/block-24, N00025V: id:notation-tour/block-25, N00026V: id:notation-tour/block-26, N00027V: id:notation-tour/block-27, N00028V: id:notation-tour/block-28, N00029V: id:notation-tour/block-29, N00030V: id:notation-tour/block-30, N00031V: id:notation-tour/block-31, N00032V: id:notation-tour/block-32, N00033V: id:notation-tour/block-33, N00034V: id:notation-tour/block-34, N00035V: id:notation-tour/block-35, N00036V: id:notation-tour/block-36, N00037V: id:notation-tour/block-37, N00038V: id:notation-tour/block-38, N00039V: id:notation-tour/block-39, N00040V: id:notation-tour/block-40, N00041V: id:notation-tour/block-41, N00042V: id:notation-tour/block-42, N00043V: id:notation-tour/block-43, N00044V: id:notation-tour/block-44, N00045V: id:notation-tour/block-45, N00046V: id:notation-tour/block-46, N00047V: id:notation-tour/block-47, N00048V: id:notation-tour/block-48, N00049V: id:notation-tour/block-49, N00050V: id:notation-tour/block-50, N00051V: id:notation-tour/block-51, N00052V: id:notation-tour/block-52, N00053V: id:notation-tour/block-53, N00054V: id:notation-tour/block-54, N00055V: id:notation-tour/block-55, N00056V: id:notation-tour/block-56, N00057V: id:notation-tour/block-57, N00058V: id:notation-tour/block-58, N00059V: id:notation-tour/block-59, N00060V: id:notation-tour/block-60, N00061V: id:notation-tour/block-61, N00062V: id:notation-tour/block-62, N00063V: id:notation-tour/block-63, N00064V: id:notation-tour/block-64, N00065V: id:notation-tour/block-65, N00066V: id:notation-tour/block-66, N00067V: id:notation-tour/block-67, N00068V: id:notation-tour/block-68, N00069V: id:notation-tour/block-69, N00070V: id:notation-tour/block-70, N00071V: id:notation-tour/block-71, N00072V: id:notation-tour/block-72, N00073V: id:notation-tour/block-73, N00074V: id:notation-tour/block-74, N00075V: id:notation-tour/block-75}
 
 notebook/block!:
   this: id:notation-tour/block-1
@@ -1107,7 +1107,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-10
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.open ?t title: ?title list: ?name)\n  (todo ?t title: ?title state: :open list: ?l)\n  (list ?l name: ?name))\n```"
+  source: "```notation\n(query (todo/open-item ?t is: ?item)\n  (todo ?t title: ?title state: :open list: ?l)\n  (list ?l name: ?name)\n  (is ?item {:title ?title :list ?name}))\n\n(select (todo/open-item ?t is: ?item))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-11
@@ -1117,7 +1117,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-12
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.clear ?l name: ?name)\n  (list ?l name: ?name)\n  (unless (todo _ state: :open list: ?l ...)))\n```"
+  source: "```notation\n(query (list/clear ?l is: ?name)\n  (list ?l name: ?name)\n  (unless (todo _ state: :open list: ?l ...)))\n\n(select (list/clear ?l is: ?name))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-13
@@ -1127,7 +1127,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-14
   notebook: notebook:notation-tour
-  source: "```notation\n(concept (estimate ?t hours: ?h)\n  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))\n\n(assert (estimate todo:milk hours: 1))\n(assert (estimate todo:mum hours: 1))\n(assert (estimate todo:deck hours: 3))\n(assert (estimate todo:seeds hours: 2))\n\n(select (tour.quick ?t title: ?title hours: ?h)\n  (todo ?t title: ?title ...)\n  (estimate ?t hours: ?h)\n  (< ?h : 2))\n\n(select (tour.morning ?a with: ?b total: (+ ?p : ?q))\n  (estimate ?a hours: ?p)\n  (estimate ?b hours: ?q)\n  (< ?p : ?q)\n  (<= (+ ?p : ?q) : 3))\n```"
+  source: "```notation\n(concept (estimate ?t hours: ?h)\n  (tour.todo/hours of: ?t is: ?h as: :natural cardinality: :one))\n\n(assert (estimate todo:milk hours: 1))\n(assert (estimate todo:mum hours: 1))\n(assert (estimate todo:deck hours: 3))\n(assert (estimate todo:seeds hours: 2))\n\n(query (todo/quick ?t is: ?item)\n  (todo ?t title: ?title ...)\n  (estimate ?t hours: ?h)\n  (< ?h : 2)\n  (is ?item {:title ?title :hours ?h}))\n\n(query (todo/morning ?a with: ?b is: ?total)\n  (estimate ?a hours: ?p)\n  (estimate ?b hours: ?q)\n  (< ?p : ?q)\n  (<= (+ ?p : ?q) : 3)\n  (+ ?p : ?q is: ?total))\n\n(select (todo/quick ?t is: ?item))\n(select (todo/morning ?a with: ?b is: ?total))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-15
@@ -1147,7 +1147,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-18
   notebook: notebook:notation-tour
-  source: "```notation\n; A list is busy while something on it is open.\n(rule (tour.busy ?l name: ?name)\n  (list ?l name: ?name)\n  (todo _ state: :open list: ?l ...))\n\n(select (tour.busy ?l name: ?name))\n```"
+  source: "```notation\n; A list is busy while something on it is open.\n(rule (list/busy-name ?l ?name)\n  (list ?l name: ?name)\n  (todo _ state: :open list: ?l ...))\n\n(select (list/busy-name of: ?l is: ?name as: :text))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-19
@@ -1157,7 +1157,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-20
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (tour.blocks todo:seeds then: todo:deck))\n(assert (tour.blocks todo:deck then: todo:milk))\n\n(rule (tour.before ?a then: ?b) (tour.blocks ?a then: ?b))\n(rule (tour.before ?a then: ?c) (tour.blocks ?a then: ?b) (tour.before ?b then: ?c))\n\n(select (tour.before ?a then: todo:milk))\n```"
+  source: "```notation\n(assert (tour.todo/blocks of: todo:seeds is: todo:deck cardinality: :many))\n(assert (tour.todo/blocks of: todo:deck is: todo:milk cardinality: :many))\n\n(rule (todo/before ?a ?b)\n  (tour.todo/blocks of: ?a is: ?b as: :entity))\n(rule (todo/before ?a ?c)\n  (tour.todo/blocks of: ?a is: ?b as: :entity)\n  (todo/before of: ?b is: ?c as: :entity))\n\n(select (todo/before of: ?a is: todo:milk as: :entity))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-21
@@ -1227,7 +1227,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-34
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (tour.note note:1 about: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true}))\n(assert (tour.note note:2 about: {:author \"Grace\"}))\n\n(select (tour.note ?n about: {:author ?who}))\n\n(select (tour.note ?n about: {:author ?who :tags [?first ?second] :pinned true}))\n```"
+  source: "```notation\n(assert (tour.note/about of: note:1 is: {:author \"Ada\" :tags [\"math\" \"engines\"] :pinned true} cardinality: :one))\n(assert (tour.note/about of: note:2 is: {:author \"Grace\"} cardinality: :one))\n\n(select (tour.note/about of: ?n is: {:author ?who}))\n\n(select (tour.note/about of: ?n is: {:author ?who :tags [?first ?second] :pinned true}))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-35
@@ -1237,7 +1237,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-36
   notebook: notebook:notation-tour
-  source: "```notation\n(assert (tour.note note:3 about: {:author \"Lin\" :tags {:}}))\n\n(select (tour.note ?n about: {:author ?who :tags {:}}))\n```"
+  source: "```notation\n(assert (tour.note/about of: note:3 is: {:author \"Lin\" :tags {:}} cardinality: :one))\n\n(select (tour.note/about of: ?n is: {:author ?who :tags {:}}))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-37
@@ -1277,7 +1277,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-44
   notebook: notebook:notation-tour
-  source: "```notation\n(select (syntax.meta ?rule description: ?text))\n```"
+  source: "```notation\n(select (syntax.meta/description of: ?rule is: ?text))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-45
@@ -1287,7 +1287,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-46
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.rule ?f head: ?name)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /rule}\n                       :operand {:items [{:operator {:name ?name}} ... ?premises]}}))\n\n(select (tour.assert ?f to-do: ?t)\n  (syntax.form ?f is: {:type :application\n                       :operator {:type :reference :name /assert}\n                       :operand {:items [{:type :application\n                                          :operator {:type :reference :name /todo}\n                                          :operand {:items [{:type :constant :value ?t}]}}]}}))\n```"
+  source: "```notation\n(query (tour/rule-head ?f is: ?name)\n  (syntax.form/is of: ?f is: {:type :application\n                       :operator {:type :reference :name /rule}\n                       :operand {:items [{:operator {:name ?name}} ... ?premises]}}))\n\n(query (tour/asserted-todo ?f is: ?t)\n  (syntax.form/is of: ?f is: {:type :application\n                       :operator {:type :reference :name /assert}\n                       :operand {:items [{:type :application\n                                          :operator {:type :reference :name /todo}\n                                          :operand {:items [{:type :constant :value ?t}]}}]}}))\n\n(select (tour/rule-head ?f is: ?name))\n(select (tour/asserted-todo ?f is: ?t))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-47
@@ -1312,12 +1312,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-51
   notebook: notebook:notation-tour
-  source: "This select feeds the reader's result into the analyzer, then passes the analyzer's result to the compiler. Expand the result to inspect the compiled steps and the diagnostics from each phase."
+  source: "This query reads a source string, passes the parsed forms to the analyzer, and passes the analysis to the compiler. Run the select to inspect the steps and the diagnostics from each phase."
 
 notebook/block!:
   this: id:notation-tour/block-52
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.pipeline syntax:result forms: ?forms analyzed: ?analyzed steps: ?steps\n         read: ?read analysis: ?analysis compile: ?compile)\n  (syntax/parse \"(assert (tour.todo/title of: todo:pending is: \\\"Pipeline example\\\" cardinality: :one))\"\n    is: ?forms diagnostics: ?read)\n  (syntax/analyze ?forms is: ?analyzed diagnostics: ?analysis)\n  (syntax/compile ?analyzed is: ?steps diagnostics: ?compile))\n```"
+  source: "```notation\n(assert (tour.syntax/source of: syntax:example\n  is: \"(assert (tour.todo/title of: todo:pending is: \\\"Pipeline example\\\" cardinality: :one))\"\n  cardinality: :one))\n\n(query (pipeline/inspect ?example is: ?result)\n  (tour.syntax/source of: ?example is: ?source)\n  (syntax/parse ?source is: ?forms diagnostics: ?read)\n  (syntax/analyze ?forms is: ?analyzed diagnostics: ?analysis)\n  (syntax/compile ?analyzed is: ?steps diagnostics: ?compile)\n  (is ?result {:forms ?forms :analyzed ?analyzed :steps ?steps\n               :read ?read :analysis ?analysis :compile ?compile}))\n\n(select (pipeline/inspect syntax:example is: ?result))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-53
@@ -1332,12 +1332,12 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-55
   notebook: notebook:notation-tour
-  source: "Query the saved tree using a quote as the exact match. The second select compiles the saved analysis directly."
+  source: "Query the saved tree using a quote as the exact match. The second select calls a query that compiles the saved analysis directly."
 
 notebook/block!:
   this: id:notation-tour/block-56
   notebook: notebook:notation-tour
-  source: "```notation\n(select (tour.syntax/form of: syntax:example\n  is: '(select (tour.todo/title of: todo:1 is: ?title))))\n\n(select (tour.pipeline syntax:result analyzed: ?analysis steps: ?steps)\n  (tour.syntax/analysis of: syntax:example is: ?analysis)\n  (syntax/compile ?analysis is: ?steps))\n```"
+  source: "```notation\n(select (tour.syntax/form of: syntax:example\n  is: '(select (tour.todo/title of: todo:1 is: ?title))))\n\n(query (pipeline/compile-saved ?example is: ?steps)\n  (tour.syntax/analysis of: ?example is: ?analysis)\n  (syntax/compile ?analysis is: ?steps))\n\n(select (pipeline/compile-saved syntax:example is: ?steps))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-57
@@ -1372,7 +1372,7 @@ notebook/block!:
 notebook/block!:
   this: id:notation-tour/block-63
   notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(rule (tour.seen ?t)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
+  source: "```notation\n; expect: refused\n(rule (todo/seen ?t ?title)\n  (todo ?t title: ?title ...)\n  (frobnicate ?t))\n```"
 
 notebook/block!:
   this: id:notation-tour/block-64
@@ -1433,16 +1433,6 @@ notebook/block!:
   this: id:notation-tour/block-75
   notebook: notebook:notation-tour
   source: "```notation\n; expect: refused\n(assert (todo todo:half title: \"Half a to-do\"))\n```"
-
-notebook/block!:
-  this: id:notation-tour/block-76
-  notebook: notebook:notation-tour
-  source: "One rule that both asserts and retracts: it is written as a rule for each."
-
-notebook/block!:
-  this: id:notation-tour/block-77
-  notebook: notebook:notation-tour
-  source: "```notation\n; expect: refused\n(rule (all (assert (tour.todo ?t list: ?to)) (retract (tour.todo ?t list: ?from)))\n  (tour.move ?t to: ?to)\n  (tour.todo ?t list: ?from))\n```"
 
 # The space's home: the tour notebook.
 concept!: &notation-tour/home
