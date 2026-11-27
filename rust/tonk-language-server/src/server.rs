@@ -251,14 +251,13 @@ impl Server {
                 }
             }
             "textDocument/didClose" => {
-                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
-                    if self
+                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params)
+                    && self
                         .documents
                         .remove(&p.text_document.uri)
                         .is_some_and(|doc| doc.language == NOTATION_LANGUAGE)
-                    {
-                        self.check_notation(&p.text_document.uri);
-                    }
+                {
+                    self.check_notation(&p.text_document.uri);
                 }
             }
             _ => {

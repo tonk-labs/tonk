@@ -67,12 +67,9 @@ impl Editor {
 fn position(text: &str, point: Point) -> Position {
     let line = text.split('\n').nth(point.line as usize);
     let Some(line) = line else {
-        let lines = text.split('\n');
-        let last = lines.clone().last().unwrap_or_default();
-        return Position::new(
-            lines.count().saturating_sub(1) as u32,
-            last.encode_utf16().count() as u32,
-        );
+        let mut lines = text.split('\n');
+        let last = lines.next_back().unwrap_or_default();
+        return Position::new(lines.count() as u32, last.encode_utf16().count() as u32);
     };
     Position::new(
         point.line,
