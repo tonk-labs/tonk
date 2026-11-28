@@ -7,12 +7,8 @@
 //! diagnostics frame auto-evaluates (dry-run preview); an explicit submit commits
 //! (real `transact`), seals the cell, and spawns a fresh one.
 //!
-//! Data path: the inspector resolves `(repo, branch)` from its
-//! its own `with="branch@repo"` (forwarded by the mounting `<tonk-display>`)
-//! and POSTs to `/api/repository/{repo}/branch/{branch}/evaluate?transact=…`.
-//! In the sealed guest `window.fetch` is the portal proxy, so the request rides
-//! the bridge to the host's real origin transparently — no `<tonk-host>` consumer
-//! event, no engine linkage.
+//! Cells use the host evaluate event with the Inspector's branch context.
+//! Named spaces default to Dialog notation and can also evaluate YAML.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -24,6 +20,7 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{CustomEvent, Element, Event, HtmlElement, Response, window};
 
 use crate::debug::{self, Probe};
+use crate::notation_cell;
 use crate::render::render_result;
 use crate::response::EvaluateResponse;
 
@@ -89,6 +86,12 @@ impl CustomElement for TonkInspectorElement {
         };
         host.set_class_name("branch-cells wa-stack wa-gap-s");
         let _ = this.append_child(&host);
+        if !context.profile
+            && let Ok(style) = document.create_element("style")
+        {
+            style.set_text_content(Some(notation_cell::CSS));
+            let _ = this.append_child(&style);
+        }
 
         let debug_panel = if context.profile {
             None
@@ -110,6 +113,14 @@ impl CustomElement for TonkInspectorElement {
             repo: context.repo,
             branch: context.branch,
             debug_panel,
+            profile: context.profile,
+            language: Cell::new(if context.profile {
+                Language::Yaml
+            } else {
+                Language::Dialog
+            }),
+            scope: notation_cell::notebook_scope(),
+            dialog_context: RefCell::new(Vec::new()),
             next_id: Cell::new(0),
             closures: self.closures.clone(),
         });
@@ -127,7 +138,9 @@ impl CustomElement for TonkInspectorElement {
             Some(defined) => {
                 spawn_local(async move {
                     let _ = JsFuture::from(defined).await;
-                    notebook.spawn_cell(true);
+                    if notebook.host.is_connected() {
+                        notebook.spawn_cell(true);
+                    }
                 });
             }
             // No registry / bad name (shouldn't happen in a browser) — mount now.
@@ -142,7 +155,7 @@ impl CustomElement for TonkInspectorElement {
         old: Option<String>,
         new: Option<String>,
     ) {
-        if old == new {
+        if old == new || !this.is_connected() {
             return;
         }
         // The context arriving is the cue to mount: `connected_callback`
@@ -431,6 +444,10 @@ struct Notebook {
     repo: String,
     branch: String,
     debug_panel: Option<Rc<DebugPanel>>,
+    profile: bool,
+    language: Cell<Language>,
+    scope: usize,
+    dialog_context: RefCell<Vec<String>>,
     next_id: Cell<u32>,
     closures: Closures,
 }
@@ -450,8 +467,73 @@ impl Notebook {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         let cell = Rc::new(NotebookCell::build(self, id, auto_focus));
-        let _ = self.host.append_child(&cell.form);
         cell.install(self);
+        let _ = self.host.append_child(&cell.form);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Language {
+    Dialog,
+    Yaml,
+}
+
+impl Language {
+    fn configure(self, editor: &Element, first: bool) {
+        let (language, lsp, placeholder) = match self {
+            Self::Dialog => (
+                notation_cell::HIGHLIGHT,
+                notation_cell::LSP_LANGUAGE,
+                "(select (syntax/parse \"(select (xyz.note/title of: ?n is: ?title))\" is: ?forms))",
+            ),
+            Self::Yaml => (
+                "dialog-yaml",
+                "dialog-yaml",
+                "person:\n  this: ?alice\n  name: \"Alice\"",
+            ),
+        };
+        let _ = editor.set_attribute("language", language);
+        let _ = editor.set_attribute("lsp-language", lsp);
+        let _ = editor.set_attribute("placeholder", if first { placeholder } else { "" });
+    }
+}
+
+struct ScratchResult {
+    markup: String,
+    wrote: bool,
+    failed: bool,
+}
+
+async fn evaluate_scratch(
+    editor: &Element,
+    source: &str,
+    language: Language,
+    context: &[String],
+    transact: bool,
+) -> Result<ScratchResult, String> {
+    match language {
+        Language::Dialog => {
+            let body = serde_json::json!({
+                "source": source,
+                "context": context,
+                "mode": "document",
+            })
+            .to_string();
+            let answer = notation_cell::evaluate(editor, &body, transact).await?;
+            Ok(ScratchResult {
+                markup: notation_cell::render(&answer, false),
+                wrote: answer.wrote,
+                failed: answer.failed(),
+            })
+        }
+        Language::Yaml => {
+            let response = evaluate(editor, source, transact).await?;
+            Ok(ScratchResult {
+                markup: render_result(None, Some(&response)),
+                wrote: transact,
+                failed: false,
+            })
+        }
     }
 }
 
@@ -461,6 +543,9 @@ struct NotebookCell {
     editor: Element,
     result_slot: Element,
     source: String,
+    language: Cell<Language>,
+    chooser: Option<Element>,
+    first: bool,
     /// Latest editor buffer (mirrored on `change`).
     buffer: RefCell<String>,
     /// LSP error-severity count from the latest `diagnostics` frame.
@@ -475,27 +560,43 @@ impl NotebookCell {
     /// Build the cell's DOM (editor + result slot), detached from the document.
     fn build(notebook: &Notebook, id: u32, auto_focus: bool) -> NotebookCell {
         let document = window().unwrap().document().unwrap();
+        let scope = notebook.scope;
         let source = format!(
-            "tonk-buffer:///{}/{}/scratch-{id}",
-            notebook.repo, notebook.branch
+            "tonk-buffer:///{}/{}/notation/{scope}/{id}/{id}",
+            notebook.repo, notebook.branch,
         );
-        let placeholder = if id == 0 {
-            "person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
-        } else {
-            ""
-        };
+        let language = notebook.language.get();
 
         let form = document.create_element("form").unwrap();
         form.set_class_name("branch-yaml-query wa-stack wa-gap-xs");
+        let chooser = if notebook.profile {
+            None
+        } else {
+            let chooser = document.create_element("select").unwrap();
+            chooser
+                .set_attribute("aria-label", "Scratch cell notation")
+                .ok();
+            chooser.set_inner_html(
+                "<option value=\"dialog\">Dialog notation</option>\
+                 <option value=\"yaml\">YAML notation</option>",
+            );
+            let value = if language == Language::Dialog {
+                "dialog"
+            } else {
+                "yaml"
+            };
+            let _ = js_sys::Reflect::set(&chooser, &"value".into(), &value.into());
+            let _ = form.append_child(&chooser);
+            Some(chooser)
+        };
 
         let editor_wrap = document.create_element("div").unwrap();
         editor_wrap.set_class_name("evaluate-editor");
 
         let editor = document.create_element("tonk-code").unwrap();
-        editor.set_attribute("language", "dialog-yaml").ok();
+        language.configure(&editor, id == 0);
         editor.set_attribute("source", &source).ok();
         editor.set_attribute("active-line", "").ok();
-        editor.set_attribute("placeholder", placeholder).ok();
         if auto_focus {
             editor.set_attribute("auto-focus", "").ok();
         }
@@ -507,8 +608,7 @@ impl NotebookCell {
         play.set_attribute("appearance", "filled").ok();
         play.set_attribute("size", "small").ok();
         play.set_attribute("pill", "").ok();
-        play.set_attribute("title", "Submit transaction (Shift+Enter)")
-            .ok();
+        play.set_attribute("title", "Run (Shift+Enter)").ok();
         play.set_inner_html("<wa-icon name=\"bolt\" variant=\"solid\"></wa-icon>");
 
         let _ = editor_wrap.append_child(&editor);
@@ -523,6 +623,9 @@ impl NotebookCell {
             editor,
             result_slot,
             source,
+            language: Cell::new(language),
+            chooser,
+            first: id == 0,
             buffer: RefCell::new(String::new()),
             error_count: Cell::new(0),
             running: Cell::new(false),
@@ -539,6 +642,28 @@ impl NotebookCell {
         add(&self.form, "submit", store, |ev: Event| {
             ev.prevent_default()
         });
+
+        if let Some(chooser) = &self.chooser {
+            let cell = self.clone();
+            let notebook = notebook.clone();
+            add(chooser, "change", store, move |event| {
+                if cell.sealed.get() || cell.running.get() {
+                    return;
+                }
+                let Some(target) = event.target() else { return };
+                let language = if reflect_string(&target, "value").as_deref() == Some("yaml") {
+                    Language::Yaml
+                } else {
+                    Language::Dialog
+                };
+                notebook.language.set(language);
+                cell.language.set(language);
+                cell.error_count.set(0);
+                cell.result_slot.set_inner_html("");
+                language.configure(&cell.editor, cell.first);
+                cell.refresh_play();
+            });
+        }
 
         // editor `change` → mirror buffer, clear stale pushed diagnostics.
         add(&self.editor, "change", store, {
@@ -573,6 +698,7 @@ impl NotebookCell {
         // editor `diagnostics` → track error count + auto-eval dry-run on clean.
         add(&self.editor, "diagnostics", store, {
             let cell = self.clone();
+            let notebook = notebook.clone();
             move |ev: Event| {
                 let detail = ev
                     .dyn_ref::<CustomEvent>()
@@ -589,21 +715,31 @@ impl NotebookCell {
                     return;
                 }
                 let cell2 = cell.clone();
+                let language = cell.language.get();
+                let context = notebook.dialog_context.borrow().clone();
                 spawn_local(async move {
-                    if let Ok(response) = evaluate(&cell2.editor, &body, false).await {
-                        cell2.render(Some(&response), None);
+                    if let Ok(result) =
+                        evaluate_scratch(&cell2.editor, &body, language, &context, false).await
+                        && !cell2.sealed.get()
+                        && !cell2.running.get()
+                        && cell2.language.get() == language
+                        && *cell2.buffer.borrow() == body
+                    {
+                        cell2.result_slot.set_inner_html(&result.markup);
                     }
                 });
             }
         });
     }
 
-    /// Show/hide the play affordance: visible only when active, error-free, and
-    /// the document has a mutation to commit.
+    /// Show Run for a clean Dialog document or a pending YAML mutation.
     fn refresh_play(&self) {
         let runnable = !self.sealed.get()
             && self.error_count.get() == 0
-            && has_mutation(&self.buffer.borrow());
+            && match self.language.get() {
+                Language::Dialog => !self.buffer.borrow().trim().is_empty(),
+                Language::Yaml => has_mutation(&self.buffer.borrow()),
+            };
         if let Some(play) = self.form.query_selector(".evaluate-play").ok().flatten() {
             let _ = play.class_list().toggle_with_force("is-visible", runnable);
         }
@@ -620,31 +756,46 @@ impl NotebookCell {
             return;
         }
         self.running.set(true);
+        let _ = self.editor.set_attribute("readonly", "");
+        if let Some(chooser) = &self.chooser {
+            let _ = chooser.set_attribute("disabled", "");
+        }
         let notebook = notebook.clone();
+        let language = self.language.get();
+        let context = notebook.dialog_context.borrow().clone();
         spawn_local(async move {
-            match evaluate(&self.editor, &body, true).await {
-                Ok(response) => {
-                    self.render(Some(&response), None);
-                    self.running.set(false);
-                    self.sealed.set(true);
+            let result = evaluate_scratch(&self.editor, &body, language, &context, true).await;
+            self.running.set(false);
+            let (seal, wrote) = match result {
+                Ok(result) => {
+                    self.result_slot.set_inner_html(&result.markup);
+                    (!result.failed || result.wrote, result.wrote)
+                }
+                Err(message) => {
+                    self.result_slot
+                        .set_inner_html(&render_result(Some(&message), None));
+                    (false, false)
+                }
+            };
+            if seal {
+                self.sealed.set(true);
+                if language == Language::Dialog {
+                    notebook.dialog_context.borrow_mut().push(body);
+                }
+                if wrote {
                     notify_committed();
                     if let Some(panel) = notebook.debug_panel.as_ref() {
                         panel.clone().refresh_local();
                     }
-                    notebook.spawn_cell(true);
                 }
-                Err(message) => {
-                    self.render(None, Some(&message));
-                    self.running.set(false);
+                notebook.spawn_cell(true);
+            } else {
+                let _ = self.editor.remove_attribute("readonly");
+                if let Some(chooser) = &self.chooser {
+                    let _ = chooser.remove_attribute("disabled");
                 }
             }
         });
-    }
-
-    /// Render the result slot from a response (or a failure message).
-    fn render(&self, response: Option<&EvaluateResponse>, failure: Option<&str>) {
-        self.result_slot
-            .set_inner_html(&render_result(failure, response));
     }
 }
 
@@ -803,6 +954,107 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn a_scratch_cell_sends_dialog_context_and_can_switch_to_yaml() {
+        let document = window().unwrap().document().unwrap();
+        let host = document
+            .create_element("div")
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        let notebook = Rc::new(Notebook {
+            host,
+            repo: "example".into(),
+            branch: "main".into(),
+            debug_panel: None,
+            profile: false,
+            language: Cell::new(Language::Dialog),
+            scope: notation_cell::notebook_scope(),
+            dialog_context: RefCell::new(Vec::new()),
+            next_id: Cell::new(0),
+            closures: Closures::default(),
+        });
+        let cell = Rc::new(NotebookCell::build(&notebook, 0, false));
+        cell.install(&notebook);
+        notebook.host.append_child(&cell.form).unwrap();
+        assert_eq!(
+            cell.editor.get_attribute("lsp-language").as_deref(),
+            Some("dialog-notation"),
+        );
+
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        add(
+            notebook.host.as_ref(),
+            "tonk-evaluate",
+            &notebook.closures,
+            {
+                let requests = requests.clone();
+                move |event| {
+                    let detail = event.dyn_ref::<CustomEvent>().unwrap().detail();
+                    requests.borrow_mut().push(detail.clone());
+                    let answer = js_sys::JSON::parse(r#"{"wrote":false,"forms":[]}"#).unwrap();
+                    let promise = js_sys::Promise::resolve(&answer);
+                    js_sys::Reflect::set(&detail, &"result".into(), &promise).unwrap();
+                    event.prevent_default();
+                }
+            },
+        );
+        let context = vec!["(concept (note ?n title: ?title) (xyz.note/title of: ?n is: ?title as: :text cardinality: :one))".to_owned()];
+        let answer = evaluate_scratch(
+            &cell.editor,
+            "(select (note ?n title: ?title))",
+            cell.language.get(),
+            &context,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(!answer.wrote);
+        {
+            let request = &requests.borrow()[0];
+            assert_eq!(
+                reflect_string(request, "contentType").as_deref(),
+                Some(notation_cell::CONTENT_TYPE)
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(&reflect_string(request, "document").unwrap()).unwrap();
+            assert_eq!(body["mode"], "document");
+            assert_eq!(body["context"][0], context[0]);
+            assert_eq!(
+                js_sys::Reflect::get(request, &"transact".into())
+                    .unwrap()
+                    .as_bool(),
+                Some(false)
+            );
+        }
+
+        let chooser = cell.chooser.as_ref().unwrap();
+        js_sys::Reflect::set(chooser, &"value".into(), &"yaml".into()).unwrap();
+        chooser
+            .dispatch_event(&Event::new("change").unwrap())
+            .unwrap();
+        assert_eq!(
+            cell.editor.get_attribute("lsp-language").as_deref(),
+            Some("dialog-yaml"),
+        );
+        let next = NotebookCell::build(&notebook, 1, false);
+        assert_eq!(
+            next.editor.get_attribute("language").as_deref(),
+            Some("dialog-yaml")
+        );
+        let yaml = "person:\n  name: Alice";
+        evaluate_scratch(&cell.editor, yaml, cell.language.get(), &context, false)
+            .await
+            .unwrap();
+        let requests = requests.borrow();
+        assert_eq!(
+            reflect_string(&requests[1], "document").as_deref(),
+            Some(yaml)
+        );
+        assert!(reflect_string(&requests[1], "contentType").is_none());
+        notebook.closures.borrow_mut().clear();
+    }
 
     #[dialog_common::test]
     async fn it_mounts_branch_diagnostics_for_spaces_but_not_profiles() {

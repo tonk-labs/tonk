@@ -352,6 +352,7 @@ impl Prepared {
     /// failed to read, which the answer says.
     pub async fn stage<T: Staged, E: Reader>(&mut self, transaction: T, env: &E) -> Option<T> {
         let checked = self.checked.as_ref().filter(|_| !self.done)?;
+        dialog_notation::supplied::supply_pipeline(env);
         match apply::stage(transaction, checked, env).await {
             Ok((mut transaction, report)) => {
                 self.report = report;
@@ -423,6 +424,16 @@ impl Prepared {
 /// pipeline gave. Nothing is read from a branch yet: [`Prepared::stage`]
 /// runs the cell's writes, reading each `when` as it goes.
 pub fn prepare(cell: &Cell) -> Prepared {
+    prepare_cell(cell, true)
+}
+
+/// Check an interactive document as a whole. Its source is kept by the
+/// editor, and the branch stores only what the document writes.
+pub fn prepare_document(cell: &Cell) -> Prepared {
+    prepare_cell(cell, false)
+}
+
+fn prepare_cell(cell: &Cell, tour: bool) -> Prepared {
     let mut answer = Answer::default();
     let done = |answer: Answer, forms: Vec<FormOutcome>| Prepared {
         answer,
@@ -515,6 +526,9 @@ pub fn prepare(cell: &Cell) -> Prepared {
             forms[at].warnings = warnings;
         }
     }
+    if !tour && checked.refusals().next().is_some() {
+        return done(answer, forms);
+    }
     for (declaration, at) in checked
         .declarations()
         .iter()
@@ -549,7 +563,8 @@ pub fn prepare(cell: &Cell) -> Prepared {
     // dialog-notation's own tests do (`it_finds_a_kept_form_by_a_pattern_
     // over_its_tree`): the notation's `check` writes no syntax itself.
     let mut kept = Vec::new();
-    if !forms.iter().any(|form| form.refused.is_some())
+    if tour
+        && !forms.iter().any(|form| form.refused.is_some())
         && let Ok(is) = serde_json::from_value::<dialog_query::AttributeDescriptor>(
             serde_json::json!({ "the": "syntax.form/is", "as": "composite:map" }),
         )

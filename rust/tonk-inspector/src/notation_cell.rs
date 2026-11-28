@@ -56,7 +56,7 @@ pub(crate) fn is_notation(language: &str) -> bool {
 
 /// The worker's answer to one cell.
 #[derive(Deserialize, Default)]
-struct Answer {
+pub(crate) struct Answer {
     /// Each top-level form of the cell, and what it did.
     #[serde(default)]
     forms: Vec<FormOutcome>,
@@ -66,6 +66,34 @@ struct Answer {
     /// Why nothing ran, when the cell was refused whole.
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    pub(crate) wrote: bool,
+}
+
+impl Answer {
+    pub(crate) fn failed(&self) -> bool {
+        self.error.is_some()
+            || self.forms.iter().any(|form| {
+                form.refused.is_some()
+                    || form.summary.starts_with("the query failed:")
+                    || form.summary.starts_with("the selection failed:")
+            })
+    }
+}
+
+pub(crate) async fn evaluate(
+    editor: &Element,
+    body: &str,
+    transact: bool,
+) -> Result<Answer, String> {
+    let value = tonk_host::consumer::evaluate_as(editor, body, CONTENT_TYPE, transact)
+        .await
+        .map_err(|error| error.message)?;
+    let text = js_sys::JSON::stringify(&value)
+        .ok()
+        .and_then(|text| text.as_string())
+        .ok_or_else(|| "the notation response was not serializable".to_owned())?;
+    serde_json::from_str(&text).map_err(|error| format!("the notation response: {error}"))
 }
 
 #[derive(Deserialize, Default)]
@@ -194,23 +222,12 @@ pub(crate) fn bind(
             let held = held.clone();
             spawn_local(async move {
                 let started = js_sys::Date::now();
-                let answered =
-                    tonk_host::consumer::evaluate_as(&editor, &body, CONTENT_TYPE, true).await;
+                let answered = evaluate(&editor, &body, true).await;
                 let took = js_sys::Date::now() - started;
                 match answered {
-                    Ok(value) => {
-                        let text = js_sys::JSON::stringify(&value)
-                            .ok()
-                            .and_then(|s| s.as_string())
-                            .unwrap_or_default();
-                        let answer: Answer =
-                            serde_json::from_str(&text).unwrap_or_else(|e| Answer {
-                                error: Some(format!("the worker's answer did not decode: {e}")),
-                                ..Answer::default()
-                            });
-                        let refused = answer.error.is_some()
-                            || answer.forms.iter().any(|form| form.refused.is_some());
-                        result.set_inner_html(&render(&answer, &with));
+                    Ok(answer) => {
+                        let refused = answer.failed();
+                        result.set_inner_html(&render(&answer, true));
                         wire_watch(&result, &editor, &body, &with, &held);
                         let state = if refused { "refused" } else { "ran" };
                         let _ = wrapper.set_attribute("data-cell-state", state);
@@ -219,7 +236,7 @@ pub(crate) fn bind(
                     Err(error) => {
                         result.set_inner_html(&format!(
                             "<div class=\"notation-error\">{}</div>",
-                            escape(&error.message)
+                            escape(&error)
                         ));
                         let _ = wrapper.set_attribute("data-cell-state", "failed");
                         set_state(&bar, "failed");
@@ -285,7 +302,7 @@ fn context_before(root: &Element, wrapper: &HtmlElement) -> Vec<String> {
 }
 
 /// The answer as markup: each form's outcome, then the stages.
-fn render(answer: &Answer, _with: &str) -> String {
+pub(crate) fn render(answer: &Answer, watch: bool) -> String {
     let mut out = String::new();
     if let Some(error) = &answer.error {
         out.push_str(&format!(
@@ -355,12 +372,17 @@ fn render(answer: &Answer, _with: &str) -> String {
         if let Some(html) = &form.html {
             out.push_str(&format!(
                 "<div class=\"notation-html\"><div class=\"notation-html-rendered\">{html}</div>\
-                 <pre class=\"notation-html-source\">{}</pre>\
-                 <wa-button type=\"button\" class=\"notation-watch\" size=\"small\" \
-                   appearance=\"outlined\" title=\"Keep this view current: the worker \
-                   streams the driver's patches as the space changes\">Watch live</wa-button></div>",
+                 <pre class=\"notation-html-source\">{}</pre>",
                 escape(html)
             ));
+            if watch {
+                out.push_str(
+                    "<wa-button type=\"button\" class=\"notation-watch\" size=\"small\" \
+                   appearance=\"outlined\" title=\"Keep this view current: the worker \
+                   streams the driver's patches as the space changes\">Watch live</wa-button>",
+                );
+            }
+            out.push_str("</div>");
         }
         out.push_str("</div>");
     }
