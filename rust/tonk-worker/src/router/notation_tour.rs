@@ -1,5 +1,4 @@
-//! Demo (notation tour): a notebook cell written in the Dialog notation,
-//! posted to the existing `/evaluate` route with its own content type.
+//! Dialog notation evaluation through the branch's existing `/evaluate` route.
 //!
 //! No route is added. A ```notation cell in `<tonk-notebook>` posts
 //! `{source, context}` as `application/x-dialog-notation+json`; the
@@ -10,15 +9,15 @@
 //! is announced the way `/evaluate` announces a commit, so every open
 //! page sees it.
 //!
-//! Demo scaffolding: delete this file, its `mod` line in `router.rs` and
-//! the branch at the top of `evaluate::evaluate` to remove it.
+//! The Inspector uses document mode for atomic evaluation. The tour also
+//! records a cell's source forms and serves live view frames.
 
 use ::axum::Json;
 use ::axum::http::HeaderMap;
 use ::axum::http::header::CONTENT_TYPE as CONTENT_TYPE_HEADER;
 use ::axum::response::{IntoResponse as _, Response};
 use bytes::Bytes;
-use tonk_analyzer::notation::tour::{Cell, prepare};
+use tonk_analyzer::notation::tour::{Cell, prepare, prepare_document};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -35,6 +34,22 @@ pub(super) fn is_cell(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.starts_with(CONTENT_TYPE))
 }
 
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum Mode {
+    #[default]
+    Tour,
+    Document,
+}
+
+#[derive(serde::Deserialize)]
+struct EvaluateRequest {
+    #[serde(flatten)]
+    cell: Cell,
+    #[serde(default)]
+    mode: Mode,
+}
+
 /// Evaluate one notation cell on `repo`'s `branch`.
 pub(super) async fn evaluate(
     state: &AppState,
@@ -43,7 +58,7 @@ pub(super) async fn evaluate(
     transact: bool,
     body: &Bytes,
 ) -> Result<Response, TonkWorkerError> {
-    let cell: Cell = serde_json::from_slice(body)
+    let EvaluateRequest { cell, mode } = serde_json::from_slice(body)
         .map_err(|error| TonkWorkerError::Router(format!("a notation cell: {error}")))?;
     let tonk = state.read().await.clone();
     super::adopt::mount_on_first_use(&tonk, state, repo).await;
@@ -57,6 +72,10 @@ pub(super) async fn evaluate(
         .await
         .map_err(|error| TonkWorkerError::NotFound(error.to_string()))?;
     let started = web_time::Instant::now();
+    let mut prepared = match mode {
+        Mode::Tour => prepare(&cell),
+        Mode::Document => prepare_document(&cell),
+    };
     let (answer, effect) = {
         // The same writer lock `/evaluate` and every reactor commit take,
         // and the same stack: a cell's commit is a commit like any other.
@@ -66,7 +85,6 @@ pub(super) async fn evaluate(
         // dialog-notation's driver stages the cell into the stack's
         // transaction, each `when` read through what the forms before it
         // staged; a dry run drops it uncommitted.
-        let mut prepared = prepare(&cell);
         let stack = session.state.stack();
         match prepared.stage(stack.transaction(), &tonk.operator).await {
             Some(transaction) if transact && prepared.writes() => {

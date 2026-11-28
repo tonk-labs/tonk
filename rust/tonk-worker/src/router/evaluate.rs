@@ -1626,6 +1626,60 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn an_inspector_document_commits_only_its_writes_and_refuses_atomically() {
+        let (state, repo) = state_with_repo("inspector-document").await;
+        let (app, _) = crate::router::api_router_from_state(state);
+        let run = |source: &str, transact: bool| {
+            let app = app.clone();
+            let url = format!("/api/repository/{repo}/branch/main/evaluate?transact={transact}");
+            let body = serde_json::json!({ "source": source, "mode": "document" }).to_string();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(url)
+                            .header("content-type", "application/x-dialog-notation+json")
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            }
+        };
+
+        let write = r#"(assert (xyz.scratch/forms of: scratch:1 is: ?forms cardinality: :one)
+                         (syntax/parse "(select (xyz.note/title of: ?n is: ?title))" is: ?forms))"#;
+        let read = "(select (xyz.scratch/forms of: scratch:1 is: ?forms))";
+        let preview = run(write, false).await;
+        assert!(preview.get("error").is_none(), "{preview}");
+        assert_eq!(preview["wrote"], false);
+        assert_eq!(preview["kept_forms"], 0);
+
+        let refused = run(&format!("{write}\n(frobnicate)"), true).await;
+        assert_eq!(refused["wrote"], false, "{refused}");
+        assert!(refused["forms"][1].get("refused").is_some(), "{refused}");
+
+        let before = run(read, true).await;
+        assert_eq!(before["wrote"], false, "{before}");
+        assert_eq!(before["kept_forms"], 0, "{before}");
+        assert_eq!(before["forms"][0]["summary"], "0 answer(s)", "{before}");
+
+        let written = run(write, true).await;
+        assert_eq!(written["wrote"], true, "{written}");
+        assert_eq!(written["kept_forms"], 0, "{written}");
+        let after = run(read, true).await;
+        assert_eq!(after["wrote"], false, "{after}");
+        assert_eq!(after["forms"][0]["summary"], "1 answer(s)", "{after}");
+    }
+
+    #[dialog_common::test]
     async fn conditional_http_route_requires_revision_and_returns_precondition_failed() {
         let (state, repo) = state_with_repo("conditional-http").await;
         let initial = evaluate(&state, &repo, CONCEPTS, true).await.revision_after;
